@@ -16,14 +16,17 @@ WORKDIR /app
 # Copy package files
 COPY package*.json ./
 
-# Install dependencies
-RUN npm install --omit=dev || npm install
+# Install ALL dependencies (need devDeps like vite for build)
+RUN npm install
 
 # Copy source code
 COPY . .
 
-# Build Frontend
+# Build Frontend (needs vite from devDeps)
 RUN npm run build
+
+# Remove dev dependencies to save space
+RUN npm prune --omit=dev 2>/dev/null || true
 
 # Expose port
 EXPOSE 4000
