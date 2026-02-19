@@ -75,15 +75,44 @@ db.initDb()
   });
 
 
-// Initialize WhatsApp Client (Improved Config)
+// ═══════════════════════════════════════════════════════════════
+// 🔍 PRE-FLIGHT: Check if Chromium binary exists
+// ═══════════════════════════════════════════════════════════════
+const chromiumPath = process.env.PUPPETEER_EXECUTABLE_PATH;
+if (chromiumPath) {
+  const { execSync } = require('child_process');
+  try {
+    const version = execSync(`${chromiumPath} --version 2>&1`, { timeout: 5000 }).toString().trim();
+    console.log(`✅ Chromium found: ${version}`);
+    console.log(`📋 Path: ${chromiumPath}`);
+  } catch (err) {
+    console.error(`❌ Chromium NOT FOUND at ${chromiumPath}`);
+    console.error(`❌ Error: ${err.message}`);
+    // Try to find chromium elsewhere
+    try {
+      const which = execSync('which chromium chromium-browser google-chrome 2>/dev/null || echo "NOT FOUND"', { timeout: 3000 }).toString().trim();
+      console.log(`🔍 Search results: ${which}`);
+    } catch (e) { /* ignore */ }
+  }
+} else {
+  console.log('📋 Using Puppeteer bundled Chromium (no PUPPETEER_EXECUTABLE_PATH set)');
+}
+
+// Initialize WhatsApp Client (Improved Config with full diagnostics)
 const client = new Client({
   authStrategy: new LocalAuth({
     dataPath: './wwebjs_auth',
     clientId: 'crm-' + (process.env.INSTANCE_ID || 'default')
   }),
+  // Use remote web version cache (fixes cloud hosting issues)
+  webVersionCache: {
+    type: 'remote',
+    remotePath: 'https://raw.githubusercontent.com/nicholasrq/nicholasrq.github.io/refs/heads/main/nicholasrq/nicholasrq.github.io/assets/',
+  },
   puppeteer: {
     headless: true,
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+    dumpio: true, // CRITICAL: pipes Chrome's stdout/stderr so we can see errors
+    executablePath: chromiumPath || undefined,
     defaultViewport: null,
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     args: [
@@ -695,6 +724,21 @@ client.initialize()
     console.error(`📋 Memory at failure: ${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB RSS`);
     isInitializing = false;
   });
+
+// QR Timeout Detector — if no QR within 90 seconds, log a warning
+setTimeout(() => {
+  if (!isReady && !isAuthenticated && !qrCodeData) {
+    const mem = process.memoryUsage();
+    console.error('⏰ ════════════════════════════════════════════');
+    console.error('⏰ QR TIMEOUT: No QR code received after 90 seconds!');
+    console.error(`⏰ Memory: ${Math.round(mem.rss / 1024 / 1024)}MB RSS`);
+    console.error(`⏰ isInitializing: ${isInitializing}`);
+    console.error(`⏰ Chromium path: ${process.env.PUPPETEER_EXECUTABLE_PATH || 'bundled'}`);
+    console.error('⏰ LIKELY CAUSE: Chromium failed to launch or WhatsApp Web failed to load.');
+    console.error('⏰ Check dumpio output above for Chrome error messages.');
+    console.error('⏰ ════════════════════════════════════════════');
+  }
+}, 90000);
 
 // Log memory every 30 seconds for debugging
 setInterval(() => {
