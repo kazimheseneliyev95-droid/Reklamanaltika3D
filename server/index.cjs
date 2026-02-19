@@ -93,24 +93,17 @@ const client = new Client({
       '--disable-accelerated-2d-canvas',
       '--no-first-run',
       '--no-zygote',
-      '--single-process',
       '--disable-gpu',
       '--disable-software-rasterizer',
       '--disable-extensions',
       '--disable-default-apps',
       '--disable-background-networking',
-      '--disable-background-timer-throttling',
-      '--disable-backgrounding-occluded-windows',
-      '--disable-breakpad',
-      '--disable-component-update',
-      '--disable-domain-reliability',
-      '--disable-hang-monitor',
-      '--disable-ipc-flooding-protection',
-      '--disable-renderer-backgrounding',
       '--disable-sync',
       '--metrics-recording-only',
       '--no-default-browser-check',
       '--mute-audio',
+      '--disable-translate',
+      '--disable-features=TranslateUI',
       '--js-flags=--max-old-space-size=256'
     ]
   }
@@ -652,16 +645,62 @@ app.get('/__test_send_whatsapp', asyncHandler(async (req, res) => {
   }
 }));
 
+// ═══════════════════════════════════════════════════════════════
+// 🔍 DIAGNOSTIC ENDPOINT
+// ═══════════════════════════════════════════════════════════════
+app.get('/api/debug', (req, res) => {
+  const mem = process.memoryUsage();
+  const info = {
+    uptime_seconds: Math.round(process.uptime()),
+    memory: {
+      rss_mb: Math.round(mem.rss / 1024 / 1024),
+      heap_used_mb: Math.round(mem.heapUsed / 1024 / 1024),
+      heap_total_mb: Math.round(mem.heapTotal / 1024 / 1024),
+      external_mb: Math.round(mem.external / 1024 / 1024),
+    },
+    whatsapp: {
+      isReady,
+      isAuthenticated,
+      isInitializing,
+      hasQrCode: !!qrCodeData,
+    },
+    environment: {
+      node_version: process.version,
+      platform: process.platform,
+      arch: process.arch,
+      puppeteer_path: process.env.PUPPETEER_EXECUTABLE_PATH || 'bundled',
+      has_database_url: !!process.env.DATABASE_URL,
+    },
+    connected_clients: io.engine?.clientsCount || 0,
+  };
+  console.log('🔍 DEBUG:', JSON.stringify(info, null, 2));
+  res.json(info);
+});
+
 // START
+console.log('\n🚀 STARTING WHATSAPP CLIENT...');
+console.log(`📋 Chromium path: ${process.env.PUPPETEER_EXECUTABLE_PATH || 'bundled'}`);
+console.log(`📋 Memory before init: ${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB RSS`);
+
 isInitializing = true;
 client.initialize()
   .then(() => {
     console.log('✅ WhatsApp client initialization started');
+    console.log(`📋 Memory after init: ${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB RSS`);
   })
   .catch(err => {
-    console.error('❌ WhatsApp client initialization failed:', err.message);
+    console.error('❌ WhatsApp client initialization FAILED!');
+    console.error('❌ Error:', err.message);
+    console.error('❌ Stack:', err.stack);
+    console.error(`📋 Memory at failure: ${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB RSS`);
     isInitializing = false;
   });
+
+// Log memory every 30 seconds for debugging
+setInterval(() => {
+  const mem = process.memoryUsage();
+  console.log(`📊 Memory: ${Math.round(mem.rss / 1024 / 1024)}MB RSS | WA: ${isReady ? 'READY' : isInitializing ? 'INITIALIZING' : 'OFFLINE'} | QR: ${qrCodeData ? 'YES' : 'NO'}`);
+}, 30000);
 
 // SERVE FRONTEND (Monolith Mode)
 const path = require('path');
