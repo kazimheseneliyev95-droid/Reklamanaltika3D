@@ -1,0 +1,4 @@
+2026/02/03-02:39:43.998 57e0 Creating DB C:\Users\kazim\Desktop\anit\Reklamanaltika3D\wwebjs_auth\session\Default\shared_proto_db since it was missing.
+2026/02/03-02:39:44.004 57e0 Reusing MANIFEST C:\Users\kazim\Desktop\anit\Reklamanaltika3D\wwebjs_auth\session\Default\shared_proto_db/MANIFEST-000001
+2026/02/03-02:39:44.004 57e0 Recovering log #3
+2026/02/03-02:39:44.005 57e0 Reusing old log C:\Users\kazim\Desktop\anit\Reklamanaltika3D\wwebjs_auth\session\Default\shared_proto_db/000003.log 

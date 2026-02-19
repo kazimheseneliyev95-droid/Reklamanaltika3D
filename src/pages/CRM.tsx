@@ -16,6 +16,7 @@ import { CrmService } from '../services/CrmService';
 const TEST_MODE_ACTIVE = true; // Toggle for visual debug indicators
 
 export default function CRMPage() {
+  const [activeMobileTab, setActiveMobileTab] = useState<string>('new');
   const {
     leads,
     isLoading,
@@ -125,16 +126,16 @@ export default function CRMPage() {
   ];
 
   return (
-    <div className="p-6 max-w-[1600px] mx-auto h-full flex flex-col font-sans space-y-6">
+    <div className="p-3 sm:p-6 max-w-[1600px] mx-auto h-full flex flex-col font-sans space-y-3 sm:space-y-6">
 
       {/* HEADER & METRICS */}
       <div className="flex flex-col gap-6 border-b border-slate-800 pb-6">
 
         {/* Top Row: Title & Actions */}
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
           <div>
-            <h1 className="text-3xl font-bold text-white flex items-center gap-2">
-              <MessageSquare className="text-green-500" />
+            <h1 className="text-xl sm:text-3xl font-bold text-white flex items-center gap-2">
+              <MessageSquare className="text-green-500 w-5 h-5 sm:w-7 sm:h-7" />
               WhatsApp CRM
             </h1>
             <p className="text-slate-400 mt-1 flex items-center gap-2 text-sm">
@@ -142,38 +143,38 @@ export default function CRMPage() {
               {isWhatsAppConnected ? "Live Connection Active" : "Offline Mode (Manual Entry)"}
             </p>
 
-            <div className="mt-2 flex items-center gap-3">
+            <div className="mt-2 flex flex-wrap items-center gap-1.5">
               <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-slate-800 border border-slate-700 text-[10px]">
-                <span className="text-slate-400 font-medium whitespace-nowrap">WhatsApp Status:</span>
+                <span className="text-slate-400 font-medium">WA:</span>
                 <span className={cn(
                   "font-bold uppercase",
                   systemHealth?.whatsapp === 'CONNECTED' ? "text-green-400" : "text-yellow-400 animate-pulse"
                 )}>
-                  {systemHealth?.whatsapp || 'WAITING...'}
+                  {systemHealth?.whatsapp || '...'}
                 </span>
               </div>
 
               <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-slate-800 border border-slate-700 text-[10px]">
-                <span className="text-slate-400 font-medium whitespace-nowrap">Socket:</span>
+                <span className="text-slate-400 font-medium hidden sm:inline">Socket:</span>
                 <span className={cn(
                   "font-bold uppercase",
                   systemHealth ? "text-blue-400" : "text-slate-500"
                 )}>
-                  {systemHealth ? `${systemHealth.socket_clients} Clients` : 'DISCONNECTED'}
+                  {systemHealth ? `${systemHealth.socket_clients}` : '0'} 🔌
                 </span>
               </div>
 
               {TEST_MODE_ACTIVE && (
-                <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-purple-900/30 border border-purple-800 text-[10px] text-purple-400">
+                <div className="hidden sm:flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-purple-900/30 border border-purple-800 text-[10px] text-purple-400">
                   <span className="font-bold flex items-center gap-1">
-                    <PlayCircle className="w-2.5 h-2.5" /> DEBUG MODE ACTIVE
+                    <PlayCircle className="w-2.5 h-2.5" /> DEBUG
                   </span>
                 </div>
               )}
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2">
             <WhatsAppConnect
               isConnected={isWhatsAppConnected}
               onConnect={toggleWhatsAppConnection}
@@ -183,54 +184,38 @@ export default function CRMPage() {
             <button
               onClick={syncLeadsFromWhatsApp}
               disabled={isLoading}
-              className="bg-slate-800 hover:bg-slate-700 text-slate-200 px-4 py-2 rounded-lg flex items-center gap-2 text-sm transition-all border border-slate-700 disabled:opacity-50"
+              className="bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-2 rounded-lg flex items-center gap-1.5 text-xs sm:text-sm transition-all border border-slate-700 disabled:opacity-50"
               title="Manual Sync from WhatsApp"
             >
               <RefreshCcw className={cn("w-4 h-4", isLoading && "animate-spin")} />
-              <span>Yenilə</span>
+              <span className="hidden sm:inline">Yenilə</span>
             </button>
 
             <button
               onClick={() => { setEditingLead(null); setShowAddForm(true); }}
-              className="bg-purple-600 hover:bg-purple-500 text-white px-4 py-2 rounded-lg flex items-center gap-2 text-sm transition-all shadow-lg shadow-purple-900/20"
+              className="bg-purple-600 hover:bg-purple-500 text-white px-3 py-2 rounded-lg flex items-center gap-1.5 text-xs sm:text-sm transition-all shadow-lg shadow-purple-900/20"
             >
               <Plus className="w-4 h-4" />
-              <span>Add Lead</span>
+              <span className="hidden sm:inline">Add Lead</span>
             </button>
 
             <button
               onClick={handleTestMessage}
-              className="bg-purple-600 hover:bg-purple-500 text-white px-4 py-2 rounded-lg flex items-center gap-2 text-sm transition-all shadow-lg shadow-purple-900/20"
-              title="Simulate incoming WhatsApp message for testing"
+              className="bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-2 rounded-lg flex items-center gap-1.5 text-xs sm:text-sm transition-all border border-slate-600"
+              title="Test Message"
             >
-              <RefreshCcw className="w-4 h-4" /> Test Message
+              <Zap className="w-4 h-4 text-yellow-500" />
+              <span className="hidden sm:inline">Test</span>
             </button>
 
-                {leads.length > 0 && (
-                  <>
-                    <button
-                      onClick={async () => {
-                        try {
-                          const res = await fetch(`${CrmService.getServerUrl()}/__test_emit`);
-                          if (res.ok) alert('Test mesajı göndərildi! Saniyələr içində CRM-də görünməlidir.');
-                        } catch (err) {
-                          alert('Serverə qoşulmaq mümkün olmadı.');
-                        }
-                      }}
-                      className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-sm font-medium transition-colors border border-slate-700"
-                    >
-                      <Zap className="w-4 h-4 text-yellow-500" />
-                      Soket Testi
-                    </button>
-
-                <button
-                  onClick={handleClearAll}
-                  className="flex items-center gap-2 px-4 py-2 bg-red-900/20 hover:bg-red-900/40 text-red-400 rounded-lg text-sm font-medium transition-colors border border-red-900/30"
-                >
-                  <Eraser className="w-4 h-4" />
-                  Format Et
-                </button>
-              </>
+            {leads.length > 0 && (
+              <button
+                onClick={handleClearAll}
+                className="flex items-center gap-1.5 px-3 py-2 bg-red-900/20 hover:bg-red-900/40 text-red-400 rounded-lg text-xs sm:text-sm font-medium transition-colors border border-red-900/30"
+              >
+                <Eraser className="w-4 h-4" />
+                <span className="hidden sm:inline">Sil</span>
+              </button>
             )}
           </div>
         </div>
@@ -239,24 +224,24 @@ export default function CRMPage() {
         <div className="flex flex-col lg:flex-row gap-4 items-stretch lg:items-center justify-between">
 
           {/* Summary Cards */}
-          <div className="flex gap-4">
-            <div className="bg-slate-900 border border-slate-800 rounded-lg p-3 px-5 flex items-center gap-4 min-w-[180px]">
-              <div className="p-2 bg-blue-500/10 rounded-full">
-                <Users className="w-5 h-5 text-blue-400" />
+          <div className="flex gap-2 sm:gap-4">
+            <div className="bg-slate-900 border border-slate-800 rounded-lg p-2.5 sm:p-3 sm:px-5 flex items-center gap-2 sm:gap-4 flex-1 sm:flex-none sm:min-w-[180px]">
+              <div className="p-1.5 sm:p-2 bg-blue-500/10 rounded-full">
+                <Users className="w-4 h-4 sm:w-5 sm:h-5 text-blue-400" />
               </div>
               <div>
-                <p className="text-xs text-slate-400 uppercase font-medium">Total Leads</p>
-                <p className="text-xl font-bold text-white">{metrics.totalLeads}</p>
+                <p className="text-[10px] sm:text-xs text-slate-400 uppercase font-medium">Leads</p>
+                <p className="text-lg sm:text-xl font-bold text-white">{metrics.totalLeads}</p>
               </div>
             </div>
 
-            <div className="bg-slate-900 border border-slate-800 rounded-lg p-3 px-5 flex items-center gap-4 min-w-[180px]">
-              <div className="p-2 bg-green-500/10 rounded-full">
-                <TrendingUp className="w-5 h-5 text-green-400" />
+            <div className="bg-slate-900 border border-slate-800 rounded-lg p-2.5 sm:p-3 sm:px-5 flex items-center gap-2 sm:gap-4 flex-1 sm:flex-none sm:min-w-[180px]">
+              <div className="p-1.5 sm:p-2 bg-green-500/10 rounded-full">
+                <TrendingUp className="w-4 h-4 sm:w-5 sm:h-5 text-green-400" />
               </div>
               <div>
-                <p className="text-xs text-slate-400 uppercase font-medium">Total Sales</p>
-                <p className="text-xl font-bold text-green-400">{formatCurrency(metrics.totalRevenue, 'AZN')}</p>
+                <p className="text-[10px] sm:text-xs text-slate-400 uppercase font-medium">Satış</p>
+                <p className="text-lg sm:text-xl font-bold text-green-400">{formatCurrency(metrics.totalRevenue, 'AZN')}</p>
               </div>
             </div>
           </div>
@@ -333,15 +318,34 @@ export default function CRMPage() {
         </div>
       )}
 
-      {/* KANBAN BOARD */}
+      {/* MOBILE TABS */}
+      <div className="flex sm:hidden gap-1 bg-slate-900/50 p-1 rounded-xl border border-slate-800">
+        {columns.map((col) => (
+          <button
+            key={col.id}
+            onClick={() => setActiveMobileTab(col.id)}
+            className={cn(
+              "flex-1 py-1.5 px-1 rounded-lg text-[10px] font-semibold flex flex-col items-center gap-0.5 transition-colors",
+              activeMobileTab === col.id
+                ? "bg-slate-700 text-white shadow"
+                : "text-slate-500 hover:text-slate-300"
+            )}
+          >
+            <span>{leads.filter(l => l.status === col.id).length}</span>
+            <span>{col.title.split(' ')[0]}</span>
+          </button>
+        ))}
+      </div>
+
+      {/* KANBAN BOARD — desktop: side-by-side | mobile: single column */}
       <div className="flex-1 overflow-x-auto pb-4">
-        <div className="flex gap-6 min-w-[1000px] h-full">
+        {/* Desktop */}
+        <div className="hidden sm:flex gap-4 lg:gap-6 min-w-[900px] h-full">
           {columns.map((col) => (
-            <div key={col.id} className="flex-1 min-w-[280px] flex flex-col bg-slate-900/50 rounded-xl border border-slate-800 h-full max-h-[calc(100vh-280px)]">
-              {/* Column Header */}
-              <div className={`p-4 border-b border-slate-800 flex items-center justify-between bg-${col.color}-950/10`}>
-                <div className="flex items-center gap-2 font-semibold text-slate-200">
-                  <div className={`p-1.5 rounded bg-${col.color}-500/20 text-${col.color}-400`}>
+            <div key={col.id} className="flex-1 min-w-[220px] flex flex-col bg-slate-900/50 rounded-xl border border-slate-800 h-full max-h-[calc(100vh-300px)]">
+              <div className={`p-3 border-b border-slate-800 flex items-center justify-between`}>
+                <div className="flex items-center gap-2 font-semibold text-slate-200 text-sm">
+                  <div className="p-1 rounded bg-slate-800">
                     {col.icon}
                   </div>
                   {col.title}
@@ -350,8 +354,6 @@ export default function CRMPage() {
                   {leads.filter(l => l.status === col.id).length}
                 </Badge>
               </div>
-
-              {/* Cards Container */}
               <div className="p-3 space-y-3 overflow-y-auto flex-1 custom-scrollbar">
                 {leads.filter(l => l.status === col.id).map((lead) => (
                   <LeadCard
@@ -364,14 +366,35 @@ export default function CRMPage() {
                   />
                 ))}
                 {leads.filter(l => l.status === col.id).length === 0 && (
-                  <div className="text-center py-12 flex flex-col items-center gap-2 text-slate-600 text-sm border-2 border-dashed border-slate-800/50 rounded-lg mx-2">
-                    <div className="w-8 h-8 rounded-full bg-slate-900 flex items-center justify-center">
-                      <span className="text-xs">0</span>
-                    </div>
-                    No leads here
+                  <div className="text-center py-10 flex flex-col items-center gap-2 text-slate-600 text-xs border-2 border-dashed border-slate-800/50 rounded-lg">
+                    No leads
                   </div>
                 )}
               </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Mobile — single active tab column */}
+        <div className="sm:hidden">
+          {columns.filter(col => col.id === activeMobileTab).map((col) => (
+            <div key={col.id} className="space-y-3">
+              {leads.filter(l => l.status === col.id).map((lead) => (
+                <LeadCard
+                  key={lead.id}
+                  lead={lead}
+                  onUpdateStatus={updateLeadStatus}
+                  onRemove={removeLead}
+                  onEdit={handleEdit}
+                  onViewMessage={(msg) => setViewingMessage({ name: lead.name || lead.phone, text: msg })}
+                />
+              ))}
+              {leads.filter(l => l.status === col.id).length === 0 && (
+                <div className="text-center py-16 flex flex-col items-center gap-2 text-slate-600 text-sm border-2 border-dashed border-slate-800/50 rounded-lg">
+                  <span>0</span>
+                  No leads here
+                </div>
+              )}
             </div>
           ))}
         </div>

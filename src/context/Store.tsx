@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react';
 import { Lead, LeadStatus, DateRange } from '../types/crm';
 import { CrmService } from '../services/CrmService';
 
@@ -16,6 +16,7 @@ interface AppContextType {
   removeLead: (id: string) => void;
   syncLeadsFromWhatsApp: () => Promise<void>;
   toggleWhatsAppConnection: () => void;
+  clearAllLeads: () => Promise<void>;
 
   // Metrics
   getMetrics: () => { messages: number; potential: number; sales: number; revenue: number };
@@ -28,15 +29,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const [isWhatsAppConnected, setIsWhatsAppConnected] = useState(false);
 
-  // Initialize Date Range to Current Month (Local Time)
+  // 🆕 Ref for tracking leads to prevent stale closures
+  const leadsRef = useRef<Lead[]>([]);
+  leadsRef.current = leads;
+
+  // Initialize Date Range to Current Month (Local Time - FIXED)
   const [dateRange, setDateRange] = useState<DateRange>(() => {
     const now = new Date();
     const start = new Date(now.getFullYear(), now.getMonth(), 1);
     const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
 
+    // 🆕 FIXED: Use local date methods instead of timezone offset
     const toLocalISO = (date: Date) => {
-      const offset = date.getTimezoneOffset() * 60000;
-      return new Date(date.getTime() - offset).toISOString().split('T')[0];
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
     };
 
     return {
@@ -45,71 +53,52 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   });
 
+  // 🆕 Ref for cleanup functions
+  const cleanupRef = useRef<(() => void)[]>([]);
+
   // Initial Load & Filter Effect
   useEffect(() => {
     loadLeads();
   }, [dateRange]);
 
-  // WhatsApp Message Listener - Register on mount (NOT dependent on connection state!)
+  // 🆕 Improved WhatsApp Message Listener with proper cleanup
   useEffect(() => {
     console.log('🚀 Registering WhatsApp message listener...');
 
+    const cleanupFunctions: (() => void)[] = [];
+
     // ALWAYS listen for new incoming messages from backend
-    CrmService.onNewMessage(async (newLead) => {
+    const cleanupNewMessage = CrmService.onNewMessage(async (newLead) => {
       console.log('%c📩 NEW WHATSAPP MESSAGE!', 'background: #25d366; color: white; font-size: 16px; font-weight: bold; padding: 4px 8px; border-radius: 4px;');
       console.log('   Phone:', newLead.phone);
       console.log('   Message:', newLead.last_message);
 
-      // 1. Create fully populated Lead object
-      const leadToSave: Omit<Lead, 'id' | 'created_at' | 'updated_at'> = {
-        phone: newLead.phone,
-        name: newLead.name || `~${newLead.phone}`,
-        last_message: newLead.last_message,
-        source: 'whatsapp',
-        status: 'new',
-        value: 0,
-        // @ts-ignore
-        whatsapp_id: newLead.whatsapp_id || newLead.id,
-        source_contact_name: newLead.name,
-        source_message: newLead.last_message
-      };
+      // Check if this lead already exists in current state
+      const existingIndex = leadsRef.current.findIndex(l =>
+        l.id === newLead.id || l.phone === newLead.phone
+      );
 
-      // 2. PERSIST to Storage immediately!
-      try {
-        const savedLead = await CrmService.addLead(leadToSave);
-        console.log('✅ Lead Saved to DB:', savedLead.id);
-
-        // 3. Update UI state (Upsert Logic)
-        setLeads((prev) => {
-          // Check if this lead already exists in the UI (by ID or Phone)
-          const existingIndex = prev.findIndex(l =>
-            l.id === savedLead.id || l.phone === savedLead.phone
-          );
-
-          if (existingIndex !== -1) {
-            console.log('🔄 Updating existing lead in UI:', savedLead.phone);
-            const newList = [...prev];
-            // Remove old version
-            newList.splice(existingIndex, 1);
-            // Add new version at top
-            return [savedLead, ...newList];
-          }
-
-          // New Conversation
-          console.log('➕ Adding new lead to UI:', savedLead.phone);
-          return [savedLead, ...prev];
+      if (existingIndex !== -1) {
+        console.log('🔄 Updating existing lead in UI:', newLead.phone);
+        setLeads(prev => {
+          const newList = [...prev];
+          newList[existingIndex] = newLead;
+          return newList;
         });
-      } catch (err) {
-        console.error('Failed to save live lead:', err);
+      } else {
+        // New Conversation
+        console.log('➕ Adding new lead to UI:', newLead.phone);
+        setLeads(prev => [newLead, ...prev]);
       }
     });
+    cleanupFunctions.push(cleanupNewMessage);
 
     // Listen for lead updates (status changes, etc.)
-    CrmService.onLeadUpdated(async (updatedLead) => {
+    const cleanupLeadUpdated = CrmService.onLeadUpdated(async (updatedLead) => {
       console.log('🔄 LEAD UPDATED:', updatedLead);
 
       // Update UI state
-      setLeads((prev) => {
+      setLeads(prev => {
         const existingIndex = prev.findIndex(l =>
           l.id === updatedLead.id || l.phone === updatedLead.phone
         );
@@ -125,9 +114,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return [updatedLead, ...prev];
       });
     });
+    cleanupFunctions.push(cleanupLeadUpdated);
 
     // 🧪 TEST MODE LISTENER
-    CrmService.onTestMessage((data: any) => {
+    const cleanupTestMessage = CrmService.onTestMessage((data: any) => {
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
       console.log('🧠 CRM TEST MESSAGE RECEIVED (TEST_MODE)');
       console.log('   Phone:', data.phone);
@@ -135,7 +125,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       console.log('   Message:', data.message);
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
-      // Create a test lead with a prefix for visual clarity
       const testLead: Lead = {
         id: 'test-' + Date.now(),
         phone: data.phone,
@@ -151,65 +140,104 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setLeads((prev) => [testLead, ...prev]);
       console.log('✅ WhatsApp → Backend → Frontend → CRM SUCCESS');
     });
+    cleanupFunctions.push(cleanupTestMessage);
 
     // 🏥 HEALTH CHECK LISTENER
-    CrmService.onHealthCheck((health) => {
+    const cleanupHealthCheck = CrmService.onHealthCheck((health: any) => {
       console.log('🏥 SYSTEM HEALTH:', health);
+      // Update connection state based on health
+      if (health.whatsapp === 'CONNECTED' && !isWhatsAppConnected) {
+        setIsWhatsAppConnected(true);
+      } else if (health.whatsapp === 'OFFLINE' && isWhatsAppConnected) {
+        setIsWhatsAppConnected(false);
+      }
     });
+    cleanupFunctions.push(cleanupHealthCheck);
 
     console.log('✅ Message listener registered successfully!');
 
-
+    // Cleanup function
     return () => {
-      console.log('🔌 Unregistering message listener');
+      console.log('🔌 Unregistering all message listeners');
+      cleanupFunctions.forEach(cleanup => cleanup());
     };
-  }, []); // Empty array - register ONCE on mount
+  }, [isWhatsAppConnected]);
 
   const loadLeads = useCallback(async () => {
     setIsLoading(true);
     console.log('🔍 Loading leads for range:', dateRange);
-    const data = await CrmService.getLeads(dateRange);
-    console.log(`📊 Found ${data.length} leads in range.`);
-    setLeads(data);
-    setIsLoading(false);
+    try {
+      const data = await CrmService.getLeads(dateRange);
+      console.log(`📊 Found ${data.length} leads in range.`);
+      setLeads(data);
+      leadsRef.current = data;
+    } catch (error) {
+      console.error('❌ Error loading leads:', error);
+      // Show error to user (could add toast notification here)
+    } finally {
+      setIsLoading(false);
+    }
   }, [dateRange]);
 
   // --- ACTIONS ---
 
   const addLead = async (leadData: Omit<Lead, 'id' | 'created_at' | 'updated_at'>) => {
-    // 1. Auto-Sort Logic (The "Brain")
-    let status: LeadStatus = 'new';
-    const msg = leadData.last_message?.toLowerCase() || '';
+    try {
+      // 1. Auto-Sort Logic (The "Brain") - with better patterns
+      let status: LeadStatus = 'new';
+      const msg = leadData.last_message?.toLowerCase() || '';
 
-    if (msg.includes('qiymət') || msg.includes('price') || msg.includes('neçəyə')) {
-      status = 'potential';
-    } else if (msg.includes('sifariş') || msg.includes('almaq') || msg.includes('buy')) {
-      status = 'won';
+      // Azerbaijani and English keywords
+      const priceKeywords = ['qiymət', 'price', 'neçəyə', 'ne qeder', 'haqqında'];
+      const orderKeywords = ['sifariş', 'almaq', 'buy', 'istəyirəm', 'gətirmək', 'var'];
+
+      if (priceKeywords.some(k => msg.includes(k))) {
+        status = 'potential';
+      } else if (orderKeywords.some(k => msg.includes(k))) {
+        status = 'won';
+      }
+
+      // 2. Create Lead
+      const newLead = await CrmService.addLead({ ...leadData, status });
+
+      // 3. Update State - check if within current date range
+      const inRange = !dateRange.start || new Date(newLead.created_at) >= new Date(dateRange.start);
+      const inRangeEnd = !dateRange.end || new Date(newLead.created_at) <= new Date(dateRange.end);
+
+      if (inRange && inRangeEnd) {
+        setLeads(prev => [newLead, ...prev]);
+      }
+    } catch (error) {
+      console.error('❌ Error adding lead:', error);
+      // Could add toast notification here
     }
-
-    // 2. Create Lead
-    const newLead = await CrmService.addLead({ ...leadData, status });
-
-    // 3. Update State (if it falls within current filter)
-    // For simplicity, we just reload or prepend. 
-    // Prepending is faster but might show items outside date range if user is looking at old data.
-    // Let's just prepend for UX responsiveness.
-    setLeads(prev => [newLead, ...prev]);
   };
 
   const updateLead = async (id: string, updates: Partial<Lead>) => {
-    await CrmService.updateLead(id, updates);
-    setLeads(prev => prev.map(l => l.id === id ? { ...l, ...updates } : l));
+    try {
+      await CrmService.updateLead(id, updates);
+      setLeads(prev => prev.map(l => l.id === id ? { ...l, ...updates } : l));
+    } catch (error) {
+      console.error('❌ Error updating lead:', error);
+      // Could add toast notification here
+    }
   };
 
   const updateLeadStatus = async (id: string, status: LeadStatus) => {
-    await CrmService.updateStatus(id, status);
-    setLeads(prev => prev.map(l => l.id === id ? { ...l, status } : l));
+    try {
+      await CrmService.updateStatus(id, status);
+      setLeads(prev => prev.map(l => l.id === id ? { ...l, status } : l));
+    } catch (error) {
+      console.error('❌ Error updating lead status:', error);
+      // Could add toast notification here
+    }
   };
 
   const removeLead = useCallback((id: string) => {
     CrmService.deleteLead(id).then(() => {
       setLeads((prev) => prev.filter((l) => l.id !== id));
+    }).catch(error => {
+      console.error('❌ Error removing lead:', error);
     });
   }, []);
 
@@ -221,6 +249,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const existingLeads = await CrmService.getLeads(); // Get ALL for proper de-duplication
 
       let newLeadsAdded = 0;
+      const newLeads: Lead[] = [];
 
       for (const msg of messages) {
         // De-duplication check: WhatsApp ID or (Phone + Message)
@@ -237,19 +266,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
             status: 'new',
             source: 'whatsapp',
             value: 0,
-            // @ts-ignore
             whatsapp_id: msg.whatsapp_id
           };
 
-          // PERSIST to localStorage
-          await CrmService.addLead(leadData);
+          // PERSIST to storage
+          const savedLead = await CrmService.addLead(leadData);
+          newLeads.push(savedLead);
           newLeadsAdded++;
         }
       }
 
       console.log(`✅ Sync complete. Added ${newLeadsAdded} new leads to storage.`);
 
-      // RELOAD from storage to ensure UI is in sync with persistent data and filters
+      // Reload from storage to ensure UI is in sync with persistent data and filters
       await loadLeads();
 
       if (newLeadsAdded > 0) {
@@ -257,10 +286,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
     } catch (e) {
       console.error('❌ Sync failed:', e);
+      // Could add toast notification here
     } finally {
       setIsLoading(false);
     }
   }, [loadLeads]);
+
+  const clearAllLeads = useCallback(async () => {
+    if (window.confirm('Are you sure you want to delete ALL leads? This cannot be undone.')) {
+      try {
+        await CrmService.clearAllLeads();
+        setLeads([]);
+        console.log('✅ All leads cleared');
+      } catch (error) {
+        console.error('❌ Error clearing leads:', error);
+      }
+    }
+  }, []);
+
   const toggleWhatsAppConnection = () => {
     setIsWhatsAppConnected(!isWhatsAppConnected);
   };
@@ -268,7 +311,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // --- METRICS ---
   const getMetrics = () => {
     const messages = leads.length;
-    const potential = leads.filter(l => l.status === 'potential' || l.status === 'won').length;
+    const potential = leads.filter(l => l.status === 'potential').length;
     const sales = leads.filter(l => l.status === 'won').length;
     const revenue = leads.filter(l => l.status === 'won').reduce((acc, curr) => acc + (curr.value || 0), 0);
 
@@ -288,6 +331,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       removeLead,
       syncLeadsFromWhatsApp,
       toggleWhatsAppConnection,
+      clearAllLeads,
       getMetrics
     }}>
       {children}

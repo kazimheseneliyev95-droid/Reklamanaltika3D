@@ -82,7 +82,7 @@ const client = new Client({
     clientId: 'crm-' + (process.env.INSTANCE_ID || 'default')
   }),
   puppeteer: {
-    headless: NODE_ENV === 'production', // Only headless in production
+    headless: true,
     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     defaultViewport: null,
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -93,10 +93,25 @@ const client = new Client({
       '--disable-accelerated-2d-canvas',
       '--no-first-run',
       '--no-zygote',
+      '--single-process',
       '--disable-gpu',
       '--disable-software-rasterizer',
       '--disable-extensions',
-      '--disable-default-apps'
+      '--disable-default-apps',
+      '--disable-background-networking',
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-breakpad',
+      '--disable-component-update',
+      '--disable-domain-reliability',
+      '--disable-hang-monitor',
+      '--disable-ipc-flooding-protection',
+      '--disable-renderer-backgrounding',
+      '--disable-sync',
+      '--metrics-recording-only',
+      '--no-default-browser-check',
+      '--mute-audio',
+      '--js-flags=--max-old-space-size=256'
     ]
   }
 });

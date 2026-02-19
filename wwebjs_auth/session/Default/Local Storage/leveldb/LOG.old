@@ -1,0 +1,8 @@
+2026/02/03-02:39:43.997 2084 Creating DB C:\Users\kazim\Desktop\anit\Reklamanaltika3D\wwebjs_auth\session\Default\Local Storage\leveldb since it was missing.
+2026/02/03-02:39:44.012 2084 Reusing MANIFEST C:\Users\kazim\Desktop\anit\Reklamanaltika3D\wwebjs_auth\session\Default\Local Storage\leveldb/MANIFEST-000001
+2026/02/03-02:48:44.427 a28 Level-0 table #5: started
+2026/02/03-02:48:44.433 a28 Level-0 table #5: 18261 bytes OK
+2026/02/03-02:48:44.435 a28 Delete type=0 #3
+2026/02/03-02:58:44.417 a28 Level-0 table #7: started
+2026/02/03-02:58:44.431 a28 Level-0 table #7: 19512 bytes OK
+2026/02/03-02:58:44.433 a28 Delete type=0 #4

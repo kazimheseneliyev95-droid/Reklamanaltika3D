@@ -1,0 +1,33 @@
+2026/02/03-14:24:52.491 4b14 Reusing MANIFEST C:\Users\kazim\Desktop\anit\Reklamanaltika3D\wwebjs_auth\session\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/02/03-14:24:52.506 4b14 Recovering log #333
+2026/02/03-14:24:52.507 4b14 Reusing old log C:\Users\kazim\Desktop\anit\Reklamanaltika3D\wwebjs_auth\session\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/000333.log 
+2026/02/03-14:24:52.507 4b14 Delete type=2 #331
+2026/02/03-14:24:52.507 4b14 Delete type=2 #332
+2026/02/03-14:24:53.815 2c0c Level-0 table #338: started
+2026/02/03-14:24:53.841 2c0c Level-0 table #338: 1814 bytes OK
+2026/02/03-14:24:53.843 2c0c Delete type=0 #333
+2026/02/03-14:24:53.844 cd4 Manual compaction at level-0 from '\x007\x00\x00\x00' @ 72057594037927935 : 1 .. '\x008\x00\x00\x00' @ 0 : 0; will stop at '\x007\x00\x00\xc8\x06\x00s\x00t\x00a\x00t\x00u\x00s' @ 2464965 : 0
+2026/02/03-14:24:53.846 cd4 Compacting 1@0 + 1@1 files
+2026/02/03-14:24:53.930 cd4 Generated table #339@0: 126580 keys, 1038151 bytes
+2026/02/03-14:24:53.930 cd4 Compacted 1@0 + 1@1 files => 1038151 bytes
+2026/02/03-14:24:53.932 cd4 compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/02/03-14:24:53.932 cd4 Delete type=2 #338
+2026/02/03-14:24:53.933 cd4 Manual compaction at level-0 from '\x007\x00\x00\xc8\x06\x00s\x00t\x00a\x00t\x00u\x00s' @ 2464965 : 0 .. '\x008\x00\x00\x00' @ 0 : 0; will stop at (end)
+2026/02/03-14:24:53.951 cd4 Level-0 table #341: started
+2026/02/03-14:24:53.956 cd4 Level-0 table #341: 8436 bytes OK
+2026/02/03-14:24:53.958 cd4 Delete type=2 #335
+2026/02/03-14:24:53.958 cd4 Delete type=0 #337
+2026/02/03-14:24:53.959 cd4 Manual compaction at level-0 from '\x00/\x00\x00\x00' @ 72057594037927935 : 1 .. '\x000\x00\x00\x00' @ 0 : 0; will stop at '\x00:\x00\x00\xc8\x11\x00w\x00o\x00r\x00k\x00e\x00r\x00_\x00w\x00a\x00m\x00_\x00e\x00v\x00e\x00n\x00t\x00s' @ 2465291 : 1
+2026/02/03-14:24:53.959 cd4 Compacting 1@0 + 1@1 files
+2026/02/03-14:24:54.037 cd4 Generated table #342@0: 126679 keys, 1036743 bytes
+2026/02/03-14:24:54.037 cd4 Compacted 1@0 + 1@1 files => 1036743 bytes
+2026/02/03-14:24:54.039 cd4 compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/02/03-14:24:54.039 cd4 Delete type=2 #341
+2026/02/03-14:24:54.040 cd4 Manual compaction at level-0 from '\x00:\x00\x00\xc8\x11\x00w\x00o\x00r\x00k\x00e\x00r\x00_\x00w\x00a\x00m\x00_\x00e\x00v\x00e\x00n\x00t\x00s' @ 2465291 : 1 .. '\x000\x00\x00\x00' @ 0 : 0; will stop at (end)
+2026/02/03-14:24:54.040 cd4 Manual compaction at level-1 from '\x00/\x00\x00\x00' @ 72057594037927935 : 1 .. '\x000\x00\x00\x00' @ 0 : 0; will stop at '\x00:\x00\x00\xc8\x11\x00w\x00o\x00r\x00k\x00e\x00r\x00_\x00w\x00a\x00m\x00_\x00e\x00v\x00e\x00n\x00t\x00s' @ 2465291 : 1
+2026/02/03-14:24:54.040 cd4 Compacting 1@1 + 1@2 files
+2026/02/03-14:24:54.064 cd4 Generated table #343@1: 317 keys, 4459 bytes
+2026/02/03-14:24:54.064 cd4 Compacted 1@1 + 1@2 files => 4459 bytes
+2026/02/03-14:24:54.065 cd4 compacted to: files[ 0 0 1 0 0 0 0 ]
+2026/02/03-14:24:54.066 cd4 Delete type=2 #342
+2026/02/03-14:24:54.067 2c0c Manual compaction at level-1 from '\x00:\x00\x00\xc8\x11\x00w\x00o\x00r\x00k\x00e\x00r\x00_\x00w\x00a\x00m\x00_\x00e\x00v\x00e\x00n\x00t\x00s' @ 2465291 : 1 .. '\x000\x00\x00\x00' @ 0 : 0; will stop at (end)

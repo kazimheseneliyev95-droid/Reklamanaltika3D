@@ -2,33 +2,44 @@ import { Lead, LeadStatus, DateRange } from '../types/crm';
 import { io, Socket } from 'socket.io-client';
 import { faker } from '@faker-js/faker';
 
-const STORAGE_KEY = 'dualite_crm_leads_v2';
-const SERVER_URL_KEY = 'dualite_server_url'; // NEW: Persist server URL
+const STORAGE_KEY = 'dualite_crm_leads_v3';
+const SERVER_URL_KEY = 'dualite_server_url';
 
 class CrmServiceImpl {
   private socket: Socket | null = null;
   private serverUrl: string = '';
   private qrCallback: ((qr: string) => void) | null = null;
   private authCallback: (() => void) | null = null;
-  private messageListeners: ((lead: Lead) => void)[] = [];
-  private leadUpdateListeners: ((lead: Lead) => void)[] = [];
-  private testMessageListeners: ((data: any) => void)[] = [];
-  private healthListeners: ((health: any) => void)[] = [];
-
+  
+  // Improved listener arrays with unique IDs for cleanup
+  private messageListeners: Map<string, (lead: Lead) => void> = new Map();
+  private leadUpdateListeners: Map<string, (lead: Lead) => void> = new Map();
+  private testMessageListeners: Map<string, (data: any) => void> = new Map();
+  private healthListeners: Map<string, (health: any) => void> = new Map();
+  
   // Demo Mode State
   private isDemoMode: boolean = false;
   private demoInterval: any = null;
 
+  // 🆕 In-memory cache for better performance and deduplication
+  private leadsCache: Lead[] = [];
+  private cacheTimestamp: number = 0;
+  private readonly CACHE_TTL = 5000; // 5 seconds
+
+  // 🆕 De-duplication cache
+  private readonly PROCESSED_MESSAGES_TTL = 30000; // 30 seconds
+  private processedMessageIds = new Map<string, number>();
+
+  private listenerIdCounter = 0;
+
   // --- SERVER CONNECTION ---
   getServerUrl() {
-    // Check localStorage first for persisted URL
     const saved = localStorage.getItem(SERVER_URL_KEY);
     if (saved) return saved;
-    return this.serverUrl || (import.meta as any).env.VITE_SERVER_URL || 'http://localhost:3001';
+    return this.serverUrl || (import.meta as any).env.VITE_SERVER_URL || 'http://localhost:4000';
   }
 
   async connectToServer(url: string): Promise<boolean> {
-    // Handle Demo Mode
     if (url === 'demo') {
       this.isDemoMode = true;
       this.startDemoSimulation();
@@ -38,47 +49,62 @@ class CrmServiceImpl {
     this.isDemoMode = false;
     this.serverUrl = url;
 
-    // PERSIST SERVER URL
     localStorage.setItem(SERVER_URL_KEY, url);
     console.log('💾 Server URL saved to localStorage:', url);
 
     try {
-      // Disconnect existing socket if any
       if (this.socket) {
+        this.cleanupSocketListeners();
         this.socket.disconnect();
         this.socket = null;
       }
 
-      // Create new socket connection with proper options
       this.socket = io(url, {
         withCredentials: true,
-        transports: ['websocket', 'polling'], // Try websocket first, fallback to polling
+        transports: ['websocket', 'polling'],
         reconnection: true,
-        reconnectionAttempts: 3,
-        timeout: 5000
+        reconnectionAttempts: 5,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: 5000,
+        timeout: 10000,
+        forceNew: true
       });
 
       return new Promise((resolve) => {
         let timeoutId: ReturnType<typeof setTimeout> | null = null;
+        let resolved = false;
 
         this.socket?.on('connect', () => {
           console.log('✅ Connected to backend successfully!');
-          if (timeoutId) clearTimeout(timeoutId); // Clear timeout!
-          this.setupSocketListeners();
-          resolve(true);
+          if (timeoutId) clearTimeout(timeoutId);
+          if (!resolved) {
+            resolved = true;
+            this.setupSocketListeners();
+            resolve(true);
+          }
         });
 
         this.socket?.on('connect_error', (error) => {
           console.error('❌ Connection failed:', error.message);
-          if (timeoutId) clearTimeout(timeoutId); // Clear timeout!
-          resolve(false);
+          if (timeoutId) clearTimeout(timeoutId);
+          if (!resolved) {
+            resolved = true;
+            resolve(false);
+          }
         });
 
-        // Timeout fallback - only triggers if no connection
+        this.socket?.on('disconnect', (reason) => {
+          console.warn('🔌 Socket disconnected:', reason);
+          this.cleanupSocketListeners();
+        });
+
         timeoutId = setTimeout(() => {
           console.warn('⏱️ Connection timeout');
-          resolve(false);
-        }, 5000);
+          if (!resolved) {
+            resolved = true;
+            resolve(false);
+          }
+        }, 10000);
       });
     } catch (e) {
       console.error('❌ Connection error:', e);
@@ -89,27 +115,52 @@ class CrmServiceImpl {
   disconnect() {
     if (this.isDemoMode) {
       this.isDemoMode = false;
-      if (this.demoInterval) clearInterval(this.demoInterval);
-      if (this.authCallback) this.authCallback(); // Trigger disconnect cleanup if needed
+      if (this.demoInterval) {
+        clearInterval(this.demoInterval);
+        this.demoInterval = null;
+      }
+      if (this.authCallback) this.authCallback();
     }
+    
     if (this.socket) {
+      this.cleanupSocketListeners();
       this.socket.disconnect();
       this.socket = null;
     }
+
+    // Clear cache
+    this.leadsCache = [];
+    this.cacheTimestamp = 0;
+    this.processedMessageIds.clear();
+  }
+
+  // 🆕 Cleanup socket listeners properly
+  private cleanupSocketListeners() {
+    if (!this.socket) return;
+
+    // Remove all listeners
+    this.socket.off('qr_code');
+    this.socket.off('authenticated');
+    this.socket.off('crm:test_incoming_message');
+    this.socket.off('crm:health_check');
+    this.socket.off('new_message');
+    this.socket.off('lead_updated');
+    this.socket.off('connect');
+    this.socket.off('connect_error');
+    this.socket.off('disconnect');
+
+    console.log('🧹 Socket listeners cleaned up');
   }
 
   private startDemoSimulation() {
     console.log("Starting Demo Simulation...");
 
-    // Simulate QR Code delay then Auth
     setTimeout(() => {
       if (this.qrCallback) this.qrCallback('DEMO_QR_CODE_DATA');
 
-      // Auto authenticate after 2 seconds
       setTimeout(() => {
         if (this.authCallback) this.authCallback();
 
-        // Start sending fake messages every 15-30 seconds
         this.demoInterval = setInterval(async () => {
           if (!this.isDemoMode) return;
 
@@ -129,7 +180,7 @@ class CrmServiceImpl {
           };
 
           const savedLead = await this.addLead(fakeLead);
-          this.messageListeners.forEach(cb => cb(savedLead));
+          this.notifyMessageListeners(savedLead);
 
         }, 15000);
 
@@ -152,44 +203,44 @@ class CrmServiceImpl {
 
     this.socket.on('crm:test_incoming_message', (data: any) => {
       console.log('🧪 TEST MESSAGE:', data);
-      this.testMessageListeners.forEach(cb => cb(data));
+      this.notifyTestMessageListeners(data);
     });
 
     this.socket.on('crm:health_check', (health: any) => {
-      this.healthListeners.forEach(cb => cb(health));
+      this.notifyHealthListeners(health);
     });
-
 
     this.socket.on('new_message', async (data: any) => {
       console.log('⚡ SOCKET: new_message received', data);
 
-      // 🛡️ DE-DUPLICATION CHECK
-      const existingLeads = await this.getLeads();
-
-      // Find matching lead by whatsapp_id
-      const existingIndex = existingLeads.findIndex(l => (l as any).whatsapp_id === data.whatsapp_id);
-
-      if (existingIndex !== -1) {
-        // If we already have a "fast" emit and this is the "enriched" one, update the name
-        if (!data.is_fast_emit && (existingLeads[existingIndex] as any).is_fast_emit) {
-          console.log('🔄 Updating "fast" lead with enriched data:', data.name);
-          const updatedLead = { ...existingLeads[existingIndex], name: data.name, is_fast_emit: false };
-          await this.updateLead(updatedLead.id, updatedLead);
-          this.messageListeners.forEach(cb => cb(updatedLead));
+      // 🆕 Improved De-duplication with cache
+      const now = Date.now();
+      
+      // Check if already processed by ID
+      if (data.whatsapp_id) {
+        const lastProcessed = this.processedMessageIds.get(data.whatsapp_id);
+        if (lastProcessed && (now - lastProcessed) < this.PROCESSED_MESSAGES_TTL) {
+          console.log('⏭️ Skipping recently processed message:', data.whatsapp_id);
           return;
         }
-        console.log('⏭️ Skipping duplicate message:', data.whatsapp_id);
-        return;
       }
 
-      // Final check for content similarity (fallback)
-      const isContentDup = existingLeads.some(l =>
-        l.phone === data.phone && l.last_message === data.message &&
-        Math.abs(new Date(l.created_at).getTime() - new Date(data.timestamp).getTime()) < 30000
+      // Check against cached leads
+      const cachedLead = this.leadsCache.find(l => 
+        (l as any).whatsapp_id === data.whatsapp_id ||
+        (l.phone === data.phone && l.last_message === data.message)
       );
 
-      if (isContentDup) {
-        console.log('⏭️ Skipping content duplicate');
+      if (cachedLead) {
+        // If we have a "fast" emit and this is the "enriched" one, update the name
+        if (!data.is_fast_emit && (cachedLead as any).is_fast_emit) {
+          console.log('🔄 Updating "fast" lead with enriched data:', data.name);
+          const updatedLead = { ...cachedLead, name: data.name, is_fast_emit: false };
+          await this.updateLead(updatedLead.id, updatedLead);
+          this.notifyMessageListeners(updatedLead);
+          return;
+        }
+        console.log('⏭️ Skipping duplicate message from cache:', data.whatsapp_id);
         return;
       }
 
@@ -201,32 +252,77 @@ class CrmServiceImpl {
         status: 'new',
         source: 'whatsapp',
         value: 0,
-        // @ts-ignore - tracking custom fields
         whatsapp_id: data.whatsapp_id,
         is_fast_emit: data.is_fast_emit
       };
 
+      // Mark as processed
+      if (data.whatsapp_id) {
+        this.processedMessageIds.set(data.whatsapp_id, now);
+      }
+
+      // Clean up old processed messages
+      this.cleanupOldProcessedMessages();
+
+      // Save lead
       const savedLead = await this.addLead(newLead);
       console.log('✨ New lead saved:', savedLead.phone);
-      this.messageListeners.forEach(cb => cb(savedLead));
+      this.notifyMessageListeners(savedLead);
     });
 
-    // 🆕 NEW: Listen for database updates (status changes, etc.)
     this.socket.on('lead_updated', async (updatedLead: Lead) => {
       console.log('🔄 SOCKET: lead_updated received', updatedLead);
 
+      // Update cache
+      const cacheIndex = this.leadsCache.findIndex(l => 
+        l.id === updatedLead.id || l.phone === updatedLead.phone
+      );
+
+      if (cacheIndex !== -1) {
+        this.leadsCache[cacheIndex] = updatedLead;
+      } else {
+        this.leadsCache.unshift(updatedLead);
+      }
+
       // Update localStorage to match database
-      const existingLeads = await this.getLeads();
-      const index = existingLeads.findIndex(l => l.phone === updatedLead.phone);
+      const raw = localStorage.getItem(STORAGE_KEY);
+      const allLeads: Lead[] = raw ? JSON.parse(raw) : [];
+      const index = allLeads.findIndex(l => l.phone === updatedLead.phone);
 
       if (index !== -1) {
-        await this.updateLead(existingLeads[index].id, updatedLead);
+        allLeads[index] = updatedLead;
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(allLeads));
         console.log('✅ Lead synced with database');
-
-        // Notify UI to refresh - use dedicated leadUpdateListeners
-        this.leadUpdateListeners.forEach(cb => cb(updatedLead));
+        this.notifyLeadUpdateListeners(updatedLead);
       }
     });
+  }
+
+  // 🆕 Clean up old processed message IDs
+  private cleanupOldProcessedMessages() {
+    const now = Date.now();
+    for (const [id, timestamp] of this.processedMessageIds.entries()) {
+      if (now - timestamp > this.PROCESSED_MESSAGES_TTL) {
+        this.processedMessageIds.delete(id);
+      }
+    }
+  }
+
+  // 🆕 Helper methods to notify listeners
+  private notifyMessageListeners(lead: Lead) {
+    this.messageListeners.forEach(cb => cb(lead));
+  }
+
+  private notifyLeadUpdateListeners(lead: Lead) {
+    this.leadUpdateListeners.forEach(cb => cb(lead));
+  }
+
+  private notifyTestMessageListeners(data: any) {
+    this.testMessageListeners.forEach(cb => cb(data));
+  }
+
+  private notifyHealthListeners(health: any) {
+    this.healthListeners.forEach(cb => cb(health));
   }
 
   // --- EVENT LISTENERS ---
@@ -238,20 +334,41 @@ class CrmServiceImpl {
     this.authCallback = cb;
   }
 
-  onNewMessage(cb: (lead: Lead) => void) {
-    this.messageListeners.push(cb);
+  onNewMessage(cb: (lead: Lead) => void): () => void {
+    const id = `msg-${this.listenerIdCounter++}`;
+    this.messageListeners.set(id, cb);
+    
+    // Return cleanup function
+    return () => {
+      this.messageListeners.delete(id);
+    };
   }
 
-  onLeadUpdated(cb: (lead: Lead) => void) {
-    this.leadUpdateListeners.push(cb);
+  onLeadUpdated(cb: (lead: Lead) => void): () => void {
+    const id = `update-${this.listenerIdCounter++}`;
+    this.leadUpdateListeners.set(id, cb);
+    
+    return () => {
+      this.leadUpdateListeners.delete(id);
+    };
   }
 
-  onTestMessage(cb: (data: any) => void) {
-    this.testMessageListeners.push(cb);
+  onTestMessage(cb: (data: any) => void): () => void {
+    const id = `test-${this.listenerIdCounter++}`;
+    this.testMessageListeners.set(id, cb);
+    
+    return () => {
+      this.testMessageListeners.delete(id);
+    };
   }
 
-  onHealthCheck(cb: (health: any) => void) {
-    this.healthListeners.push(cb);
+  onHealthCheck(cb: (health: any) => void): () => void {
+    const id = `health-${this.listenerIdCounter++}`;
+    this.healthListeners.set(id, cb);
+    
+    return () => {
+      this.healthListeners.delete(id);
+    };
   }
 
   async fetchRecentMessages(limit: number = 30): Promise<any[]> {
@@ -259,17 +376,28 @@ class CrmServiceImpl {
     try {
       const response = await fetch(`${this.serverUrl}/chats/recent?limit=${limit}`);
       const data = await response.json();
-      return data.messages || [];
+      // 🆕 Fixed: Direct array, not data.messages
+      return Array.isArray(data) ? data : [];
     } catch (e) {
       console.error('❌ Error fetching recent messages:', e);
       return [];
     }
   }
 
-
-
   // --- DATA METHODS (DATABASE API) ---
+
+  /**
+   * Get leads with caching for better performance
+   */
   async getLeads(dateRange?: DateRange): Promise<Lead[]> {
+    const now = Date.now();
+    
+    // Check cache first
+    if (this.leadsCache.length > 0 && (now - this.cacheTimestamp) < this.CACHE_TTL) {
+      console.log('📦 Returning cached leads');
+      return this.filterLeadsByDate(this.leadsCache, dateRange);
+    }
+
     // Try database API first
     if (this.serverUrl) {
       try {
@@ -280,7 +408,8 @@ class CrmServiceImpl {
         const response = await fetch(`${this.serverUrl}/api/leads?${params}`);
         if (response.ok) {
           const leads = await response.json();
-          // Cache in localStorage for offline access
+          this.leadsCache = leads;
+          this.cacheTimestamp = now;
           localStorage.setItem(STORAGE_KEY, JSON.stringify(leads));
           return leads;
         }
@@ -289,22 +418,35 @@ class CrmServiceImpl {
       }
     }
 
-    // Fallback to localStorage (offline mode or API unavailable)
+    // Fallback to localStorage
     const raw = localStorage.getItem(STORAGE_KEY);
     let leads: Lead[] = raw ? JSON.parse(raw) : [];
+    
+    this.leadsCache = leads;
+    this.cacheTimestamp = now;
 
-    if (dateRange?.start) {
+    return this.filterLeadsByDate(leads, dateRange);
+  }
+
+  private filterLeadsByDate(leads: Lead[], dateRange?: DateRange): Lead[] {
+    if (!dateRange || (!dateRange.start && !dateRange.end)) {
+      return leads.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    }
+
+    let filtered = leads;
+
+    if (dateRange.start) {
       const startDate = new Date(dateRange.start);
       startDate.setHours(0, 0, 0, 0);
-      leads = leads.filter(l => new Date(l.created_at) >= startDate);
+      filtered = filtered.filter(l => new Date(l.created_at) >= startDate);
     }
-    if (dateRange?.end) {
+    if (dateRange.end) {
       const endDate = new Date(dateRange.end);
       endDate.setHours(23, 59, 59, 999);
-      leads = leads.filter(l => new Date(l.created_at) <= endDate);
+      filtered = filtered.filter(l => new Date(l.created_at) <= endDate);
     }
 
-    return leads.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    return filtered.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   }
 
   async addLead(lead: Omit<Lead, 'id' | 'created_at' | 'updated_at'>): Promise<Lead> {
@@ -321,12 +463,8 @@ class CrmServiceImpl {
           const savedLead = await response.json();
           console.log('✅ Lead saved to database:', savedLead.phone);
 
-          // Update localStorage cache
-          const raw = localStorage.getItem(STORAGE_KEY);
-          const allLeads: Lead[] = raw ? JSON.parse(raw) : [];
-          const updated = [savedLead, ...allLeads.filter(l => l.phone !== savedLead.phone)];
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-
+          // Update cache and localStorage
+          this.updateCacheAndStorage(savedLead);
           return savedLead;
         }
       } catch (error) {
@@ -334,7 +472,7 @@ class CrmServiceImpl {
       }
     }
 
-    // Fallback: localStorage only (offline mode)
+    // Fallback: localStorage only
     const raw = localStorage.getItem(STORAGE_KEY);
     const allLeads: Lead[] = raw ? JSON.parse(raw) : [];
     const existingIndex = allLeads.findIndex(l => l.phone === lead.phone);
@@ -351,6 +489,8 @@ class CrmServiceImpl {
       allLeads.splice(existingIndex, 1);
       const updatedList = [existingLead, ...allLeads];
       localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedList));
+      this.leadsCache = updatedList;
+      this.cacheTimestamp = Date.now();
       return existingLead;
     }
 
@@ -362,7 +502,31 @@ class CrmServiceImpl {
     };
     const updated = [newLead, ...allLeads];
     localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    this.leadsCache = updated;
+    this.cacheTimestamp = Date.now();
     return newLead;
+  }
+
+  private updateCacheAndStorage(lead: Lead) {
+    // Update cache
+    const existingIndex = this.leadsCache.findIndex(l => l.phone === lead.phone);
+    if (existingIndex !== -1) {
+      this.leadsCache[existingIndex] = lead;
+    } else {
+      this.leadsCache.unshift(lead);
+    }
+
+    // Update localStorage
+    const raw = localStorage.getItem(STORAGE_KEY);
+    const allLeads: Lead[] = raw ? JSON.parse(raw) : [];
+    const storageIndex = allLeads.findIndex(l => l.phone === lead.phone);
+    if (storageIndex !== -1) {
+      allLeads[storageIndex] = lead;
+    } else {
+      allLeads.unshift(lead);
+    }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(allLeads));
+    this.cacheTimestamp = Date.now();
   }
 
   async updateLead(id: string, updates: Partial<Lead>): Promise<void> {
@@ -390,6 +554,13 @@ class CrmServiceImpl {
       l.id === id ? { ...l, ...updates, updated_at: new Date().toISOString() } : l
     );
     localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    
+    // Update cache
+    const cacheIndex = this.leadsCache.findIndex(l => l.id === id);
+    if (cacheIndex !== -1) {
+      this.leadsCache[cacheIndex] = { ...this.leadsCache[cacheIndex], ...updates, updated_at: new Date().toISOString() };
+    }
+    this.cacheTimestamp = Date.now();
   }
 
   async updateStatus(id: string, status: LeadStatus): Promise<void> {
@@ -402,6 +573,37 @@ class CrmServiceImpl {
 
     const updated = allLeads.filter(l => l.id !== id);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    
+    // Update cache
+    this.leadsCache = this.leadsCache.filter(l => l.id !== id);
+    this.cacheTimestamp = Date.now();
+  }
+
+  /**
+   * Clear all leads (for testing/reset)
+   */
+  async clearAllLeads(): Promise<void> {
+    // Try database first
+    if (this.serverUrl) {
+      try {
+        const leads = await this.getLeads();
+        for (const lead of leads) {
+          await fetch(`${this.serverUrl}/api/leads/${lead.id}`, {
+            method: 'DELETE'
+          });
+        }
+        console.log('✅ All leads cleared from database');
+      } catch (error) {
+        console.warn('⚠️ Failed to clear database leads:', error);
+      }
+    }
+
+    // Clear localStorage and cache
+    localStorage.removeItem(STORAGE_KEY);
+    this.leadsCache = [];
+    this.cacheTimestamp = 0;
+    this.processedMessageIds.clear();
+    console.log('✅ All leads cleared');
   }
 }
 
