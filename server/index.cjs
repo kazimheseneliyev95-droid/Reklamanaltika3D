@@ -713,39 +713,9 @@ console.log('\n🚀 STARTING WHATSAPP CLIENT...');
 console.log(`📋 Chromium path: ${process.env.PUPPETEER_EXECUTABLE_PATH || 'bundled'}`);
 console.log(`📋 Memory before init: ${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB RSS`);
 
-isInitializing = true;
-client.initialize()
-  .then(() => {
-    console.log('✅ WhatsApp client initialization started');
-    console.log(`📋 Memory after init: ${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB RSS`);
-  })
-  .catch(err => {
-    console.error('❌ WhatsApp client initialization FAILED!');
-    console.error('❌ Error:', err.message);
-    console.error('❌ Stack:', err.stack);
-    console.error(`📋 Memory at failure: ${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB RSS`);
-    isInitializing = false;
-    lastInitError = {
-      message: err.message,
-      stack: err.stack,
-      time: new Date().toISOString()
-    };
-  });
-
-// QR Timeout Detector — if no QR within 90 seconds, log a warning
-setTimeout(() => {
-  if (!isReady && !isAuthenticated && !qrCodeData) {
-    const mem = process.memoryUsage();
-    console.error('⏰ ════════════════════════════════════════════');
-    console.error('⏰ QR TIMEOUT: No QR code received after 90 seconds!');
-    console.error(`⏰ Memory: ${Math.round(mem.rss / 1024 / 1024)}MB RSS`);
-    console.error(`⏰ isInitializing: ${isInitializing}`);
-    console.error(`⏰ Chromium path: ${process.env.PUPPETEER_EXECUTABLE_PATH || 'bundled'}`);
-    console.error('⏰ LIKELY CAUSE: Chromium failed to launch or WhatsApp Web failed to load.');
-    console.error('⏰ Check dumpio output above for Chrome error messages.');
-    console.error('⏰ ════════════════════════════════════════════');
-  }
-}, 90000);
+// The initialization is now deferred until after server.listen() to prevent
+// blocking the event loop and causing 502 Bad Gateway / WebSocket timeouts on Render
+// START was moved to the bottom.
 
 // Log memory every 30 seconds for debugging
 setInterval(() => {
@@ -778,5 +748,48 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🌐 Frontend URL: ${FRONTEND_URL}`);
+
+  // DEFER PUPPETEER INITIALIZATION
+  // Delay by 2 seconds to ensure the server is fully listening and
+  // Render's health checks can succeed before we block the event loop
+  setTimeout(() => {
+    console.log('\n🚀 STARTING WHATSAPP CLIENT (Delayed)...');
+    console.log(`📋 Chromium path: ${process.env.PUPPETEER_EXECUTABLE_PATH || 'bundled'}`);
+    console.log(`📋 Memory before init: ${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB RSS`);
+
+    isInitializing = true;
+    client.initialize()
+      .then(() => {
+        console.log('✅ WhatsApp client initialization started');
+        console.log(`📋 Memory after init: ${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB RSS`);
+
+        // QR Timeout Detector — if no QR within 90 seconds, log a warning
+        setTimeout(() => {
+          if (!isReady && !isAuthenticated && !qrCodeData) {
+            const mem = process.memoryUsage();
+            console.error('⏰ ════════════════════════════════════════════');
+            console.error('⏰ QR TIMEOUT: No QR code received after 90 seconds!');
+            console.error(`⏰ Memory: ${Math.round(mem.rss / 1024 / 1024)}MB RSS`);
+            console.error(`⏰ isInitializing: ${isInitializing}`);
+            console.error(`⏰ Chromium path: ${process.env.PUPPETEER_EXECUTABLE_PATH || 'bundled'}`);
+            console.error('⏰ LIKELY CAUSE: Chromium failed to launch or WhatsApp Web failed to load.');
+            console.error('⏰ Check dumpio output above for Chrome error messages.');
+            console.error('⏰ ════════════════════════════════════════════');
+          }
+        }, 90000);
+      })
+      .catch(err => {
+        console.error('❌ WhatsApp client initialization FAILED!');
+        console.error('❌ Error:', err.message);
+        console.error('❌ Stack:', err.stack);
+        console.error(`📋 Memory at failure: ${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB RSS`);
+        isInitializing = false;
+        lastInitError = {
+          message: err.message,
+          stack: err.stack,
+          time: new Date().toISOString()
+        };
+      });
+  }, 2000);
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 });
