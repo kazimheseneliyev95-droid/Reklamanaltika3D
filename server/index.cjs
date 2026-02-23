@@ -39,6 +39,7 @@ let isReady = false;
 let isAuthenticated = false;
 let qrCodeData = null;
 let isInitializing = false;
+let lastInitError = null;
 
 // 🆕 Message Deduplication Cache
 const PROCESSED_MESSAGES_TTL = 30000; // 30 seconds
@@ -692,6 +693,7 @@ app.get('/api/debug', (req, res) => {
       isAuthenticated,
       isInitializing,
       hasQrCode: !!qrCodeData,
+      lastInitError: lastInitError,
     },
     environment: {
       node_version: process.version,
@@ -723,6 +725,11 @@ client.initialize()
     console.error('❌ Stack:', err.stack);
     console.error(`📋 Memory at failure: ${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB RSS`);
     isInitializing = false;
+    lastInitError = {
+      message: err.message,
+      stack: err.stack,
+      time: new Date().toISOString()
+    };
   });
 
 // QR Timeout Detector — if no QR within 90 seconds, log a warning
