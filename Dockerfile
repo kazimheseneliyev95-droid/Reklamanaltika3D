@@ -28,6 +28,10 @@ RUN apt-get update \
       libpango-1.0-0 \
       libpangocairo-1.0-0 \
       libxrandr2 \
+      libxkbcommon0 \
+      libxfixes3 \
+      libdbus-1-3 \
+      libexpat1 \
       dumb-init \
       --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
