@@ -10,13 +10,13 @@ class CrmServiceImpl {
   private serverUrl: string = '';
   private qrCallback: ((qr: string) => void) | null = null;
   private authCallback: (() => void) | null = null;
-  
+
   // Improved listener arrays with unique IDs for cleanup
   private messageListeners: Map<string, (lead: Lead) => void> = new Map();
   private leadUpdateListeners: Map<string, (lead: Lead) => void> = new Map();
   private testMessageListeners: Map<string, (data: any) => void> = new Map();
   private healthListeners: Map<string, (health: any) => void> = new Map();
-  
+
   // Demo Mode State
   private isDemoMode: boolean = false;
   private demoInterval: any = null;
@@ -63,10 +63,10 @@ class CrmServiceImpl {
         withCredentials: true,
         transports: ['websocket', 'polling'],
         reconnection: true,
-        reconnectionAttempts: 5,
-        reconnectionDelay: 1000,
-        reconnectionDelayMax: 5000,
-        timeout: 10000,
+        reconnectionAttempts: 10,
+        reconnectionDelay: 2000,
+        reconnectionDelayMax: 10000,
+        timeout: 60000,
         forceNew: true
       });
 
@@ -99,12 +99,12 @@ class CrmServiceImpl {
         });
 
         timeoutId = setTimeout(() => {
-          console.warn('⏱️ Connection timeout');
+          console.warn('⏱️ Connection timeout - server is taking too long to respond');
           if (!resolved) {
             resolved = true;
             resolve(false);
           }
-        }, 10000);
+        }, 60000);
       });
     } catch (e) {
       console.error('❌ Connection error:', e);
@@ -121,7 +121,7 @@ class CrmServiceImpl {
       }
       if (this.authCallback) this.authCallback();
     }
-    
+
     if (this.socket) {
       this.cleanupSocketListeners();
       this.socket.disconnect();
@@ -215,7 +215,7 @@ class CrmServiceImpl {
 
       // 🆕 Improved De-duplication with cache
       const now = Date.now();
-      
+
       // Check if already processed by ID
       if (data.whatsapp_id) {
         const lastProcessed = this.processedMessageIds.get(data.whatsapp_id);
@@ -226,7 +226,7 @@ class CrmServiceImpl {
       }
 
       // Check against cached leads
-      const cachedLead = this.leadsCache.find(l => 
+      const cachedLead = this.leadsCache.find(l =>
         (l as any).whatsapp_id === data.whatsapp_id ||
         (l.phone === data.phone && l.last_message === data.message)
       );
@@ -274,7 +274,7 @@ class CrmServiceImpl {
       console.log('🔄 SOCKET: lead_updated received', updatedLead);
 
       // Update cache
-      const cacheIndex = this.leadsCache.findIndex(l => 
+      const cacheIndex = this.leadsCache.findIndex(l =>
         l.id === updatedLead.id || l.phone === updatedLead.phone
       );
 
@@ -337,7 +337,7 @@ class CrmServiceImpl {
   onNewMessage(cb: (lead: Lead) => void): () => void {
     const id = `msg-${this.listenerIdCounter++}`;
     this.messageListeners.set(id, cb);
-    
+
     // Return cleanup function
     return () => {
       this.messageListeners.delete(id);
@@ -347,7 +347,7 @@ class CrmServiceImpl {
   onLeadUpdated(cb: (lead: Lead) => void): () => void {
     const id = `update-${this.listenerIdCounter++}`;
     this.leadUpdateListeners.set(id, cb);
-    
+
     return () => {
       this.leadUpdateListeners.delete(id);
     };
@@ -356,7 +356,7 @@ class CrmServiceImpl {
   onTestMessage(cb: (data: any) => void): () => void {
     const id = `test-${this.listenerIdCounter++}`;
     this.testMessageListeners.set(id, cb);
-    
+
     return () => {
       this.testMessageListeners.delete(id);
     };
@@ -365,7 +365,7 @@ class CrmServiceImpl {
   onHealthCheck(cb: (health: any) => void): () => void {
     const id = `health-${this.listenerIdCounter++}`;
     this.healthListeners.set(id, cb);
-    
+
     return () => {
       this.healthListeners.delete(id);
     };
@@ -391,7 +391,7 @@ class CrmServiceImpl {
    */
   async getLeads(dateRange?: DateRange): Promise<Lead[]> {
     const now = Date.now();
-    
+
     // Check cache first
     if (this.leadsCache.length > 0 && (now - this.cacheTimestamp) < this.CACHE_TTL) {
       console.log('📦 Returning cached leads');
@@ -421,7 +421,7 @@ class CrmServiceImpl {
     // Fallback to localStorage
     const raw = localStorage.getItem(STORAGE_KEY);
     let leads: Lead[] = raw ? JSON.parse(raw) : [];
-    
+
     this.leadsCache = leads;
     this.cacheTimestamp = now;
 
@@ -554,7 +554,7 @@ class CrmServiceImpl {
       l.id === id ? { ...l, ...updates, updated_at: new Date().toISOString() } : l
     );
     localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-    
+
     // Update cache
     const cacheIndex = this.leadsCache.findIndex(l => l.id === id);
     if (cacheIndex !== -1) {
@@ -573,7 +573,7 @@ class CrmServiceImpl {
 
     const updated = allLeads.filter(l => l.id !== id);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-    
+
     // Update cache
     this.leadsCache = this.leadsCache.filter(l => l.id !== id);
     this.cacheTimestamp = Date.now();
