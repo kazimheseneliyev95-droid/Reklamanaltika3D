@@ -230,18 +230,25 @@ async function startWhatsAppClient() {
   console.log('\n🚀 STARTING WHATSAPP CLIENT (Baileys)...');
 
   try {
-    let state, saveCreds;
+    let state, saveCreds, clearState;
     if (process.env.DATABASE_URL && db && db.pool) {
       console.log('📦 Using PostgreSQL for Baileys Auth State...');
       const usePostgresAuthState = require('./postgresAuthState.cjs');
       const auth = await usePostgresAuthState(db.pool);
       state = auth.state;
       saveCreds = auth.saveCreds;
+      clearState = auth.clearState;
     } else {
       console.log('📁 Using Local File System for Baileys Auth State...');
       const auth = await useMultiFileAuthState(AUTH_DIR);
       state = auth.state;
       saveCreds = auth.saveCreds;
+      clearState = async () => {
+        const fs = require('fs');
+        if (fs.existsSync(AUTH_DIR)) {
+          fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+        }
+      };
     }
 
     const { version, isLatest } = await fetchLatestBaileysVersion();
@@ -261,7 +268,7 @@ async function startWhatsAppClient() {
 
     sock.ev.on('creds.update', saveCreds);
 
-    sock.ev.on('connection.update', (update) => {
+    sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
@@ -281,11 +288,20 @@ async function startWhatsAppClient() {
         if (shouldReconnect) {
           setTimeout(startWhatsAppClient, 5000);
         } else {
-          console.log('❌ Logged out, please clear auth folder and restart for a new QR.');
+          console.log('❌ Logged out, clearing auth state and restarting for a new QR...');
           isAuthenticated = false;
           qrCodeData = null;
           isInitializing = false;
-          io.emit('auth_failure', 'Logged out. Please restart the server.');
+          io.emit('auth_failure', 'Logged out. Getting new QR code...');
+
+          // Clear PostgreSQL auth data to allow new QR generation
+          if (clearState) {
+            await clearState();
+            console.log('🗑️ Auth state permanently cleared.');
+          }
+
+          // Reboot the client setup again
+          setTimeout(startWhatsAppClient, 3000);
         }
       } else if (connection === 'connecting') {
         console.log('🔄 CONNECTING...');

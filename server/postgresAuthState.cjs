@@ -82,5 +82,12 @@ module.exports = async (pool) => {
             },
         },
         saveCreds: () => writeData(creds, 'creds'),
+        clearState: async () => {
+            try {
+                await pool.query('DELETE FROM baileys_auth');
+            } catch (error) {
+                console.error('Error clearing auth state:', error);
+            }
+        },
     };
 };
