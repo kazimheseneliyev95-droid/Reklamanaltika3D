@@ -28,6 +28,7 @@ export interface AutoRule {
     keyword: string;          // Substring to search for in message (case-insensitive)
     targetStage: string;      // Pipeline stage ID to move the lead to
     extractValue: boolean;    // Extract first number from message → lead.value
+    currencyTag?: string;     // e.g. "azn" – if set, only extracts number if this tag is adjacent
     fixedValue?: number;      // Fixed value to apply if matched
     note?: string;            // Optional human-readable description
 }
@@ -117,10 +118,22 @@ export function applyAutoRules(
             if (rule.fixedValue !== undefined && rule.fixedValue !== null) {
                 extractedValue = rule.fixedValue;
             } else if (rule.extractValue) {
-                // Extract first number (integer or decimal) found in the message
-                const match = message.match(/[\d]+(?:[.,]\d+)?/);
-                if (match) {
-                    extractedValue = parseFloat(match[0].replace(',', '.'));
+                if (rule.currencyTag && rule.currencyTag.trim() !== '') {
+                    const tag = rule.currencyTag.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    // Match: tag followed by optional space then number OR number followed by optional space then tag
+                    // e.g. azn\s*(\d+(?:[.,]\d+)?) | (\d+(?:[.,]\d+)?)\s*azn
+                    const regex = new RegExp(`(?:${tag}\\s*(\\d+(?:[.,]\\d+)?))|(?:(\\d+(?:[.,]\\d+)?)\\s*${tag})`, 'i');
+                    const match = message.match(regex);
+                    if (match) {
+                        const valStr = match[1] || match[2];
+                        if (valStr) extractedValue = parseFloat(valStr.replace(',', '.'));
+                    }
+                } else {
+                    // Extract first number (integer or decimal) found in the message
+                    const match = message.match(/[\d]+(?:[.,]\d+)?/);
+                    if (match) {
+                        extractedValue = parseFloat(match[0].replace(',', '.'));
+                    }
                 }
             }
             return { targetStage: rule.targetStage, extractedValue };

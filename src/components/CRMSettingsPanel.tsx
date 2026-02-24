@@ -337,8 +337,8 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
                                                 </select>
                                             </div>
 
-                                            {/* Extract Value Toggle & Fixed Value */}
-                                            <div className="grid grid-cols-2 gap-2">
+                                            {/* Extract Value Toggle & Fixed Value & Currency Tag */}
+                                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                                                 <div>
                                                     <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">
                                                         Mətndən Qiymət
@@ -358,6 +358,22 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
                                                         }
                                                     </button>
                                                 </div>
+
+                                                {rule.extractValue ? (
+                                                    <div>
+                                                        <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1" title="Yalnız bu sözlə (məs: azn) yazılmış rəqəmi tapır">
+                                                            Format (məs: azn)
+                                                        </label>
+                                                        <input
+                                                            type="text"
+                                                            value={rule.currencyTag || ''}
+                                                            onChange={e => updateRule(rule.id, { currencyTag: e.target.value })}
+                                                            placeholder="Məs: azn"
+                                                            className="w-full bg-slate-900 border border-slate-700 text-slate-300 text-xs rounded-lg px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                                        />
+                                                    </div>
+                                                ) : <div className="hidden sm:block" />}
+
                                                 <div>
                                                     <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1" title="Açar söz tapıldıqda bu məbləği təyin et">
                                                         Sabit Qiymət (₼)
@@ -408,7 +424,7 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
                                     Tapılarsa, lead avtomatik seçilmiş mərhələyə keçir.
                                 </p>
                                 <p className="text-xs text-slate-400 leading-relaxed">
-                                    <strong className="text-emerald-400">Mətndən Qiymət</strong> açıqdırsa, mesajdakı rəqəm (məs: <em>30 AZN</em> → 30) və ya <strong className="text-emerald-400">Sabit Qiymət</strong> təyin edilibsə, büdcəyə yazılır.
+                                    <strong className="text-emerald-400">Mətndən Qiymət</strong> açıqdırsa, mesajdakı rəqəm (əgər <em>"Format"</em> təyin edilibsə yalnız o sözlə birgə olan rəqəm, məs: 30azn) və ya <strong className="text-emerald-400">Sabit Qiymət</strong> təyin edilibsə, birbaşa büdcəyə yazılır.
                                 </p>
                             </div>
                         </section>
