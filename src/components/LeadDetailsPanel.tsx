@@ -1,11 +1,13 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Lead, LeadStatus } from '../types/crm';
 import {
-    X, User, Phone, Package,
-    MessageSquare, Clock, Hash, Save
+    X, User, Phone, Package, MessageSquare, Clock, Hash,
+    Save, CheckCircle2, TrendingUp, BarChart2, Edit3, Check,
+    AlertCircle, Award, XCircle, Plus
 } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { Input } from './ui/Input';
+
+// ─── Types ───────────────────────────────────────────────────────────────────
 
 interface LeadDetailsPanelProps {
     lead: Lead;
@@ -14,35 +16,60 @@ interface LeadDetailsPanelProps {
     onUpdateStatus: (id: string, status: LeadStatus) => void;
 }
 
-const STATUSES: { id: LeadStatus; label: string; color: string }[] = [
-    { id: 'new', label: 'Yeni', color: 'bg-blue-500 text-white' },
-    { id: 'potential', label: 'Kvalifikasiya', color: 'bg-purple-500 text-white' },
-    { id: 'won', label: 'Satış', color: 'bg-green-500 text-white' },
-    { id: 'lost', label: 'Uğursuz', color: 'bg-slate-700 text-white' },
+// ─── Status Config ────────────────────────────────────────────────────────────
+
+const STATUSES: { id: LeadStatus; label: string; accent: string; bg: string; icon: React.ReactNode }[] = [
+    { id: 'new', label: 'Yeni', accent: 'border-blue-500 text-blue-400', bg: 'bg-blue-500', icon: <AlertCircle className="w-3 h-3" /> },
+    { id: 'potential', label: 'Kvalifikasiya', accent: 'border-purple-500 text-purple-400', bg: 'bg-purple-500', icon: <TrendingUp className="w-3 h-3" /> },
+    { id: 'won', label: 'Satış', accent: 'border-green-500 text-green-400', bg: 'bg-green-500', icon: <Award className="w-3 h-3" /> },
+    { id: 'lost', label: 'Uğursuz', accent: 'border-slate-600 text-slate-400', bg: 'bg-slate-600', icon: <XCircle className="w-3 h-3" /> },
 ];
 
+// ─── Main Component ───────────────────────────────────────────────────────────
+
 export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: LeadDetailsPanelProps) {
+
+    // LOCAL STATE (mirrors lead props - updated on save)
+    const [localStatus, setLocalStatus] = useState<LeadStatus>(lead.status);
     const [formData, setFormData] = useState({
         name: lead.name || '',
         value: lead.value?.toString() || '0',
         product_name: lead.product_name || '',
-        last_message: lead.last_message || ''
+        note: lead.last_message || '',
     });
-
+    const [activeTab, setActiveTab] = useState<'feed' | 'chat' | 'stats'>('feed');
     const [isSaving, setIsSaving] = useState(false);
+    const [savedOk, setSavedOk] = useState(false);
+    const [editingNote, setEditingNote] = useState(false);
+    const feedRef = useRef<HTMLDivElement>(null);
 
+    // Keep localStatus in sync if parent changes the lead
+    useEffect(() => { setLocalStatus(lead.status); }, [lead.status]);
     useEffect(() => {
-        // Esc düyməsi ilə bağlamaq üçün
-        const handleEsc = (e: KeyboardEvent) => {
-            if (e.key === 'Escape') onClose();
-        };
-        window.addEventListener('keydown', handleEsc);
-        return () => window.removeEventListener('keydown', handleEsc);
+        setFormData({
+            name: lead.name || '',
+            value: lead.value?.toString() || '0',
+            product_name: lead.product_name || '',
+            note: lead.last_message || '',
+        });
+    }, [lead.id]);
+
+    // ESC to close
+    useEffect(() => {
+        const fn = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+        window.addEventListener('keydown', fn);
+        return () => window.removeEventListener('keydown', fn);
     }, [onClose]);
 
+    // ─── Handlers ──────────────────────────────────────────────────────────────
+
     const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-        const { name, value } = e.target;
-        setFormData(prev => ({ ...prev, [name]: value }));
+        setFormData(prev => ({ ...prev, [e.target.name]: e.target.value }));
+    };
+
+    const handleStatusClick = (statusId: LeadStatus) => {
+        setLocalStatus(statusId);  // Optimistic: update UI immediately
+        onUpdateStatus(lead.id, statusId);
     };
 
     const handleSave = async () => {
@@ -51,247 +78,473 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
             name: formData.name,
             value: parseFloat(formData.value) || 0,
             product_name: formData.product_name,
-            last_message: formData.last_message,
+            last_message: formData.note,
+            status: localStatus,
         });
-        // Simulating a fast UX response
-        setTimeout(() => setIsSaving(false), 500);
+        setIsSaving(false);
+        setSavedOk(true);
+        setTimeout(() => setSavedOk(false), 1800);
     };
 
-    const dateStr = new Date(lead.created_at).toLocaleString();
+    // ─── UI Helpers ────────────────────────────────────────────────────────────
+
+    const activeStatus = STATUSES.find(s => s.id === localStatus) || STATUSES[0];
+    const dateStr = new Date(lead.created_at).toLocaleString('az-AZ', {
+        day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+    });
+    const leadIdShort = lead.id.split('-')[0].toUpperCase();
 
     return (
-        <div className="fixed inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-sm transition-opacity duration-300">
-            {/* SIDE PANEL CONTAINER (AmoCRM is full sliding to the right or center. We'll do a large right-slide drawer) */}
+        // OVERLAY
+        <div
+            className="fixed inset-0 z-50 bg-black/70 backdrop-blur-[2px] flex justify-end"
+            onClick={onClose}
+        >
+            {/* DRAWER — stops propagation so clicks inside don't close */}
             <div
-                className="h-full w-full md:w-[85%] lg:w-[75%] max-w-7xl bg-slate-950 border-l border-slate-800 shadow-2xl flex flex-col md:flex-row animate-in slide-in-from-right duration-300"
-                onClick={(e) => e.stopPropagation()}
+                className="relative h-full w-full sm:w-[96%] md:w-[88%] lg:w-[78%] xl:w-[72%] max-w-5xl bg-[#0d1117] border-l border-white/5 shadow-2xl flex flex-col overflow-hidden"
+                style={{ animation: 'slideInRight 0.22s cubic-bezier(0.22,1,0.36,1)' }}
+                onClick={e => e.stopPropagation()}
             >
 
-                {/* === LEFT SIDEBAR: FIELDS & DETAILS === */}
-                <div className="w-full md:w-[320px] shrink-0 border-r border-slate-800 bg-slate-900/50 flex flex-col h-full overflow-y-auto custom-scrollbar">
-                    {/* Header */}
-                    <div className="p-4 border-b border-slate-800 flex items-center justify-between sticky top-0 bg-slate-900 z-10">
-                        <div className="flex flex-col">
-                            <span className="text-xs text-slate-500 font-mono flex items-center gap-1">
-                                <Hash className="w-3 h-3" /> {lead.id.split('-')[0].toUpperCase()}
-                            </span>
-                            <h2 className="text-lg font-bold text-white flex items-center gap-2">
-                                <User className="w-4 h-4 text-blue-400" /> Detallar
-                            </h2>
-                        </div>
+                {/* ════════════════════ TOP PIPELINE BAR ════════════════════ */}
+                <div className="h-14 flex items-center justify-between px-4 border-b border-white/5 bg-[#111827] shrink-0 gap-3">
 
-                        {/* Mobile Close Button */}
-                        <button onClick={onClose} className="md:hidden p-2 bg-slate-800 rounded-lg text-slate-400">
-                            <X className="w-5 h-5" />
-                        </button>
+                    {/* Lead ID badge */}
+                    <div className="flex items-center gap-2 shrink-0">
+                        <span className="text-[10px] font-mono text-slate-500 bg-slate-800 px-2 py-0.5 rounded">
+                            #{leadIdShort}
+                        </span>
+                        <span className="hidden sm:block text-slate-300 text-sm font-semibold truncate max-w-[180px]">
+                            {lead.name || lead.phone}
+                        </span>
                     </div>
 
-                    <div className="p-4 flex flex-col gap-5">
-                        {/* Sales Value Highlight (AmoCRM inspired layout) */}
-                        <div className="bg-slate-900 border border-slate-800 p-3 rounded-xl">
-                            <label className="text-xs font-semibold uppercase text-slate-500 mb-1 block">Büdcə (Satış Həcmi)</label>
-                            <div className="relative">
-                                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                                    <span className="text-slate-400">₼</span>
-                                </div>
-                                <input
-                                    type="number"
-                                    name="value"
-                                    value={formData.value}
-                                    onChange={handleChange}
-                                    className="bg-transparent text-white text-xl font-bold w-full pl-8 py-1 border-none outline-none focus:ring-0"
-                                    placeholder="0.00"
-                                />
+                    {/* Pipeline Status Buttons */}
+                    <div className="flex-1 flex items-center justify-center gap-1 overflow-x-auto no-scrollbar px-2">
+                        {STATUSES.map((s, i) => {
+                            const isActive = localStatus === s.id;
+                            const pastIdx = STATUSES.findIndex(x => x.id === localStatus);
+                            const isPast = pastIdx > i;
+                            return (
+                                <button
+                                    key={s.id}
+                                    onClick={() => handleStatusClick(s.id)}
+                                    className={cn(
+                                        'flex items-center gap-1 px-2 sm:px-3 py-1.5 rounded-md text-[10px] sm:text-xs font-bold uppercase tracking-wide border transition-all whitespace-nowrap shrink-0',
+                                        isActive
+                                            ? `${ s.bg } text - white border - transparent shadow - lg`
+                                            : isPast
+                                                ? 'bg-slate-800/70 text-slate-400 border-slate-700 hover:bg-slate-700'
+                                                : 'bg-transparent text-slate-500 border-slate-800 hover:border-slate-600 hover:text-slate-300'
+                                    )}
+                                >
+                                    {s.icon}
+                                    <span className="hidden xs:inline sm:inline">{s.label}</span>
+                                </button>
+                            );
+                        })}
+                    </div>
+
+                    {/* Close */}
+                    <button
+                        onClick={onClose}
+                        className="shrink-0 p-2 rounded-lg text-slate-500 hover:text-white hover:bg-slate-800 transition-colors"
+                    >
+                        <X className="w-5 h-5" />
+                    </button>
+                </div>
+
+                {/* ════════════════════ BODY (2-column on md+) ════════════════════ */}
+                <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
+
+                    {/* ───── LEFT SIDEBAR ───── */}
+                    <aside className="w-full md:w-72 lg:w-80 shrink-0 border-b md:border-b-0 md:border-r border-white/5 bg-[#111827]/60 flex flex-col overflow-y-auto">
+
+                        {/* Avatar / Name Block */}
+                        <div className="p-4 border-b border-white/5 flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white font-bold text-sm shrink-0">
+                                {(lead.name || lead.phone || 'U')[0].toUpperCase()}
                             </div>
+                            <div className="flex-1 min-w-0">
+                                <p className="text-white font-semibold text-sm truncate">{lead.name || 'Ad yoxdur'}</p>
+                                <p className="text-slate-500 text-xs flex items-center gap-1">
+                                    <Phone className="w-2.5 h-2.5" /> {lead.phone}
+                                </p>
+                            </div>
+                            <div className={cn('w-2 h-2 rounded-full shrink-0', activeStatus.bg)} title={activeStatus.label} />
                         </div>
 
-                        {/* Standard Fields */}
-                        <div className="space-y-4">
-                            <div>
-                                <label className="text-[11px] font-semibold uppercase text-slate-500 mb-1.5 flex items-center gap-1.5">
-                                    <User className="w-3.5 h-3.5" /> Ad Soyad
-                                </label>
-                                <Input
+                        {/* Fields */}
+                        <div className="p-4 space-y-4 flex-1">
+
+                            {/* Büdcə */}
+                            <FieldGroup label="Büdcə (₼)" icon={<TrendingUp className="w-3 h-3" />}>
+                                <div className="relative">
+                                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm">₼</span>
+                                    <input
+                                        type="number"
+                                        name="value"
+                                        value={formData.value}
+                                        onChange={handleChange}
+                                        className="w-full bg-slate-900 border border-slate-700 rounded-lg pl-8 pr-3 py-2 text-white text-sm font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                    />
+                                </div>
+                            </FieldGroup>
+
+                            {/* Ad */}
+                            <FieldGroup label="Ad Soyad" icon={<User className="w-3 h-3" />}>
+                                <input
                                     name="name"
                                     value={formData.name}
                                     onChange={handleChange}
-                                    className="bg-slate-950 border-slate-800 h-9"
-                                    placeholder="Ad daxil edin"
+                                    placeholder="Müştərinin adı"
+                                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
                                 />
-                            </div>
+                            </FieldGroup>
 
-                            <div>
-                                <label className="text-[11px] font-semibold uppercase text-slate-500 mb-1.5 flex items-center gap-1.5">
-                                    <Phone className="w-3.5 h-3.5" /> Telefon
-                                </label>
-                                <div className="bg-slate-900 border border-slate-800 h-9 px-3 rounded-lg flex items-center text-sm font-mono text-slate-300">
+                            {/* Telefon (readonly) */}
+                            <FieldGroup label="Telefon" icon={<Phone className="w-3 h-3" />}>
+                                <div className="w-full bg-slate-900/50 border border-slate-800 rounded-lg px-3 py-2 text-slate-300 text-sm font-mono select-all">
                                     {lead.phone}
                                 </div>
-                            </div>
+                            </FieldGroup>
 
-                            <div>
-                                <label className="text-[11px] font-semibold uppercase text-slate-500 mb-1.5 flex items-center gap-1.5">
-                                    <Package className="w-3.5 h-3.5" /> Maraqlandığı Məhsul
-                                </label>
-                                <Input
+                            {/* Məhsul */}
+                            <FieldGroup label="Maraqlandığı Məhsul" icon={<Package className="w-3 h-3" />}>
+                                <input
                                     name="product_name"
                                     value={formData.product_name}
                                     onChange={handleChange}
-                                    className="bg-slate-950 border-slate-800 h-9"
-                                    placeholder="Məhsul və ya xidmət"
+                                    placeholder="Məhsul / Xidmət adı"
+                                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
                                 />
-                            </div>
+                            </FieldGroup>
 
-                            <div>
-                                <label className="text-[11px] font-semibold uppercase text-slate-500 mb-1.5 flex items-center gap-1.5">
-                                    <Clock className="w-3.5 h-3.5" /> Yaranma Tarixi
-                                </label>
-                                <div className="text-sm text-slate-400 flex items-center gap-2 pl-1">
-                                    {dateStr}
+                            {/* Status göstəricisi */}
+                            <FieldGroup label="Cari Status" icon={<BarChart2 className="w-3 h-3" />}>
+                                <div className={cn(
+                                    'w-full px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 border',
+                                    activeStatus.accent, 'bg-slate-900'
+                                )}>
+                                    {activeStatus.icon}
+                                    {activeStatus.label}
                                 </div>
-                            </div>
+                            </FieldGroup>
 
-                        </div>
-                    </div>
+                            {/* Tarix */}
+                            <FieldGroup label="Yaranma Tarixi" icon={<Clock className="w-3 h-3" />}>
+                                <p className="text-slate-400 text-xs">{dateStr}</p>
+                            </FieldGroup>
 
-                    <div className="mt-auto p-4 border-t border-slate-800 bg-slate-900/80 sticky bottom-0">
-                        <button
-                            onClick={handleSave}
-                            disabled={isSaving}
-                            className="w-full py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-lg font-medium transition-colors flex justify-center items-center gap-2"
-                        >
-                            {isSaving ? <span className="animate-spin text-lg block">↻</span> : <><Save className="w-4 h-4" /> Yadda Saxla</>}
-                        </button>
-                    </div>
-                </div>
-
-
-                {/* === RIGHT / CENTER AREA: PIPELINE & CHAT FEED === */}
-                <div className="flex-1 flex flex-col h-full overflow-hidden bg-slate-950 relative">
-
-                    {/* Top Navbar / Pipeline Status Block */}
-                    <div className="h-16 border-b border-slate-800 bg-slate-900 flex items-center justify-between px-4 sm:px-6 z-10 shrink-0">
-                        <div className="flex-1 flex items-center pr-4 overflow-x-auto custom-scrollbar no-scrollbar">
-                            {/* AmoCRM style pipeline visual */}
-                            <div className="flex items-center space-x-0.5 w-full min-w-[300px] h-8 relative bg-slate-950 rounded border border-slate-800 overflow-hidden">
-                                {STATUSES.map((status, index) => {
-                                    const isActive = lead.status === status.id;
-                                    const isPast = STATUSES.findIndex(s => s.id === lead.status) > index;
-
-                                    return (
-                                        <button
-                                            key={status.id}
-                                            onClick={() => onUpdateStatus(lead.id, status.id)}
-                                            className={cn(
-                                                "flex-1 h-full text-[10px] sm:text-xs font-bold uppercase transition-all flex items-center justify-center border-r border-slate-800 last:border-r-0 relative group",
-                                                isActive ? status.color : isPast ? "bg-slate-800 text-slate-300 hover:bg-slate-700" : "bg-transparent text-slate-500 hover:bg-slate-900"
-                                            )}
-                                        >
-                                            {status.label}
-                                        </button>
-                                    )
-                                })}
-                            </div>
-                        </div>
-
-                        <button onClick={onClose} className="hidden md:flex p-2 hover:bg-slate-800 text-slate-400 hover:text-white rounded-lg transition-colors items-center gap-2 text-sm font-medium">
-                            <X className="w-5 h-5" /> Bağla
-                        </button>
-                    </div>
-
-                    {/* Sub Navbar (Tabs) */}
-                    <div className="flex items-center gap-6 px-6 border-b border-slate-800/50 bg-slate-900/50">
-                        <button className="py-3 text-sm font-semibold text-blue-400 border-b-2 border-blue-400">Ümumi Gedişat</button>
-                        <button className="py-3 text-sm font-medium text-slate-500 hover:text-slate-300 transition-colors">Yazışmalar</button>
-                        <button className="py-3 text-sm font-medium text-slate-500 hover:text-slate-300 transition-colors">Statistika</button>
-                    </div>
-
-                    {/* Center Feed Area (Scrollable) */}
-                    <div className="flex-1 overflow-y-auto custom-scrollbar p-6 bg-slate-950 relative">
-                        <div className="max-w-2xl mx-auto space-y-6">
-
-                            {/* Event Block: Lead Created */}
-                            <div className="flex flex-col items-center">
-                                <span className="text-[10px] font-bold text-slate-500 bg-slate-900 border border-slate-800 px-3 py-1 rounded-full mb-3">
-                                    {new Date(lead.created_at).toLocaleDateString()}
+                            {/* Mənbə */}
+                            <FieldGroup label="Mənbə" icon={<Hash className="w-3 h-3" />}>
+                                <span className={cn(
+                                    'text-[10px] font-bold uppercase px-2 py-0.5 rounded',
+                                    lead.source === 'whatsapp'
+                                        ? 'bg-green-900/50 text-green-400 border border-green-900'
+                                        : 'bg-slate-800 text-slate-400 border border-slate-700'
+                                )}>
+                                    {lead.source === 'whatsapp' ? '📱 WhatsApp' : '✍️ Manual'}
                                 </span>
+                            </FieldGroup>
+                        </div>
 
-                                <div className="w-full bg-slate-900/40 border border-slate-800/60 rounded-xl p-4 flex gap-4 text-sm text-slate-400 relative overflow-hidden">
-                                    <div className="w-1 bg-blue-500 absolute left-0 top-0 bottom-0"></div>
-                                    <User className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />
-                                    <div>
-                                        <span className="font-bold text-slate-200">Sistem</span> tərəfindən yeni əlaqə yaradıldı.
-                                        <div className="text-xs text-slate-500 mt-1">Mənbə: {lead.source === 'whatsapp' ? 'WhatsApp İnteqrasiyası' : 'Manual Əlavə'}</div>
-                                    </div>
-                                    <div className="ml-auto text-xs text-slate-500 shrink-0">
-                                        {new Date(lead.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                    </div>
-                                </div>
-                            </div>
+                        {/* Save button */}
+                        <div className="p-4 border-t border-white/5 bg-[#0d1117]/80">
+                            <button
+                                onClick={handleSave}
+                                disabled={isSaving}
+                                className={cn(
+                                    'w-full py-2.5 rounded-lg font-semibold text-sm flex items-center justify-center gap-2 transition-all',
+                                    savedOk
+                                        ? 'bg-green-600 text-white'
+                                        : 'bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-60'
+                                )}
+                            >
+                                {isSaving
+                                    ? <><span className="animate-spin">↻</span> Saxlanır...</>
+                                    : savedOk
+                                        ? <><Check className="w-4 h-4" /> Saxlandı!</>
+                                        : <><Save className="w-4 h-4" /> Yadda Saxla</>
+                                }
+                            </button>
+                        </div>
+                    </aside>
 
-                            {/* Chat Bubble: Source Message (If available) */}
-                            {lead.source_message && lead.source_message !== lead.last_message && (
-                                <div className="flex items-center gap-3">
-                                    <div className="bg-slate-800 p-2 rounded-full hidden sm:block">
-                                        <User className="w-4 h-4 text-slate-400" />
+                    {/* ───── RIGHT MAIN AREA ───── */}
+                    <main className="flex-1 flex flex-col overflow-hidden bg-[#0d1117]">
+
+                        {/* Tab Bar */}
+                        <div className="flex items-end px-5 gap-1 border-b border-white/5 bg-[#111827]/40 shrink-0">
+                            {[
+                                { id: 'feed', label: 'Ümumi Gedişat', icon: <MessageSquare className="w-3.5 h-3.5" /> },
+                                { id: 'chat', label: 'Yazışmalar', icon: <Edit3 className="w-3.5 h-3.5" /> },
+                                { id: 'stats', label: 'Statistika', icon: <BarChart2 className="w-3.5 h-3.5" /> },
+                            ].map(tab => (
+                                <button
+                                    key={tab.id}
+                                    onClick={() => setActiveTab(tab.id as any)}
+                                    className={cn(
+                                        'flex items-center gap-1.5 px-3 py-3 text-xs font-semibold border-b-2 transition-all whitespace-nowrap',
+                                        activeTab === tab.id
+                                            ? 'border-blue-500 text-blue-400'
+                                            : 'border-transparent text-slate-500 hover:text-slate-300'
+                                    )}
+                                >
+                                    {tab.icon} {tab.label}
+                                </button>
+                            ))}
+                        </div>
+
+                        {/* Tab Content */}
+                        <div className="flex-1 overflow-y-auto" ref={feedRef}>
+
+                            {/* ── TAB: FEED ── */}
+                            {activeTab === 'feed' && (
+                                <div className="p-4 sm:p-6 space-y-4 max-w-2xl mx-auto w-full">
+
+                                    {/* Date separator */}
+                                    <div className="flex items-center gap-3">
+                                        <div className="h-px flex-1 bg-slate-800" />
+                                        <span className="text-[10px] font-mono text-slate-500 bg-slate-900 border border-slate-800 px-2 py-0.5 rounded-full">
+                                            {new Date(lead.created_at).toLocaleDateString('az-AZ')}
+                                        </span>
+                                        <div className="h-px flex-1 bg-slate-800" />
                                     </div>
-                                    <div className="flex-1">
-                                        <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl rounded-tl-sm shadow-sm inline-block max-w-[85%]">
-                                            <div className="text-xs font-bold text-green-400 mb-1">{lead.name || lead.phone}</div>
-                                            <p className="text-sm text-slate-200 whitespace-pre-wrap">{lead.source_message}</p>
+
+                                    {/* System event */}
+                                    <div className="flex gap-3 items-start">
+                                        <div className="w-7 h-7 rounded-full bg-blue-900/50 border border-blue-800 flex items-center justify-center shrink-0 mt-0.5">
+                                            <User className="w-3.5 h-3.5 text-blue-400" />
+                                        </div>
+                                        <div className="flex-1 bg-slate-900/60 border border-slate-800 rounded-xl rounded-tl-sm p-3">
+                                            <div className="flex justify-between items-start">
+                                                <span className="text-xs font-bold text-slate-200">Sistem</span>
+                                                <span className="text-[10px] text-slate-500">
+                                                    {new Date(lead.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                                </span>
+                                            </div>
+                                            <p className="text-xs text-slate-400 mt-1">
+                                                Yeni əlaqə yaradıldı. Mənbə: <strong className="text-slate-300">{lead.source === 'whatsapp' ? 'WhatsApp' : 'Manual Giriş'}</strong>
+                                            </p>
                                         </div>
                                     </div>
+
+                                    {/* Source message bubble */}
+                                    {lead.source_message && lead.source_message !== lead.last_message && (
+                                        <MessageBubble
+                                            name={lead.name || lead.phone}
+                                            message={lead.source_message}
+                                            time={new Date(lead.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                        />
+                                    )}
+
+                                    {/* Last message */}
+                                    {lead.last_message && (
+                                        <MessageBubble
+                                            name={lead.name || lead.phone}
+                                            message={lead.last_message}
+                                            time={new Date(lead.updated_at || lead.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                        />
+                                    )}
+
+                                    {/* Status change event */}
+                                    {lead.status !== 'new' && (
+                                        <div className="flex gap-3 items-start">
+                                            <div className="w-7 h-7 rounded-full bg-purple-900/50 border border-purple-800 flex items-center justify-center shrink-0 mt-0.5">
+                                                <CheckCircle2 className="w-3.5 h-3.5 text-purple-400" />
+                                            </div>
+                                            <div className="flex-1 bg-slate-900/60 border border-slate-800 rounded-xl rounded-tl-sm p-3">
+                                                <span className="text-xs font-bold text-slate-200">Sistem</span>
+                                                <p className="text-xs text-slate-400 mt-1">
+                                                    Status dəyişdirildi: <strong className={cn('font-bold', activeStatus.accent.split(' ')[1])}>{activeStatus.label}</strong>
+                                                </p>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {/* No message empty state */}
+                                    {!lead.last_message && !lead.source_message && (
+                                        <div className="flex flex-col items-center py-12 gap-3 text-slate-600">
+                                            <MessageSquare className="w-10 h-10" />
+                                            <p className="text-sm">Hələ mesaj yoxdur</p>
+                                        </div>
+                                    )}
                                 </div>
                             )}
 
-                            {/* Chat Bubble: Last Message */}
-                            {lead.last_message && (
-                                <div className="flex items-center gap-3">
-                                    <div className="bg-green-900/30 p-2 rounded-full hidden sm:block border border-green-900/50">
-                                        <MessageSquare className="w-4 h-4 text-green-400" />
+                            {/* ── TAB: CHAT / NOTES ── */}
+                            {activeTab === 'chat' && (
+                                <div className="p-4 sm:p-6 space-y-4 max-w-2xl mx-auto w-full">
+                                    <div className="flex items-center justify-between mb-2">
+                                        <h3 className="text-sm font-semibold text-slate-300">Yazışmalar / Qeydlər</h3>
+                                        <button
+                                            onClick={() => setEditingNote(!editingNote)}
+                                            className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 transition-colors px-2 py-1 rounded bg-blue-900/20 border border-blue-900/40"
+                                        >
+                                            <Edit3 className="w-3 h-3" /> {editingNote ? 'Bağla' : 'Redaktə et'}
+                                        </button>
                                     </div>
-                                    <div className="flex-1">
-                                        <div className="bg-[#1E293B] border border-slate-700 p-4 rounded-2xl rounded-tl-sm shadow-sm inline-block max-w-[90%]">
-                                            <div className="text-xs font-bold text-green-400 mb-1 flex justify-between items-center w-full min-w-[200px]">
-                                                <span>{lead.name || lead.phone} <span className="text-slate-500 font-normal ml-2">Müştəri</span></span>
-                                            </div>
 
-                                            {/* Note Block editable within feed just like AmoCRM */}
-                                            <div className="mt-2">
-                                                <textarea
-                                                    name="last_message"
-                                                    value={formData.last_message}
-                                                    onChange={handleChange}
-                                                    className="bg-transparent border-none text-slate-200 text-sm w-full min-h-[100px] outline-none resize-none focus:ring-0 p-0"
-                                                    placeholder="Müştərinin mesajı və ya sizin qeydləriniz..."
-                                                />
-                                            </div>
-
-                                            <div className="flex justify-end border-t border-slate-700 pt-2 mt-2">
+                                    {editingNote ? (
+                                        <div className="bg-slate-900 border border-slate-700 rounded-xl overflow-hidden">
+                                            <textarea
+                                                name="note"
+                                                value={formData.note}
+                                                onChange={handleChange}
+                                                rows={8}
+                                                className="w-full bg-transparent text-slate-200 text-sm p-4 resize-none focus:outline-none"
+                                                placeholder="Qeydinizi bura yazın..."
+                                            />
+                                            <div className="flex justify-end px-3 py-2 border-t border-slate-700 bg-slate-900/80">
                                                 <button
                                                     onClick={handleSave}
                                                     disabled={isSaving}
-                                                    className="text-[10px] bg-slate-700 hover:bg-slate-600 px-2 py-1 rounded text-white transition-colors"
+                                                    className="text-xs bg-blue-600 hover:bg-blue-500 px-3 py-1.5 rounded-lg text-white font-medium flex items-center gap-1 transition-colors"
                                                 >
-                                                    Dəyişikliyi Saxla
+                                                    <Save className="w-3 h-3" /> Saxla
                                                 </button>
                                             </div>
+                                        </div>
+                                    ) : (
+                                        <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-4">
+                                            {formData.note ? (
+                                                <p className="text-slate-300 text-sm whitespace-pre-wrap leading-relaxed">{formData.note}</p>
+                                            ) : (
+                                                <div className="flex flex-col items-center py-8 gap-2 text-slate-600">
+                                                    <Edit3 className="w-8 h-8" />
+                                                    <p className="text-sm">Müştəri qeydi yoxdur</p>
+                                                    <button
+                                                        onClick={() => setEditingNote(true)}
+                                                        className="text-xs text-blue-400 hover:underline mt-1"
+                                                    >
+                                                        + Qeyd əlavə et
+                                                    </button>
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+
+                                    {/* WhatsApp source message (read-only) */}
+                                    {lead.source_message && (
+                                        <div className="mt-4">
+                                            <p className="text-[10px] font-semibold text-slate-500 uppercase mb-2">WhatsApp Mesajı</p>
+                                            <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-4">
+                                                <p className="text-slate-300 text-sm whitespace-pre-wrap leading-relaxed">{lead.source_message}</p>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* ── TAB: STATS ── */}
+                            {activeTab === 'stats' && (
+                                <div className="p-4 sm:p-6 max-w-2xl mx-auto w-full space-y-4">
+                                    <h3 className="text-sm font-semibold text-slate-300 mb-4">Statistika</h3>
+
+                                    <div className="grid grid-cols-2 gap-3">
+                                        <StatCard label="Cari Status" value={activeStatus.label} accent="text-blue-400" />
+                                        <StatCard label="Büdcə" value={`₼ ${ formData.value } `} accent="text-green-400" />
+                                        <StatCard label="Mənbə" value={lead.source === 'whatsapp' ? 'WhatsApp' : 'Manual'} accent="text-sky-400" />
+                                        <StatCard label="Yaradılma" value={new Date(lead.created_at).toLocaleDateString()} accent="text-slate-400" />
+                                        {lead.product_name && (
+                                            <StatCard label="Məhsul" value={lead.product_name} accent="text-purple-400" className="col-span-2" />
+                                        )}
+                                    </div>
+
+                                    {/* Conversion status indicator */}
+                                    <div className="mt-6 bg-slate-900/60 border border-slate-800 rounded-xl p-4">
+                                        <p className="text-xs text-slate-500 font-semibold uppercase mb-3">Satış Gedişatı</p>
+                                        <div className="flex items-center gap-1">
+                                            {STATUSES.map((s, i) => {
+                                                const currentIdx = STATUSES.findIndex(x => x.id === localStatus);
+                                                const done = currentIdx >= i;
+                                                return (
+                                                    <React.Fragment key={s.id}>
+                                                        <div className={cn(
+                                                            'flex flex-col items-center gap-1',
+                                                        )}>
+                                                            <div className={cn('w-7 h-7 rounded-full flex items-center justify-center text-white transition-all', done ? s.bg : 'bg-slate-800')}>
+                                                                {s.icon}
+                                                            </div>
+                                                            <span className="text-[9px] text-slate-500 hidden sm:block">{s.label}</span>
+                                                        </div>
+                                                        {i < STATUSES.length - 1 && (
+                                                            <div className={cn('flex-1 h-0.5 mb-4 transition-all', done && currentIdx > i ? 'bg-blue-500' : 'bg-slate-800')} />
+                                                        )}
+                                                    </React.Fragment>
+                                                );
+                                            })}
                                         </div>
                                     </div>
                                 </div>
                             )}
+                        </div>
 
-                            {/* Event: Next Action Placeholder */}
-                            <div className="flex items-center justify-center py-6">
-                                <button className="bg-slate-900 hover:bg-slate-800 border border-slate-700 border-dashed text-slate-400 px-4 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors">
-                                    <span className="text-xl leading-none">+</span> Yeni Qeyd Əlavə Et
+                        {/* Quick note input at bottom (only for feed and chat tabs) */}
+                        {activeTab === 'feed' && (
+                            <div className="px-4 pb-4 border-t border-white/5 pt-3 shrink-0">
+                                <button
+                                    onClick={() => setActiveTab('chat')}
+                                    className="w-full flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm text-slate-400 bg-slate-900 border border-slate-800 border-dashed hover:bg-slate-800 hover:text-slate-300 transition-colors"
+                                >
+                                    <Plus className="w-4 h-4" /> Qeyd Əlavə Et / Yazışmaları Gör...
                                 </button>
                             </div>
-
-                        </div>
-                    </div>
+                        )}
+                    </main>
                 </div>
             </div>
+
+            {/* Slide-in keyframe */}
+            <style>{`
+@keyframes slideInRight {
+          from { transform: translateX(40px); opacity: 0; }
+          to   { transform: translateX(0); opacity: 1; }
+}
+        .no - scrollbar:: -webkit - scrollbar { display: none; }
+        .no - scrollbar { -ms - overflow - style: none; scrollbar - width: none; }
+`}</style>
+        </div>
+    );
+}
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+function FieldGroup({ label, icon, children }: { label: string; icon: React.ReactNode; children: React.ReactNode }) {
+    return (
+        <div>
+            <label className="flex items-center gap-1.5 text-[10px] font-semibold uppercase text-slate-500 mb-1.5">
+                {icon} {label}
+            </label>
+            {children}
+        </div>
+    );
+}
+
+function MessageBubble({ name, message, time }: { name: string; message: string; time: string }) {
+    return (
+        <div className="flex gap-3 items-start">
+            <div className="w-7 h-7 rounded-full bg-green-900/50 border border-green-800 flex items-center justify-center shrink-0 mt-0.5">
+                <MessageSquare className="w-3.5 h-3.5 text-green-400" />
+            </div>
+            <div className="flex-1 bg-[#162032] border border-slate-700/60 rounded-xl rounded-tl-sm p-3 max-w-[90%]">
+                <div className="flex justify-between items-center mb-1.5">
+                    <span className="text-xs font-bold text-green-400">{name}</span>
+                    <span className="text-[10px] text-slate-500">{time}</span>
+                </div>
+                <p className="text-sm text-slate-200 whitespace-pre-wrap leading-relaxed">{message}</p>
+            </div>
+        </div>
+    );
+}
+
+function StatCard({ label, value, accent, className }: { label: string; value: string; accent: string; className?: string }) {
+    return (
+        <div className={cn('bg-slate-900 border border-slate-800 rounded-xl p-3', className)}>
+            <p className="text-[10px] font-semibold uppercase text-slate-500 mb-1">{label}</p>
+            <p className={cn('text-sm font-bold', accent)}>{value}</p>
         </div>
     );
 }

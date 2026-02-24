@@ -32,6 +32,13 @@ export default function CRMPage() {
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [systemHealth, setSystemHealth] = useState<{ whatsapp: string, socket_clients: number, timestamp: string } | null>(null);
 
+  // Keep selectedLead in sync with the global leads store
+  useEffect(() => {
+    if (!selectedLead) return;
+    const fresh = leads.find(l => l.id === selectedLead.id);
+    if (fresh) setSelectedLead(fresh);
+  }, [leads]);
+
   // Health listener
   useEffect(() => {
     CrmService.onHealthCheck((health) => {
@@ -295,14 +302,12 @@ export default function CRMPage() {
           lead={selectedLead}
           onSave={async (id: string, updates: Partial<Lead>) => {
             await updateLead(id, updates);
-            // Re-fetch the updated lead object or optimistic update the local selected one 
-            // so the modal doesn't immediately close/stutters.
-            const newLeadStr = localStorage.getItem('crm_leads');
-            const all = newLeadStr ? JSON.parse(newLeadStr) : [];
-            const found = all.find((l: Lead) => l.id === id);
-            if (found) setSelectedLead(found);
           }}
-          onUpdateStatus={updateLeadStatus}
+          onUpdateStatus={(id: string, status: LeadStatus) => {
+            updateLeadStatus(id, status);
+            // Optimistic update of the modal itself
+            setSelectedLead(prev => prev ? { ...prev, status } : null);
+          }}
           onClose={() => setSelectedLead(null)}
         />
       )}
