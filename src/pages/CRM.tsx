@@ -342,7 +342,16 @@ export default function CRMPage() {
         {/* Desktop */}
         <div className="hidden sm:flex gap-4 lg:gap-6 min-w-[900px] h-full">
           {columns.map((col) => (
-            <div key={col.id} className="flex-1 min-w-[220px] flex flex-col bg-slate-900/50 rounded-xl border border-slate-800 h-full max-h-[calc(100vh-300px)]">
+            <div
+              key={col.id}
+              className="flex-1 min-w-[220px] flex flex-col bg-slate-900/50 rounded-xl border border-slate-800 h-full max-h-[calc(100vh-300px)]"
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                const leadId = e.dataTransfer.getData('leadId');
+                if (leadId) updateLeadStatus(leadId, col.id);
+              }}
+            >
               <div className={`p-3 border-b border-slate-800 flex items-center justify-between`}>
                 <div className="flex items-center gap-2 font-semibold text-slate-200 text-sm">
                   <div className="p-1 rounded bg-slate-800">
@@ -378,7 +387,16 @@ export default function CRMPage() {
         {/* Mobile — single active tab column */}
         <div className="sm:hidden">
           {columns.filter(col => col.id === activeMobileTab).map((col) => (
-            <div key={col.id} className="space-y-3">
+            <div
+              key={col.id}
+              className="space-y-3 min-h-[300px] pb-20"
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                const leadId = e.dataTransfer.getData('leadId');
+                if (leadId) updateLeadStatus(leadId, col.id);
+              }}
+            >
               {leads.filter(l => l.status === col.id).map((lead) => (
                 <LeadCard
                   key={lead.id}
@@ -407,7 +425,11 @@ function LeadCard({ lead, onUpdateStatus, onRemove, onEdit, onViewMessage }: { l
   const dateStr = new Date(lead.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
   return (
-    <div className="bg-slate-950 border border-slate-800 p-3 rounded-lg shadow-sm hover:border-slate-600 transition-all duration-200 group relative">
+    <div
+      draggable
+      onDragStart={(e) => e.dataTransfer.setData('leadId', lead.id)}
+      className="bg-slate-950 border border-slate-800 p-3 rounded-lg shadow-sm hover:border-slate-600 hover:shadow-md transition-all duration-200 group relative cursor-grab active:cursor-grabbing"
+    >
       <div className="flex justify-between items-start mb-2">
         <div className="flex flex-col">
           <div className="flex items-center gap-1.5 text-sm font-bold text-slate-200">
