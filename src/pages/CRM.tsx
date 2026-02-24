@@ -5,13 +5,10 @@ import { Badge } from '../components/ui/Badge';
 import { Input } from '../components/ui/Input';
 import { WhatsAppConnect } from '../components/WhatsAppConnect';
 import { LeadForm } from '../components/LeadForm';
-import {
-  MessageSquare, UserPlus, CheckCircle, XCircle, Plus,
-  Phone, Trash2, Calendar, Filter, RefreshCcw, Eraser, Pencil, ShoppingBag, DollarSign,
-  TrendingUp, Users, PlayCircle, Zap
-} from 'lucide-react';
+import { Plus, Trash2, Calendar, Filter, RefreshCcw, Eraser, Pencil, ShoppingBag, DollarSign, TrendingUp, Users, PlayCircle, Zap, MessageSquare, UserPlus, CheckCircle, XCircle, Phone } from 'lucide-react';
 import { cn, formatCurrency } from '../lib/utils';
 import { CrmService } from '../services/CrmService';
+import { LeadDetailsPanel } from '../components/LeadDetailsPanel';
 
 const TEST_MODE_ACTIVE = true; // Toggle for visual debug indicators
 
@@ -32,8 +29,7 @@ export default function CRMPage() {
   } = useAppStore();
 
   const [showAddForm, setShowAddForm] = useState(false);
-  const [editingLead, setEditingLead] = useState<Lead | null>(null);
-  const [viewingMessage, setViewingMessage] = useState<{ name: string, text: string } | null>(null);
+  const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [systemHealth, setSystemHealth] = useState<{ whatsapp: string, socket_clients: number, timestamp: string } | null>(null);
 
   // Health listener
@@ -61,16 +57,12 @@ export default function CRMPage() {
   };
 
   const handleEdit = (lead: Lead) => {
-    setEditingLead(lead);
-    setShowAddForm(true);
+    setSelectedLead(lead);
   };
 
   const handleSaveLead = (data: any) => {
-    if (editingLead) {
-      updateLead(editingLead.id, data);
-    } else {
-      addLead(data);
-    }
+    addLead(data);
+    setShowAddForm(false);
   };
 
   // TEST FUNCTION: Simulate incoming WhatsApp message
@@ -192,7 +184,7 @@ export default function CRMPage() {
             </button>
 
             <button
-              onClick={() => { setEditingLead(null); setShowAddForm(true); }}
+              onClick={() => { setSelectedLead(null); setShowAddForm(true); }}
               className="bg-purple-600 hover:bg-purple-500 text-white px-3 py-2 rounded-lg flex items-center gap-1.5 text-xs sm:text-sm transition-all shadow-lg shadow-purple-900/20"
             >
               <Plus className="w-4 h-4" />
@@ -289,33 +281,30 @@ export default function CRMPage() {
         </div>
       </div>
 
-      {/* ADD/EDIT FORM MODAL */}
+      {/* ADD NEW LEAD MODAL */}
       {showAddForm && (
         <LeadForm
-          initialData={editingLead || undefined}
           onSave={handleSaveLead}
-          onCancel={() => { setShowAddForm(false); setEditingLead(null); }}
+          onCancel={() => setShowAddForm(false)}
         />
       )}
 
-      {/* FULL MESSAGE MODAL */}
-      {viewingMessage && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" onClick={() => setViewingMessage(null)}>
-          <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl max-w-2xl w-full shadow-2xl relative" onClick={e => e.stopPropagation()}>
-            <h3 className="text-xl font-bold text-white mb-2 flex items-center gap-2">
-              <MessageSquare className="text-green-400" />
-              {viewingMessage.name}
-            </h3>
-            <div className="bg-slate-950 p-4 rounded-xl border border-slate-800/50 max-h-[60vh] overflow-y-auto custom-scrollbar">
-              <p className="text-slate-300 text-sm whitespace-pre-wrap leading-relaxed">{viewingMessage.text}</p>
-            </div>
-            <div className="mt-6 flex justify-end">
-              <button onClick={() => setViewingMessage(null)} className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg transition-colors">
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
+      {/* AMOCRM STYLE LEAD DETAILS PANEL */}
+      {selectedLead && (
+        <LeadDetailsPanel
+          lead={selectedLead}
+          onSave={async (id: string, updates: Partial<Lead>) => {
+            await updateLead(id, updates);
+            // Re-fetch the updated lead object or optimistic update the local selected one 
+            // so the modal doesn't immediately close/stutters.
+            const newLeadStr = localStorage.getItem('crm_leads');
+            const all = newLeadStr ? JSON.parse(newLeadStr) : [];
+            const found = all.find((l: Lead) => l.id === id);
+            if (found) setSelectedLead(found);
+          }}
+          onUpdateStatus={updateLeadStatus}
+          onClose={() => setSelectedLead(null)}
+        />
       )}
 
       {/* MOBILE TABS */}
@@ -371,7 +360,7 @@ export default function CRMPage() {
                     onUpdateStatus={updateLeadStatus}
                     onRemove={removeLead}
                     onEdit={handleEdit}
-                    onViewMessage={(msg) => setViewingMessage({ name: lead.name || lead.phone, text: msg })}
+                    onViewMessage={() => setSelectedLead(lead)}
                   />
                 ))}
                 {leads.filter(l => l.status === col.id).length === 0 && (
@@ -404,7 +393,7 @@ export default function CRMPage() {
                   onUpdateStatus={updateLeadStatus}
                   onRemove={removeLead}
                   onEdit={handleEdit}
-                  onViewMessage={(msg) => setViewingMessage({ name: lead.name || lead.phone, text: msg })}
+                  onViewMessage={() => setSelectedLead(lead)}
                 />
               ))}
               {leads.filter(l => l.status === col.id).length === 0 && (
@@ -421,7 +410,7 @@ export default function CRMPage() {
   );
 }
 
-function LeadCard({ lead, onUpdateStatus, onRemove, onEdit, onViewMessage }: { lead: Lead, onUpdateStatus: any, onRemove: any, onEdit: any, onViewMessage: (msg: string) => void }) {
+function LeadCard({ lead, onUpdateStatus, onRemove, onEdit, onViewMessage }: { lead: Lead, onUpdateStatus: any, onRemove: any, onEdit: any, onViewMessage: () => void }) {
   const dateStr = new Date(lead.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
   return (
@@ -467,7 +456,7 @@ function LeadCard({ lead, onUpdateStatus, onRemove, onEdit, onViewMessage }: { l
 
       {lead.last_message && (
         <div
-          onClick={() => onViewMessage(lead.source_message || lead.last_message || '')}
+          onClick={onViewMessage}
           className="bg-slate-900/50 p-2 rounded mb-3 border border-slate-800/50 hover:bg-slate-800/50 cursor-pointer active:scale-[0.98] transition-all group/msg relative"
           title="Click to view full message"
         >
