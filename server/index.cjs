@@ -405,6 +405,29 @@ function getHealthStatus() {
 // 🛠️ API ENDPOINTS
 // ═══════════════════════════════════════════════════════════════
 
+// 🔐 AUTHENTICATION API
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin';
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'crm_auth_token_secure_4021';
+
+app.post('/api/auth/login', (req, res) => {
+  const { username, password } = req.body;
+  if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
+    res.json({ success: true, token: ADMIN_TOKEN });
+  } else {
+    res.status(401).json({ success: false, error: 'İstifadəçi adı və ya şifrə yanlışdır' });
+  }
+});
+
+app.post('/api/auth/verify', (req, res) => {
+  const { token } = req.body;
+  if (token === ADMIN_TOKEN) {
+    res.json({ success: true, valid: true });
+  } else {
+    res.status(401).json({ success: false, valid: false });
+  }
+});
+
 const asyncHandler = (fn) => (req, res, next) => {
   Promise.resolve(fn(req, res, next)).catch(next);
 };

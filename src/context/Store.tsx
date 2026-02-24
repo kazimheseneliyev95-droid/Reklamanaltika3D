@@ -9,6 +9,11 @@ interface AppContextType {
   isWhatsAppConnected: boolean;
   dateRange: DateRange;
 
+  // Auth State
+  isAuthenticated: boolean;
+  isLoadingAuth: boolean;
+  error: string | null;
+
   // Actions
   setDateRange: (range: DateRange) => void;
   addLead: (lead: Omit<Lead, 'id' | 'created_at' | 'updated_at'>) => void;
@@ -19,6 +24,9 @@ interface AppContextType {
   toggleWhatsAppConnection: () => void;
   clearAllLeads: () => Promise<void>;
 
+  login: (username: string, pass: string) => Promise<void>;
+  logout: () => void;
+
   // Metrics
   getMetrics: () => { messages: number; potential: number; sales: number; revenue: number };
 }
@@ -26,6 +34,11 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export function AppProvider({ children }: { children: ReactNode }) {
+  // Auth state
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [isLoadingAuth, setIsLoadingAuth] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+
   const [leads, setLeads] = useState<Lead[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isWhatsAppConnected, setIsWhatsAppConnected] = useState(false);
@@ -54,13 +67,40 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   });
 
-  // 🆕 Ref for cleanup functions
-  const cleanupRef = useRef<(() => void)[]>([]);
-
-  // Initial Load & Filter Effect
+  // 🆕 Initial Load & Auth Verify Effect
   useEffect(() => {
-    loadLeads();
-  }, [dateRange]);
+    const verifyToken = async () => {
+      const token = localStorage.getItem('crm_auth_token');
+      if (!token) {
+        setIsLoadingAuth(false);
+        return;
+      }
+      try {
+        const res = await fetch(`${CrmService.getServerUrl()}/api/auth/verify`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token })
+        });
+        const data = await res.json();
+        if (data.valid) {
+          setIsAuthenticated(true);
+        } else {
+          localStorage.removeItem('crm_auth_token');
+        }
+      } catch (err) {
+        console.error('Auth verification failed', err);
+      } finally {
+        setIsLoadingAuth(false);
+      }
+    };
+    verifyToken();
+  }, []);
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      loadLeads();
+    }
+  }, [dateRange, isAuthenticated]);
 
   // 🆕 Improved WhatsApp Message Listener with proper cleanup
   useEffect(() => {
@@ -384,12 +424,46 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return { messages, potential, sales, revenue };
   };
 
+  // --- AUTH ---
+  const login = async (u: string, p: string) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${CrmService.getServerUrl()}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: u, password: p })
+      });
+      const data = await res.json();
+      if (data.success) {
+        localStorage.setItem('crm_auth_token', data.token);
+        setIsAuthenticated(true);
+      } else {
+        setError(data.error || 'İstifadəçi adı və ya şifrə yanlışdır');
+      }
+    } catch (err) {
+      setError('Serverə qoşulmaq mümkün olmadı');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const logout = () => {
+    localStorage.removeItem('crm_auth_token');
+    setIsAuthenticated(false);
+  };
+
   return (
     <AppContext.Provider value={{
       leads,
       isLoading,
       isWhatsAppConnected,
       dateRange,
+
+      isAuthenticated,
+      isLoadingAuth,
+      error,
+
       setDateRange,
       addLead,
       updateLead,
@@ -398,7 +472,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       syncLeadsFromWhatsApp,
       toggleWhatsAppConnection,
       clearAllLeads,
-      getMetrics
+      getMetrics,
+
+      login,
+      logout
     }}>
       {children}
     </AppContext.Provider>
