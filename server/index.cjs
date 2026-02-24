@@ -155,7 +155,14 @@ async function processMessage(msg, isFromMe) {
     processedMessages.set(whatsappId, Date.now());
 
     const prefix = isFromMe ? '📤 [OUTGOING]' : '📥 [INCOMING]';
-    const rawNumber = msg.key.remoteJid.split('@')[0];
+    // Baileys appends `:deviceId` to remoteJid for outgoing messages
+    // e.g. "994776069606:12@s.whatsapp.net" → we want "994776069606"
+    const rawJid = msg.key.remoteJid.split('@')[0];
+    const rawNumber = rawJid.split(':')[0]; // Strip `:12` device suffix if present
+
+    if (rawJid !== rawNumber) {
+      console.log(`🔧 Normalized outgoing number: ${rawJid} → ${rawNumber}`);
+    }
 
     if (!rawNumber || rawNumber.length < 5 || rawNumber.includes('g.us')) { // ignore groups for CRM
       console.warn('⚠️ Invalid or Group number, skipping:', rawNumber);
