@@ -205,11 +205,13 @@ async function processMessage(msg, isFromMe) {
           existingLead = await db.findLeadByPhone(rawNumber);
         }
 
+        let savedLead;
         if (existingLead) {
           await db.updateLeadMessage(rawNumber, messageContent, whatsappId, contactName);
+          savedLead = existingLead;
           console.log(`📝 Updated lead: ${rawNumber} (${existingLead.status})`);
         } else {
-          await db.createLead({
+          savedLead = await db.createLead({
             phone: rawNumber,
             name: contactName,
             last_message: messageContent,
@@ -219,6 +221,19 @@ async function processMessage(msg, isFromMe) {
           });
           console.log(`✨ New lead created: ${rawNumber}`);
         }
+
+        // 📜 Append to full message history
+        if (savedLead?.id && messageContent) {
+          await db.appendMessage({
+            leadId: savedLead.id,
+            phone: rawNumber,
+            body: messageContent,
+            direction: isFromMe ? 'out' : 'in',
+            whatsappId,
+            createdAt: msg.messageTimestamp || null
+          });
+        }
+
       } catch (dbError) {
         console.error('⚠️ Database error (non-fatal):', dbError.message);
       }
@@ -474,6 +489,19 @@ app.post('/api/leads/cleanup-duplicates', asyncHandler(async (req, res) => {
   io.emit('leads_updated', updatedLeads);
 
   res.json({ merged, count: merged.length, message: `Merged ${merged.length} duplicate leads` });
+}));
+app.get('/api/leads/:id/messages', asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  const messages = await db.getMessages(req.params.id);
+  res.json(messages);
+}));
+
+// 🗑️ FACTORY RESET — delete ALL leads and messages
+app.delete('/api/leads/all', asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  await db.deleteAllLeads();
+  io.emit('leads_reset', {});
+  res.json({ success: true, message: 'All leads and messages deleted' });
 }));
 
 app.get('/api/stats', asyncHandler(async (req, res) => {

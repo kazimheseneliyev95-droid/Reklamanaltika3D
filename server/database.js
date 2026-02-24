@@ -52,10 +52,23 @@ async function initDb() {
           updated_at TIMESTAMP DEFAULT NOW()
         );
 
+        CREATE TABLE IF NOT EXISTS messages (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          lead_id UUID NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+          phone VARCHAR(30) NOT NULL,
+          body TEXT NOT NULL,
+          direction VARCHAR(10) NOT NULL CHECK (direction IN ('in', 'out')),
+          whatsapp_id VARCHAR(255),
+          created_at TIMESTAMP DEFAULT NOW()
+        );
+
         CREATE INDEX IF NOT EXISTS idx_phone ON leads(phone);
         CREATE INDEX IF NOT EXISTS idx_status ON leads(status);
         CREATE INDEX IF NOT EXISTS idx_created_at ON leads(created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_whatsapp_id ON leads(whatsapp_id);
+        CREATE INDEX IF NOT EXISTS idx_messages_lead_id ON messages(lead_id);
+        CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at ASC);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_wa_id ON messages(whatsapp_id) WHERE whatsapp_id IS NOT NULL;
       `;
 
         await client.query(createTableQuery);
@@ -581,6 +594,60 @@ async function healthCheck() {
 }
 
 /**
+ * Append a single message to the messages table (idempotent via whatsapp_id)
+ */
+async function appendMessage({ leadId, phone, body, direction, whatsappId, createdAt }) {
+    try {
+        const ts = createdAt ? new Date(createdAt * 1000) : new Date();
+        await pool.query(`
+            INSERT INTO messages (lead_id, phone, body, direction, whatsapp_id, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (whatsapp_id) DO NOTHING
+        `, [leadId, phone, body || '', direction, whatsappId || null, ts]);
+    } catch (error) {
+        // Non-fatal - log and continue
+        console.warn('⚠️ appendMessage error:', error.message);
+    }
+}
+
+/**
+ * Get all messages for a lead, oldest first
+ */
+async function getMessages(leadId) {
+    try {
+        const result = await pool.query(
+            'SELECT * FROM messages WHERE lead_id = $1 ORDER BY created_at ASC',
+            [leadId]
+        );
+        return result.rows;
+    } catch (error) {
+        console.error('❌ getMessages error:', error.message);
+        return [];
+    }
+}
+
+/**
+ * Delete ALL leads and messages (Format / Factory Reset)
+ */
+async function deleteAllLeads() {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        await client.query('DELETE FROM messages');
+        await client.query('DELETE FROM leads');
+        await client.query('COMMIT');
+        console.log('🗑️ All leads and messages deleted (factory reset)');
+        return { deleted: true };
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('❌ deleteAllLeads error:', error.message);
+        throw error;
+    } finally {
+        client.release();
+    }
+}
+
+/**
  * Graceful shutdown
  */
 async function closePool() {
@@ -616,7 +683,10 @@ module.exports = {
     updateLeadFields,
     updateLeadValue,
     getLeads,
+    getMessages,
+    appendMessage,
     deleteLead,
+    deleteAllLeads,
     getLeadStats,
     getLeadsByStatus,
     healthCheck,

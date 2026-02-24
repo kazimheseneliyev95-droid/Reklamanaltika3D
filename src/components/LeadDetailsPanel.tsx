@@ -1,12 +1,114 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Lead, LeadStatus } from '../types/crm';
 import {
     X, User, Phone, Package, MessageSquare, Clock, Hash,
     Save, CheckCircle2, TrendingUp, BarChart2, Edit3, Check,
-    Plus
+    Plus, ChevronDown
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { loadCRMSettings } from '../lib/crmSettings';
+import { CrmService } from '../services/CrmService';
+
+// ─── Chat History Sub-component ───────────────────────────────────────────────
+
+interface ChatMessage {
+    id: string;
+    body: string;
+    direction: 'in' | 'out';
+    created_at: string;
+}
+
+function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) {
+    const [messages, setMessages] = useState<ChatMessage[]>([]);
+    const [loading, setLoading] = useState(true);
+    const bottomRef = useRef<HTMLDivElement>(null);
+
+    const loadMessages = useCallback(async () => {
+        if (!serverUrl || !lead.id) { setLoading(false); return; }
+        try {
+            const res = await fetch(`${serverUrl}/api/leads/${lead.id}/messages`);
+            if (res.ok) {
+                const data = await res.json();
+                setMessages(data);
+            }
+        } catch { /* non-fatal */ }
+        finally { setLoading(false); }
+    }, [serverUrl, lead.id]);
+
+    useEffect(() => { loadMessages(); }, [loadMessages]);
+
+    // Auto-scroll to bottom
+    useEffect(() => {
+        if (!loading) bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, [messages, loading]);
+
+    // Live: listen for new socket messages
+    useEffect(() => {
+        const cleanup = CrmService.onLeadUpdated((updated) => {
+            if (updated.id === lead.id || updated.phone === lead.phone) {
+                loadMessages();
+            }
+        });
+        return cleanup;
+    }, [lead.id, lead.phone, loadMessages]);
+
+    if (loading) return (
+        <div className="flex items-center justify-center h-40 text-slate-500 text-sm">
+            <span className="animate-pulse">Yüklənir...</span>
+        </div>
+    );
+
+    return (
+        <div className="flex flex-col h-full">
+            {/* Sticky header */}
+            <div className="px-4 py-2 border-b border-slate-800 flex items-center justify-between shrink-0">
+                <span className="text-xs font-semibold text-slate-400">
+                    {messages.length} mesaj
+                </span>
+                <button onClick={loadMessages} className="text-[10px] text-blue-400 hover:text-blue-300">
+                    ↺ Yenilə
+                </button>
+            </div>
+
+            {/* Message list */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-2">
+                {messages.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-16 text-slate-600 gap-3">
+                        <MessageSquare className="w-10 h-10" />
+                        <p className="text-sm">Hələ heç bir mesaj saxlanılmayıb</p>
+                        <p className="text-xs text-slate-700">Yeni mesajlar avtomatik burada görünəcək</p>
+                    </div>
+                ) : (
+                    messages.map((msg) => {
+                        const isOut = msg.direction === 'out';
+                        const timeStr = new Date(msg.created_at).toLocaleTimeString('az-AZ', { hour: '2-digit', minute: '2-digit' });
+                        const dateStr2 = new Date(msg.created_at).toLocaleDateString('az-AZ', { day: '2-digit', month: 'short' });
+                        return (
+                            <div key={msg.id} className={cn('flex', isOut ? 'justify-end' : 'justify-start')}>
+                                <div className={cn(
+                                    'max-w-[78%] px-3 py-2 rounded-2xl text-sm leading-relaxed',
+                                    isOut
+                                        ? 'bg-emerald-700/80 text-white rounded-br-sm'
+                                        : 'bg-slate-800 text-slate-200 rounded-bl-sm'
+                                )}>
+                                    <p className="whitespace-pre-wrap break-words">{msg.body}</p>
+                                    <p className={cn(
+                                        'text-[10px] mt-1 text-right',
+                                        isOut ? 'text-emerald-300/70' : 'text-slate-500'
+                                    )}>
+                                        {dateStr2} · {timeStr} · {isOut ? '📤' : '📥'}
+                                    </p>
+                                </div>
+                            </div>
+                        );
+                    })
+                )}
+                <div ref={bottomRef} />
+            </div>
+        </div>
+    );
+}
+
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -34,8 +136,9 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
     const [activeTab, setActiveTab] = useState<'feed' | 'chat' | 'stats'>('feed');
     const [isSaving, setIsSaving] = useState(false);
     const [savedOk, setSavedOk] = useState(false);
-    const [editingNote, setEditingNote] = useState(false);
     const feedRef = useRef<HTMLDivElement>(null);
+    const serverUrl = CrmService.getServerUrl();
+
 
     // ─── Custom fields from CRM settings ─────────────────────────────────────
     const [crmSettings] = useState(() => loadCRMSettings());
@@ -434,69 +537,11 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                 </div>
                             )}
 
-                            {/* ── TAB: CHAT / NOTES ── */}
+                            {/* ── TAB: CHAT History ── */}
                             {activeTab === 'chat' && (
-                                <div className="p-4 sm:p-6 space-y-4 max-w-2xl mx-auto w-full">
-                                    <div className="flex items-center justify-between mb-2">
-                                        <h3 className="text-sm font-semibold text-slate-300">Yazışmalar / Qeydlər</h3>
-                                        <button
-                                            onClick={() => setEditingNote(!editingNote)}
-                                            className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 transition-colors px-2 py-1 rounded bg-blue-900/20 border border-blue-900/40"
-                                        >
-                                            <Edit3 className="w-3 h-3" /> {editingNote ? 'Bağla' : 'Redaktə et'}
-                                        </button>
-                                    </div>
-
-                                    {editingNote ? (
-                                        <div className="bg-slate-900 border border-slate-700 rounded-xl overflow-hidden">
-                                            <textarea
-                                                name="note"
-                                                value={formData.note}
-                                                onChange={handleChange}
-                                                rows={8}
-                                                className="w-full bg-transparent text-slate-200 text-sm p-4 resize-none focus:outline-none"
-                                                placeholder="Qeydinizi bura yazın..."
-                                            />
-                                            <div className="flex justify-end px-3 py-2 border-t border-slate-700 bg-slate-900/80">
-                                                <button
-                                                    onClick={handleSave}
-                                                    disabled={isSaving}
-                                                    className="text-xs bg-blue-600 hover:bg-blue-500 px-3 py-1.5 rounded-lg text-white font-medium flex items-center gap-1 transition-colors"
-                                                >
-                                                    <Save className="w-3 h-3" /> Saxla
-                                                </button>
-                                            </div>
-                                        </div>
-                                    ) : (
-                                        <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-4">
-                                            {formData.note ? (
-                                                <p className="text-slate-300 text-sm whitespace-pre-wrap leading-relaxed">{formData.note}</p>
-                                            ) : (
-                                                <div className="flex flex-col items-center py-8 gap-2 text-slate-600">
-                                                    <Edit3 className="w-8 h-8" />
-                                                    <p className="text-sm">Müştəri qeydi yoxdur</p>
-                                                    <button
-                                                        onClick={() => setEditingNote(true)}
-                                                        className="text-xs text-blue-400 hover:underline mt-1"
-                                                    >
-                                                        + Qeyd əlavə et
-                                                    </button>
-                                                </div>
-                                            )}
-                                        </div>
-                                    )}
-
-                                    {/* WhatsApp source message (read-only) */}
-                                    {lead.source_message && (
-                                        <div className="mt-4">
-                                            <p className="text-[10px] font-semibold text-slate-500 uppercase mb-2">WhatsApp Mesajı</p>
-                                            <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-4">
-                                                <p className="text-slate-300 text-sm whitespace-pre-wrap leading-relaxed">{lead.source_message}</p>
-                                            </div>
-                                        </div>
-                                    )}
-                                </div>
+                                <ChatHistoryTab lead={lead} serverUrl={serverUrl} />
                             )}
+
 
                             {/* ── TAB: STATS ── */}
                             {activeTab === 'stats' && (

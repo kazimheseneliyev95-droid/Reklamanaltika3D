@@ -2,13 +2,74 @@ import React, { useState, useEffect } from 'react';
 import {
     Settings, X, Plus, Trash2, GripVertical,
     Type, Hash, List, ChevronDown, ChevronUp, Save, Check,
-    Zap, ToggleLeft, ToggleRight
+    Zap, ToggleLeft, ToggleRight, AlertTriangle
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import {
     CustomField, CRMSettings, FieldType, PipelineStage, AutoRule,
     loadCRMSettings, saveCRMSettings, generateFieldId
 } from '../lib/crmSettings';
+import { CrmService } from '../services/CrmService';
+
+// ─── Format (Factory Reset) Button ────────────────────────────────────────────
+function FormatButton({ serverUrl, onClose }: { serverUrl: string; onClose: () => void }) {
+    const [confirm, setConfirm] = useState(false);
+    const [busy, setBusy] = useState(false);
+
+    const handleReset = async () => {
+        setBusy(true);
+        try {
+            if (serverUrl) {
+                await fetch(`${serverUrl}/api/leads/all`, { method: 'DELETE' });
+            }
+            // Also wipe localStorage
+            Object.keys(localStorage).forEach(k => {
+                if (k.includes('lead') || k.includes('crm')) localStorage.removeItem(k);
+            });
+            onClose();
+            window.location.reload();
+        } catch (e) {
+            console.error('Reset failed', e);
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    if (confirm) return (
+        <div className="rounded-lg border border-red-900/50 bg-red-950/20 p-3 space-y-2">
+            <p className="text-xs text-red-400 font-semibold flex items-center gap-1.5">
+                <AlertTriangle className="w-3.5 h-3.5" />
+                Bütün leadlar və yazışmalar silinəcək! Geri qaytarıla bilməz.
+            </p>
+            <div className="flex gap-2">
+                <button
+                    onClick={handleReset}
+                    disabled={busy}
+                    className="flex-1 py-1.5 bg-red-600 hover:bg-red-500 text-white text-xs font-bold rounded-lg transition-colors disabled:opacity-60"
+                >
+                    {busy ? 'Silinir...' : 'Bəli, sil!'}
+                </button>
+                <button
+                    onClick={() => setConfirm(false)}
+                    className="flex-1 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold rounded-lg transition-colors"
+                >
+                    Ləğv et
+                </button>
+            </div>
+        </div>
+    );
+
+    return (
+        <button
+            onClick={() => setConfirm(true)}
+            className="w-full py-2 rounded-lg text-xs font-semibold text-red-500 hover:text-red-400 border border-red-900/30 hover:border-red-800/60 bg-transparent hover:bg-red-950/20 flex items-center justify-center gap-1.5 transition-colors"
+        >
+            <Trash2 className="w-3.5 h-3.5" />
+            Formatla (Bütün Datanı Sil)
+        </button>
+    );
+}
+
 
 interface CRMSettingsPanelProps {
     onClose: () => void;
@@ -33,6 +94,8 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
     const [settings, setSettings] = useState<CRMSettings>(loadCRMSettings());
     const [saved, setSaved] = useState(false);
     const [activeTab, setActiveTab] = useState<Tab>('rules');
+    const serverUrl = CrmService.getServerUrl();
+
 
     // Fields UI state
     const [expandedFieldId, setExpandedFieldId] = useState<string | null>(null);
@@ -445,8 +508,8 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
 
                 </div>
 
-                {/* Footer Save */}
-                <div className="p-4 border-t border-white/5 bg-[#111827]/60 shrink-0">
+                {/* Footer */}
+                <div className="p-4 border-t border-white/5 bg-[#111827]/60 shrink-0 space-y-2">
                     <button
                         onClick={handleSave}
                         className={cn(
@@ -456,7 +519,11 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
                     >
                         {saved ? <><Check className="w-4 h-4" /> Saxlandı!</> : <><Save className="w-4 h-4" /> Ayarları Saxla</>}
                     </button>
+
+                    {/* Factory Reset */}
+                    <FormatButton serverUrl={serverUrl} onClose={onClose} />
                 </div>
+
             </div>
 
             <style>{`
