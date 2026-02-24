@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react';
 import { Lead, LeadStatus, DateRange } from '../types/crm';
 import { CrmService } from '../services/CrmService';
-import { loadCRMSettings } from '../lib/crmSettings';
+import { loadCRMSettings, applyAutoRules } from '../lib/crmSettings';
 
 interface AppContextType {
   leads: Lead[];
@@ -198,27 +198,33 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const stages = settings.pipelineStages;
       const defaultStatus = stages.length > 0 ? stages[0].id : 'new';
 
-      // 1. Auto-Sort Logic (The "Brain") - with better patterns
+      // Apply user-configured auto-rules
       let status: LeadStatus = defaultStatus;
-      const msg = leadData.last_message?.toLowerCase() || '';
+      let autoValue: number | null = null;
+      const message = leadData.last_message || '';
 
-      // Azerbaijani and English keywords
-      const priceKeywords = ['qiymət', 'price', 'neçəyə', 'ne qeder', 'haqqında'];
-      const orderKeywords = ['sifariş', 'almaq', 'buy', 'istəyirəm', 'gətirmək', 'var'];
-
-      if (priceKeywords.some(k => msg.includes(k))) {
-        // Find if potential or a custom alternative exists, else stay default
-        const hasPotential = stages.find(s => s.id === 'potential');
-        if (hasPotential) status = 'potential';
-      } else if (orderKeywords.some(k => msg.includes(k))) {
-        const hasWon = stages.find(s => s.id === 'won');
-        if (hasWon) status = 'won';
+      const ruleMatch = applyAutoRules(message, settings.autoRules);
+      if (ruleMatch) {
+        // Verify the target stage still exists before applying
+        const stageExists = stages.find(s => s.id === ruleMatch.targetStage);
+        if (stageExists) {
+          status = ruleMatch.targetStage;
+          autoValue = ruleMatch.extractedValue;
+          console.log(`🤖 Auto-rule matched → stage: ${status}, value: ${autoValue}`);
+        }
       }
 
-      // 2. Create Lead
-      const newLead = await CrmService.addLead({ ...leadData, status });
+      // Build lead data, auto-fill value if rule says so
+      const leadToCreate: typeof leadData = {
+        ...leadData,
+        status,
+        ...(autoValue !== null ? { value: autoValue } : {}),
+      };
 
-      // 3. Update State - check if within current date range
+      // Create Lead
+      const newLead = await CrmService.addLead(leadToCreate);
+
+      // Update State - check if within current date range
       const inRange = !dateRange.start || new Date(newLead.created_at) >= new Date(dateRange.start);
       const inRangeEnd = !dateRange.end || new Date(newLead.created_at) <= new Date(dateRange.end);
 
