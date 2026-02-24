@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react';
 import { Lead, LeadStatus, DateRange } from '../types/crm';
 import { CrmService } from '../services/CrmService';
+import { loadCRMSettings } from '../lib/crmSettings';
 
 interface AppContextType {
   leads: Lead[];
@@ -132,12 +133,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       console.log('   Message:', data.message);
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
+      const settings = loadCRMSettings();
+      const defaultStatus = settings.pipelineStages.length > 0 ? settings.pipelineStages[0].id : 'new';
+
       const testLead: Lead = {
         id: 'test-' + Date.now(),
         phone: data.phone,
         name: `[TEST] ${data.name}`,
         last_message: data.message,
-        status: 'new',
+        status: defaultStatus,
         source: 'whatsapp',
         value: 0,
         created_at: data.timestamp || new Date().toISOString(),
@@ -190,8 +194,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const addLead = async (leadData: Omit<Lead, 'id' | 'created_at' | 'updated_at'>) => {
     try {
+      const settings = loadCRMSettings();
+      const stages = settings.pipelineStages;
+      const defaultStatus = stages.length > 0 ? stages[0].id : 'new';
+
       // 1. Auto-Sort Logic (The "Brain") - with better patterns
-      let status: LeadStatus = 'new';
+      let status: LeadStatus = defaultStatus;
       const msg = leadData.last_message?.toLowerCase() || '';
 
       // Azerbaijani and English keywords
@@ -199,9 +207,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const orderKeywords = ['sifariş', 'almaq', 'buy', 'istəyirəm', 'gətirmək', 'var'];
 
       if (priceKeywords.some(k => msg.includes(k))) {
-        status = 'potential';
+        // Find if potential or a custom alternative exists, else stay default
+        const hasPotential = stages.find(s => s.id === 'potential');
+        if (hasPotential) status = 'potential';
       } else if (orderKeywords.some(k => msg.includes(k))) {
-        status = 'won';
+        const hasWon = stages.find(s => s.id === 'won');
+        if (hasWon) status = 'won';
       }
 
       // 2. Create Lead

@@ -3,10 +3,10 @@ import { Lead, LeadStatus } from '../types/crm';
 import {
     X, User, Phone, Package, MessageSquare, Clock, Hash,
     Save, CheckCircle2, TrendingUp, BarChart2, Edit3, Check,
-    AlertCircle, Award, XCircle, Plus
+    Plus
 } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { loadCRMSettings, CustomField } from '../lib/crmSettings';
+import { loadCRMSettings } from '../lib/crmSettings';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -17,14 +17,7 @@ interface LeadDetailsPanelProps {
     onUpdateStatus: (id: string, status: LeadStatus) => void;
 }
 
-// ─── Status Config ────────────────────────────────────────────────────────────
-
-const STATUSES: { id: LeadStatus; label: string; accent: string; bg: string; icon: React.ReactNode }[] = [
-    { id: 'new', label: 'Yeni', accent: 'border-blue-500 text-blue-400', bg: 'bg-blue-500', icon: <AlertCircle className="w-3 h-3" /> },
-    { id: 'potential', label: 'Kvalifikasiya', accent: 'border-purple-500 text-purple-400', bg: 'bg-purple-500', icon: <TrendingUp className="w-3 h-3" /> },
-    { id: 'won', label: 'Satış', accent: 'border-green-500 text-green-400', bg: 'bg-green-500', icon: <Award className="w-3 h-3" /> },
-    { id: 'lost', label: 'Uğursuz', accent: 'border-slate-600 text-slate-400', bg: 'bg-slate-600', icon: <XCircle className="w-3 h-3" /> },
-];
+// Status colors dynamically generated inside the component
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
@@ -45,7 +38,34 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
     const feedRef = useRef<HTMLDivElement>(null);
 
     // ─── Custom fields from CRM settings ─────────────────────────────────────
-    const [customFields] = useState<CustomField[]>(() => loadCRMSettings().customFields);
+    const [crmSettings] = useState(() => loadCRMSettings());
+    const customFields = crmSettings.customFields;
+    const pipelineStages = crmSettings.pipelineStages;
+
+    const STATUSES = React.useMemo(() => pipelineStages.map(stage => {
+        const colors: Record<string, { accent: string, bg: string }> = {
+            blue: { accent: 'border-blue-500 text-blue-400', bg: 'bg-blue-500' },
+            purple: { accent: 'border-purple-500 text-purple-400', bg: 'bg-purple-500' },
+            green: { accent: 'border-green-500 text-green-400', bg: 'bg-green-500' },
+            emerald: { accent: 'border-emerald-500 text-emerald-400', bg: 'bg-emerald-500' },
+            teal: { accent: 'border-teal-500 text-teal-400', bg: 'bg-teal-500' },
+            red: { accent: 'border-red-500 text-red-400', bg: 'bg-red-500' },
+            orange: { accent: 'border-orange-500 text-orange-400', bg: 'bg-orange-500' },
+            amber: { accent: 'border-amber-500 text-amber-400', bg: 'bg-amber-500' },
+            yellow: { accent: 'border-yellow-500 text-yellow-400', bg: 'bg-yellow-500' },
+            slate: { accent: 'border-slate-600 text-slate-400', bg: 'bg-slate-600' },
+            zinc: { accent: 'border-zinc-600 text-zinc-400', bg: 'bg-zinc-600' },
+        };
+        const theme = colors[stage.color] || colors.slate;
+        return {
+            id: stage.id,
+            label: stage.label,
+            accent: theme.accent,
+            bg: theme.bg,
+            icon: <div className={cn("w-2.5 h-2.5 rounded-full shadow-sm", theme.bg)} />
+        };
+    }), [pipelineStages]);
+
     const [customValues, setCustomValues] = useState<Record<string, string>>(() => {
         // Try to read saved extra data from lead object
         const extra = (lead as any).extra_data;

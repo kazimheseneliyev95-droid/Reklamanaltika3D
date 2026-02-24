@@ -10,6 +10,7 @@ import { cn, formatCurrency } from '../lib/utils';
 import { CrmService } from '../services/CrmService';
 import { LeadDetailsPanel } from '../components/LeadDetailsPanel';
 import { CRMSettingsPanel } from '../components/CRMSettingsPanel';
+import { loadCRMSettings } from '../lib/crmSettings';
 
 const TEST_MODE_ACTIVE = true; // Toggle for visual debug indicators
 
@@ -119,12 +120,24 @@ export default function CRMPage() {
     });
   };
 
-  const columns: { id: LeadStatus; title: string; color: string; icon: any }[] = [
-    { id: 'new', title: 'Yeni', color: 'blue', icon: <MessageSquare className="w-4 h-4" /> },
-    { id: 'potential', title: 'Kvalifikasiya', color: 'purple', icon: <UserPlus className="w-4 h-4" /> },
-    { id: 'won', title: 'Satış', color: 'green', icon: <CheckCircle className="w-4 h-4" /> },
-    { id: 'lost', title: 'Uğursuz', color: 'slate', icon: <XCircle className="w-4 h-4" /> },
-  ];
+  const { pipelineStages } = loadCRMSettings();
+
+  const getIconForColor = (color: string) => {
+    switch (color) {
+      case 'blue': return <MessageSquare className="w-4 h-4" />;
+      case 'purple': return <UserPlus className="w-4 h-4" />;
+      case 'green': return <CheckCircle className="w-4 h-4" />;
+      case 'slate': return <XCircle className="w-4 h-4" />;
+      default: return <div className={cn("w-3 h-3 rounded-full", `bg-${color}-500`)} />;
+    }
+  };
+
+  const columns: { id: LeadStatus; title: string; color: string; icon: React.ReactNode }[] = pipelineStages.map(stage => ({
+    id: stage.id,
+    title: stage.label,
+    color: stage.color,
+    icon: getIconForColor(stage.color)
+  }));
 
   return (
     <div className="p-3 sm:p-6 max-w-[1600px] mx-auto h-full flex flex-col font-sans space-y-3 sm:space-y-6">

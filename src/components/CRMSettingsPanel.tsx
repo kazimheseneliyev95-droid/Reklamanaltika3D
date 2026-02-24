@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import {
-    CustomField, CRMSettings, FieldType,
+    CustomField, CRMSettings, FieldType, PipelineStage,
     loadCRMSettings, saveCRMSettings, generateFieldId
 } from '../lib/crmSettings';
 
@@ -68,6 +68,36 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
         }));
     };
 
+    const addStage = () => {
+        const newStage: PipelineStage = {
+            id: generateFieldId(),
+            label: 'Yeni Sütun',
+            color: 'slate',
+        };
+        setSettings(prev => ({
+            ...prev,
+            pipelineStages: [...prev.pipelineStages, newStage]
+        }));
+    };
+
+    const updateStage = (id: string, updates: Partial<PipelineStage>) => {
+        setSettings(prev => ({
+            ...prev,
+            pipelineStages: prev.pipelineStages.map(s => s.id === id ? { ...s, ...updates } : s)
+        }));
+    };
+
+    const removeStage = (id: string) => {
+        if (settings.pipelineStages.length <= 1) {
+            alert("Ən azı 1 sütun olmalıdır!");
+            return;
+        }
+        setSettings(prev => ({
+            ...prev,
+            pipelineStages: prev.pipelineStages.filter(s => s.id !== id)
+        }));
+    };
+
     const addOption = (fieldId: string) => {
         const text = (newOptionText[fieldId] || '').trim();
         if (!text) return;
@@ -109,12 +139,73 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
                 {/* Content */}
                 <div className="flex-1 overflow-y-auto p-5 space-y-6">
 
+                    {/* Section: Pipeline Stages (Kanban Columns) */}
+                    <section>
+                        <div className="flex items-center justify-between mb-3">
+                            <div>
+                                <h2 className="text-sm font-bold text-white">Kanban Sütunları</h2>
+                                <p className="text-xs text-slate-500 mt-0.5">CRM lövhəsindəki satış mərhələləri</p>
+                            </div>
+                        </div>
+
+                        <div className="space-y-2">
+                            {settings.pipelineStages.map((stage) => (
+                                <div key={stage.id} className="flex items-center gap-3 bg-slate-900 border border-slate-800 rounded-xl px-4 py-3">
+                                    <GripVertical className="w-4 h-4 text-slate-600 cursor-grab shrink-0" />
+
+                                    <input
+                                        value={stage.label}
+                                        onChange={e => updateStage(stage.id, { label: e.target.value })}
+                                        className="flex-1 bg-transparent text-white text-sm font-bold focus:outline-none border-b border-transparent focus:border-slate-600 pb-0.5 min-w-0"
+                                    />
+
+                                    <select
+                                        value={stage.color}
+                                        onChange={e => updateStage(stage.id, { color: e.target.value })}
+                                        className="bg-slate-800 border border-slate-700 text-slate-300 text-xs rounded-lg px-2 py-1 focus:outline-none appearance-none cursor-pointer"
+                                    >
+                                        <option value="blue">Mavi</option>
+                                        <option value="purple">Bənövşəyi</option>
+                                        <option value="green">Yaşıl</option>
+                                        <option value="emerald">Zümrüd</option>
+                                        <option value="teal">Firuzəyi</option>
+                                        <option value="red">Qırmızı</option>
+                                        <option value="orange">Narıncı</option>
+                                        <option value="amber">Kəhrəba</option>
+                                        <option value="yellow">Sarı</option>
+                                        <option value="slate">Boz</option>
+                                        <option value="zinc">Tünd Boz</option>
+                                    </select>
+
+                                    <button
+                                        onClick={() => removeStage(stage.id)}
+                                        className="p-1 text-slate-600 hover:text-red-400 transition-colors shrink-0"
+                                    >
+                                        <Trash2 className="w-4 h-4" />
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+
+                        <div className="mt-3">
+                            <button
+                                onClick={addStage}
+                                className="flex items-center gap-1.5 px-3 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-700 border-dashed text-slate-400 hover:text-white rounded-lg text-xs font-medium transition-colors"
+                            >
+                                <Plus className="w-3 h-3" />
+                                Yeni Sütun əlavə et
+                            </button>
+                        </div>
+                    </section>
+
+                    <hr className="border-slate-800" />
+
                     {/* Section: Custom Fields */}
                     <section>
                         <div className="flex items-center justify-between mb-3">
                             <div>
                                 <h2 className="text-sm font-bold text-white">Xüsusi Sahələr</h2>
-                                <p className="text-xs text-slate-500 mt-0.5">Lead panelinde gösterecek ek saheler</p>
+                                <p className="text-xs text-slate-500 mt-0.5">Lead panelində içəridə görünəcək əlavə məlumatlar</p>
                             </div>
                         </div>
 

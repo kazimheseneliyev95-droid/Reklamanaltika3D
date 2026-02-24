@@ -1,4 +1,4 @@
-export type LeadStatus = 'new' | 'potential' | 'won' | 'lost';
+export type LeadStatus = string; // Was: 'new' | 'potential' | 'won' | 'lost';
 
 export interface Lead {
   id: string;
