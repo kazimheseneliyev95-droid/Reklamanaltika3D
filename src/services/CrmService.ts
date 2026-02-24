@@ -214,10 +214,9 @@ class CrmServiceImpl {
     this.socket.on('new_message', async (data: any) => {
       console.log('⚡ SOCKET: new_message received', data);
 
-      // 🆕 Improved De-duplication with cache
       const now = Date.now();
 
-      // Check if already processed by ID
+      // De-dup by whatsapp_id
       if (data.whatsapp_id) {
         const lastProcessed = this.processedMessageIds.get(data.whatsapp_id);
         if (lastProcessed && (now - lastProcessed) < this.PROCESSED_MESSAGES_TTL) {
@@ -226,33 +225,38 @@ class CrmServiceImpl {
         }
       }
 
-      // Check against cached leads
-      const cachedLead = this.leadsCache.find(l =>
-        (l as any).whatsapp_id === data.whatsapp_id ||
-        (l.phone === data.phone && l.last_message === data.message)
-      );
+      // Fuzzy phone-based dedup (last 9 digits)
+      const incomingPhone = String(data.phone || '').replace(/\D/g, '');
+      const incomingSuffix9 = incomingPhone.slice(-9);
 
-      if (cachedLead) {
-        // If we have a "fast" emit and this is the "enriched" one, update the name
-        if (!data.is_fast_emit && (cachedLead as any).is_fast_emit) {
-          console.log('🔄 Updating "fast" lead with enriched data:', data.name);
-          const updatedLead = { ...cachedLead, name: data.name, is_fast_emit: false };
-          await this.updateLead(updatedLead.id, updatedLead);
-          this.notifyMessageListeners(updatedLead);
-          return;
-        }
-        console.log('⏭️ Skipping duplicate message from cache:', data.whatsapp_id);
+      const cachedLead = this.leadsCache.find(l => {
+        const cachedPhone = String(l.phone || '').replace(/\D/g, '');
+        const cachedSuffix9 = cachedPhone.slice(-9);
+        // Match by whatsapp_id OR fuzzy phone suffix
+        return (l as any).whatsapp_id === data.whatsapp_id ||
+          (incomingSuffix9.length >= 7 && cachedSuffix9 === incomingSuffix9);
+      });
+
+      if (cachedLead && (cachedLead as any).whatsapp_id === data.whatsapp_id && data.is_fast_emit === false && (cachedLead as any).is_fast_emit) {
+        const updatedLead = { ...cachedLead, name: data.name, is_fast_emit: false };
+        await this.updateLead(updatedLead.id, updatedLead);
+        this.notifyMessageListeners(updatedLead);
         return;
       }
 
-      // Convert incoming data to Lead format
+      // Build lead — carry forward existing value and status from cache if present
+      const existingValue = cachedLead?.value ?? 0;
+      const existingStatus = cachedLead?.status ?? 'new';
+
       const newLead: Omit<Lead, 'id' | 'created_at' | 'updated_at'> = {
         phone: data.phone,
-        name: data.name || "WhatsApp User",
+        name: data.name || 'WhatsApp User',
         last_message: data.message,
-        status: 'new',
+        // Preserve existing status — let auto-rules in Store.tsx override if needed
+        status: existingStatus as any,
         source: 'whatsapp',
-        value: 0,
+        // NEVER clear a previously-set value: keep the larger of the two
+        value: existingValue,
         whatsapp_id: data.whatsapp_id,
         is_fast_emit: data.is_fast_emit
       };
@@ -262,14 +266,13 @@ class CrmServiceImpl {
         this.processedMessageIds.set(data.whatsapp_id, now);
       }
 
-      // Clean up old processed messages
       this.cleanupOldProcessedMessages();
 
-      // Save lead
       const savedLead = await this.addLead(newLead);
       console.log('✨ New lead saved:', savedLead.phone);
       this.notifyMessageListeners(savedLead);
     });
+
 
     this.socket.on('lead_updated', async (updatedLead: Lead) => {
       console.log('🔄 SOCKET: lead_updated received', updatedLead);
@@ -490,8 +493,6 @@ class CrmServiceImpl {
         if (response.ok) {
           const savedLead = await response.json();
           console.log('✅ Lead saved to database:', savedLead.phone);
-
-          // Update cache and localStorage
           this.updateCacheAndStorage(savedLead);
           return savedLead;
         }
@@ -503,17 +504,26 @@ class CrmServiceImpl {
     // Fallback: localStorage only
     const raw = localStorage.getItem(STORAGE_KEY);
     const allLeads: Lead[] = raw ? JSON.parse(raw) : [];
-    const existingIndex = allLeads.findIndex(l => l.phone === lead.phone);
+
+    // Fuzzy phone match for localStorage dedup (last 9 digits)
+    const incomingPhone = String(lead.phone || '').replace(/\D/g, '');
+    const incomingSuffix = incomingPhone.slice(-9);
+    const existingIndex = allLeads.findIndex(l => {
+      const p = String(l.phone || '').replace(/\D/g, '');
+      return p === incomingPhone || (incomingSuffix.length >= 7 && p.slice(-9) === incomingSuffix);
+    });
 
     if (existingIndex !== -1) {
       console.log(`♻️ Upserting existing lead (localStorage): ${lead.phone}`);
       const existingLead = allLeads[existingIndex];
       existingLead.last_message = lead.last_message;
       existingLead.updated_at = new Date().toISOString();
-      if (lead.name) existingLead.name = lead.name;
+      if (lead.name && lead.name !== 'WhatsApp User') existingLead.name = lead.name;
       if (lead.source_contact_name) existingLead.source_contact_name = lead.source_contact_name;
       if (lead.source_message) existingLead.source_message = lead.source_message;
       if (lead.whatsapp_id) existingLead.whatsapp_id = lead.whatsapp_id;
+      // Preserve value — only overwrite if the incoming has a larger value
+      if (lead.value && lead.value > (existingLead.value || 0)) existingLead.value = lead.value;
       allLeads.splice(existingIndex, 1);
       const updatedList = [existingLead, ...allLeads];
       localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedList));

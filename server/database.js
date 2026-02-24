@@ -174,7 +174,8 @@ async function createLead(data) {
           source_message = COALESCE(EXCLUDED.source_message, leads.source_message),
           source_contact_name = COALESCE(EXCLUDED.source_contact_name, leads.source_contact_name),
           whatsapp_id = COALESCE(EXCLUDED.whatsapp_id, leads.whatsapp_id),
-          value = COALESCE(EXCLUDED.value, leads.value),
+        -- Only overwrite value if the new value is explicitly set (non-zero)
+          value = COALESCE(NULLIF(EXCLUDED.value, 0), leads.value),
           product_name = COALESCE(EXCLUDED.product_name, leads.product_name),
           updated_at = NOW()
         RETURNING *;
