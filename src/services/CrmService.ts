@@ -531,16 +531,24 @@ class CrmServiceImpl {
 
   async updateLead(id: string, updates: Partial<Lead>): Promise<void> {
     // Update database if available
-    if (this.serverUrl && updates.status) {
+    if (this.serverUrl) {
+      const isStatusOnly = updates.status && Object.keys(updates).length === 1;
+
       try {
-        const response = await fetch(`${this.serverUrl}/api/leads/${id}/status`, {
+        const endpoint = isStatusOnly
+          ? `${this.serverUrl}/api/leads/${id}/status`
+          : `${this.serverUrl}/api/leads/${id}`;
+
+        const response = await fetch(endpoint, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status: updates.status })
+          body: JSON.stringify(isStatusOnly ? { status: updates.status } : updates)
         });
 
         if (response.ok) {
-          console.log('✅ Lead status updated in database');
+          console.log(`✅ Lead ${isStatusOnly ? 'status' : 'fields'} updated in database and broadcasted`);
+        } else {
+          console.warn('⚠️ Server returned non-ok status for update');
         }
       } catch (error) {
         console.warn('⚠️ Failed to update database:', error);

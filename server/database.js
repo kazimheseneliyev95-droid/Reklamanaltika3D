@@ -299,6 +299,70 @@ async function updateLeadStatus(id, status) {
 }
 
 /**
+ * Update multiple fields of a lead (from UI Edit modal)
+ */
+async function updateLeadFields(id, updates) {
+    const client = await pool.connect();
+
+    try {
+        await client.query('BEGIN');
+
+        const fields = [];
+        const values = [];
+        let paramCount = 1;
+
+        if (updates.name !== undefined) {
+            fields.push(`name = $${paramCount++}`);
+            values.push(updates.name);
+        }
+        if (updates.last_message !== undefined) {
+            fields.push(`last_message = $${paramCount++}`);
+            values.push(updates.last_message);
+        }
+        if (updates.product_name !== undefined) {
+            fields.push(`product_name = $${paramCount++}`);
+            values.push(updates.product_name);
+        }
+        if (updates.value !== undefined) {
+            const validValue = validateValue(updates.value);
+            fields.push(`value = $${paramCount++}`);
+            values.push(validValue);
+        }
+
+        if (fields.length === 0) {
+            await client.query('ROLLBACK');
+            return null;
+        }
+
+        fields.push(`updated_at = NOW()`);
+        values.push(id);
+
+        const query = `
+        UPDATE leads
+        SET ${fields.join(', ')}
+        WHERE id = $${paramCount}
+        RETURNING *;
+      `;
+
+        const result = await client.query(query, values);
+        await client.query('COMMIT');
+
+        if (result.rows.length === 0) {
+            console.warn(`⚠️ No lead found to update fields: ${id}`);
+            return null;
+        }
+
+        return result.rows[0];
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('❌ Error updating lead fields:', error.message);
+        throw error;
+    } finally {
+        client.release();
+    }
+}
+
+/**
  * Update lead value
  */
 async function updateLeadValue(id, value) {
@@ -515,6 +579,7 @@ module.exports = {
     findLeadByWhatsAppId,
     updateLeadMessage,
     updateLeadStatus,
+    updateLeadFields,
     updateLeadValue,
     getLeads,
     deleteLead,

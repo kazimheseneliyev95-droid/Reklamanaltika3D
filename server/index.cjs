@@ -393,6 +393,14 @@ app.put('/api/leads/:id/status', asyncHandler(async (req, res) => {
   res.json(lead);
 }));
 
+app.put('/api/leads/:id', asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  const lead = await db.updateLeadFields(req.params.id, req.body);
+  if (!lead) return res.status(404).json({ error: 'Lead not found' });
+  io.emit('lead_updated', lead);
+  res.json(lead);
+}));
+
 app.delete('/api/leads/:id', asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   const lead = await db.deleteLead(req.params.id);
