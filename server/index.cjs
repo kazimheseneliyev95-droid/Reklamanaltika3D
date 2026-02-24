@@ -230,7 +230,20 @@ async function startWhatsAppClient() {
   console.log('\n🚀 STARTING WHATSAPP CLIENT (Baileys)...');
 
   try {
-    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+    let state, saveCreds;
+    if (process.env.DATABASE_URL && db && db.pool) {
+      console.log('📦 Using PostgreSQL for Baileys Auth State...');
+      const usePostgresAuthState = require('./postgresAuthState.cjs');
+      const auth = await usePostgresAuthState(db.pool);
+      state = auth.state;
+      saveCreds = auth.saveCreds;
+    } else {
+      console.log('📁 Using Local File System for Baileys Auth State...');
+      const auth = await useMultiFileAuthState(AUTH_DIR);
+      state = auth.state;
+      saveCreds = auth.saveCreds;
+    }
+
     const { version, isLatest } = await fetchLatestBaileysVersion();
     console.log(`using WA v${version.join('.')}, isLatest: ${isLatest}`);
 
