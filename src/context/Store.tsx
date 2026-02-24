@@ -116,6 +116,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
     cleanupFunctions.push(cleanupLeadUpdated);
 
+    // Listen for lead deletions
+    const cleanupLeadDeleted = CrmService.onLeadDeleted((deletedLeadId) => {
+      console.log('🗑️ LEAD DELETED IN UI:', deletedLeadId);
+      setLeads(prev => prev.filter(l => l.id !== deletedLeadId));
+    });
+    cleanupFunctions.push(cleanupLeadDeleted);
+
     // 🧪 TEST MODE LISTENER
     const cleanupTestMessage = CrmService.onTestMessage((data: any) => {
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');

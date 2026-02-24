@@ -145,6 +145,7 @@ class CrmServiceImpl {
     this.socket.off('crm:health_check');
     this.socket.off('new_message');
     this.socket.off('lead_updated');
+    this.socket.off('lead_deleted');
     this.socket.off('connect');
     this.socket.off('connect_error');
     this.socket.off('disconnect');
@@ -296,6 +297,18 @@ class CrmServiceImpl {
         this.notifyLeadUpdateListeners(updatedLead);
       }
     });
+
+    this.socket.on('lead_deleted', (id: string) => {
+      console.log('🗑️ SOCKET: lead_deleted received', id);
+
+      const raw = localStorage.getItem(STORAGE_KEY);
+      const allLeads: Lead[] = raw ? JSON.parse(raw) : [];
+      const updated = allLeads.filter(l => l.id !== id);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+
+      this.leadsCache = this.leadsCache.filter(l => l.id !== id);
+      this.notifyLeadDeletedListeners(id);
+    });
   }
 
   // 🆕 Clean up old processed message IDs
@@ -309,12 +322,18 @@ class CrmServiceImpl {
   }
 
   // 🆕 Helper methods to notify listeners
+  private leadDeletedListeners: Map<string, (id: string) => void> = new Map();
+
   private notifyMessageListeners(lead: Lead) {
     this.messageListeners.forEach(cb => cb(lead));
   }
 
   private notifyLeadUpdateListeners(lead: Lead) {
     this.leadUpdateListeners.forEach(cb => cb(lead));
+  }
+
+  private notifyLeadDeletedListeners(id: string) {
+    this.leadDeletedListeners.forEach(cb => cb(id));
   }
 
   private notifyTestMessageListeners(data: any) {
@@ -350,6 +369,15 @@ class CrmServiceImpl {
 
     return () => {
       this.leadUpdateListeners.delete(id);
+    };
+  }
+
+  onLeadDeleted(cb: (id: string) => void): () => void {
+    const listenerId = `delete-${this.listenerIdCounter++}`;
+    this.leadDeletedListeners.set(listenerId, cb);
+
+    return () => {
+      this.leadDeletedListeners.delete(listenerId);
     };
   }
 
@@ -576,6 +604,19 @@ class CrmServiceImpl {
   }
 
   async deleteLead(id: string): Promise<void> {
+    if (this.serverUrl) {
+      try {
+        const response = await fetch(`${this.serverUrl}/api/leads/${id}`, { method: 'DELETE' });
+        if (response.ok) {
+          console.log(`✅ Lead ${id} deleted from database`);
+        } else {
+          console.warn(`⚠️ Failed to delete lead from database: ${response.status}`);
+        }
+      } catch (error) {
+        console.warn('⚠️ Network error deleting lead from database:', error);
+      }
+    }
+
     const raw = localStorage.getItem(STORAGE_KEY);
     const allLeads: Lead[] = raw ? JSON.parse(raw) : [];
 

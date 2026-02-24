@@ -405,6 +405,10 @@ app.delete('/api/leads/:id', asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   const lead = await db.deleteLead(req.params.id);
   if (!lead) return res.status(404).json({ error: 'Lead not found' });
+
+  // Broadcast deletion to all clients
+  io.emit('lead_deleted', lead.id);
+
   res.json(lead);
 }));
 
