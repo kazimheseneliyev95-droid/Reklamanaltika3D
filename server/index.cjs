@@ -2,7 +2,7 @@ require('dotenv').config();
 
 // Auto-inject Supabase Database URL to prevent Render Free data loss
 if (!process.env.DATABASE_URL) {
-  process.env.DATABASE_URL = 'postgresql://postgres.ntrmqlbyfvfyixomwphp:Kazimks123!@aws-1-us-east-1.pooler.supabase.com:5432/postgres';
+  process.env.DATABASE_URL = 'postgresql://postgres.ntrmqtbyfvfyixomwphp:Kazimks123%21@aws-1-us-east-1.pooler.supabase.com:5432/postgres';
   console.log('✅ Injected Permanent Supabase DATABASE_URL successfully.');
 }
 const express = require('express');
