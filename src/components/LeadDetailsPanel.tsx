@@ -2,8 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Lead, LeadStatus } from '../types/crm';
 import {
     X, User, Phone, Package, MessageSquare, Clock, Hash,
-    Save, CheckCircle2, TrendingUp, BarChart2, Edit3, Check,
-    Plus
+    Save, CheckCircle2, TrendingUp, BarChart2, Edit3, Check
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { loadCRMSettings } from '../lib/crmSettings';
@@ -256,9 +255,10 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
 
                     {/* Lead ID badge */}
                     <div className="flex items-center gap-2 shrink-0">
-                        <span className="text-[10px] font-mono text-slate-500 bg-slate-800 px-2 py-0.5 rounded">
-                            #{leadIdShort}
-                        </span>
+                        <div className="flex items-center gap-1.5 bg-slate-800/80 px-2.5 py-1 rounded-md border border-slate-700/50" title="Sistem Tərəfindən Verilmiş Müştəri Kodu">
+                            <span className="text-slate-500 text-[10px] uppercase font-bold tracking-wider">Kod:</span>
+                            <span className="text-xs sm:text-sm font-mono text-slate-300 font-semibold">{leadIdShort}</span>
+                        </div>
                         <span className="hidden sm:block text-slate-300 text-sm font-semibold truncate max-w-[180px]">
                             {lead.name || lead.phone}
                         </span>
@@ -595,17 +595,6 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                             )}
                         </div>
 
-                        {/* Quick note input at bottom (only for feed and chat tabs) */}
-                        {activeTab === 'feed' && (
-                            <div className="px-4 pb-4 border-t border-white/5 pt-3 shrink-0">
-                                <button
-                                    onClick={() => setActiveTab('chat')}
-                                    className="w-full flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm text-slate-400 bg-slate-900 border border-slate-800 border-dashed hover:bg-slate-800 hover:text-slate-300 transition-colors"
-                                >
-                                    <Plus className="w-4 h-4" /> Qeyd Əlavə Et / Yazışmaları Gör...
-                                </button>
-                            </div>
-                        )}
                     </main>
                 </div>
             </div>

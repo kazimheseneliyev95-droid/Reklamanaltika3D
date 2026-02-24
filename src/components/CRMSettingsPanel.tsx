@@ -101,6 +101,8 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
     const [expandedFieldId, setExpandedFieldId] = useState<string | null>(null);
     const [newOptionText, setNewOptionText] = useState<Record<string, string>>({});
 
+    const [draggedStageIdx, setDraggedStageIdx] = useState<number | null>(null);
+
     // ESC close
     useEffect(() => {
         const fn = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -159,6 +161,28 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
     const removeStage = (id: string) => {
         if (settings.pipelineStages.length <= 1) { alert('Ən azı 1 sütun olmalıdır!'); return; }
         setSettings(prev => ({ ...prev, pipelineStages: prev.pipelineStages.filter(s => s.id !== id) }));
+    };
+
+    const handleStageDragStart = (e: React.DragEvent, idx: number) => {
+        setDraggedStageIdx(idx);
+        e.dataTransfer.effectAllowed = 'move';
+    };
+
+    const handleStageDragOver = (e: React.DragEvent, idx: number) => {
+        e.preventDefault();
+        if (draggedStageIdx === null || draggedStageIdx === idx) return;
+
+        const newStages = [...settings.pipelineStages];
+        const draggedItem = newStages[draggedStageIdx];
+        newStages.splice(draggedStageIdx, 1);
+        newStages.splice(idx, 0, draggedItem);
+
+        setDraggedStageIdx(idx);
+        setSettings(prev => ({ ...prev, pipelineStages: newStages }));
+    };
+
+    const handleStageDragEnd = () => {
+        setDraggedStageIdx(null);
     };
 
     // ─── Custom Field CRUD ─────────────────────────────────────────────────────
@@ -313,25 +337,39 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
                                                 </select>
                                             </div>
 
-                                            {/* Extract Value Toggle */}
-                                            <div>
-                                                <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">
-                                                    Qiyməti Avtodoldur
-                                                </label>
-                                                <button
-                                                    onClick={() => updateRule(rule.id, { extractValue: !rule.extractValue })}
-                                                    className={cn(
-                                                        'flex items-center gap-2 w-full px-3 py-1.5 rounded-lg border text-xs font-semibold transition-all',
-                                                        rule.extractValue
-                                                            ? 'bg-emerald-900/30 border-emerald-700/50 text-emerald-400'
-                                                            : 'bg-slate-900 border-slate-700 text-slate-500'
-                                                    )}
-                                                >
-                                                    {rule.extractValue
-                                                        ? <><ToggleRight className="w-4 h-4" /> Açıqdır</>
-                                                        : <><ToggleLeft className="w-4 h-4" /> Bağlıdır</>
-                                                    }
-                                                </button>
+                                            {/* Extract Value Toggle & Fixed Value */}
+                                            <div className="grid grid-cols-2 gap-2">
+                                                <div>
+                                                    <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">
+                                                        Mətndən Qiymət
+                                                    </label>
+                                                    <button
+                                                        onClick={() => updateRule(rule.id, { extractValue: !rule.extractValue })}
+                                                        className={cn(
+                                                            'flex items-center gap-2 w-full px-3 py-1.5 rounded-lg border text-xs font-semibold transition-all',
+                                                            rule.extractValue
+                                                                ? 'bg-emerald-900/30 border-emerald-700/50 text-emerald-400'
+                                                                : 'bg-slate-900 border-slate-700 text-slate-500'
+                                                        )}
+                                                    >
+                                                        {rule.extractValue
+                                                            ? <><ToggleRight className="w-4 h-4" /> Açıqdır</>
+                                                            : <><ToggleLeft className="w-4 h-4" /> Bağlıdır</>
+                                                        }
+                                                    </button>
+                                                </div>
+                                                <div>
+                                                    <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1" title="Açar söz tapıldıqda bu məbləği təyin et">
+                                                        Sabit Qiymət (₼)
+                                                    </label>
+                                                    <input
+                                                        type="number"
+                                                        value={rule.fixedValue || ''}
+                                                        onChange={e => updateRule(rule.id, { fixedValue: e.target.value ? parseFloat(e.target.value) : undefined })}
+                                                        placeholder="Məs: 50"
+                                                        className="w-full bg-slate-900 border border-slate-700 text-slate-300 text-xs rounded-lg px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                                    />
+                                                </div>
                                             </div>
 
                                             {/* Optional Note */}
@@ -370,7 +408,7 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
                                     Tapılarsa, lead avtomatik seçilmiş mərhələyə keçir.
                                 </p>
                                 <p className="text-xs text-slate-400 leading-relaxed">
-                                    <strong className="text-emerald-400">Qiyməti Avtodoldur</strong> açıqdırsa, mesajdakı ilk rəqəm (məs: <em>30 AZN</em> → 30) lead-in büdcə sahəsinə yazılır.
+                                    <strong className="text-emerald-400">Mətndən Qiymət</strong> açıqdırsa, mesajdakı rəqəm (məs: <em>30 AZN</em> → 30) və ya <strong className="text-emerald-400">Sabit Qiymət</strong> təyin edilibsə, büdcəyə yazılır.
                                 </p>
                             </div>
                         </section>
@@ -385,8 +423,18 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
                             </div>
 
                             <div className="space-y-2">
-                                {settings.pipelineStages.map(stage => (
-                                    <div key={stage.id} className="flex items-center gap-3 bg-slate-900 border border-slate-800 rounded-xl px-4 py-3">
+                                {settings.pipelineStages.map((stage, idx) => (
+                                    <div
+                                        key={stage.id}
+                                        draggable
+                                        onDragStart={(e) => handleStageDragStart(e, idx)}
+                                        onDragOver={(e) => handleStageDragOver(e, idx)}
+                                        onDragEnd={handleStageDragEnd}
+                                        className={cn(
+                                            "flex items-center gap-3 border rounded-xl px-4 py-3 transition-colors",
+                                            draggedStageIdx === idx ? 'bg-slate-800 border-slate-600 opacity-50' : 'bg-slate-900 border-slate-800'
+                                        )}
+                                    >
                                         <GripVertical className="w-4 h-4 text-slate-600 cursor-grab shrink-0" />
                                         <input
                                             value={stage.label}
@@ -532,6 +580,6 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
           to { transform: translateX(0); opacity: 1; }
         }
       `}</style>
-        </div>
+        </div >
     );
 }

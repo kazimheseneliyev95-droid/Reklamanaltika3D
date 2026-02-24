@@ -28,6 +28,7 @@ export interface AutoRule {
     keyword: string;          // Substring to search for in message (case-insensitive)
     targetStage: string;      // Pipeline stage ID to move the lead to
     extractValue: boolean;    // Extract first number from message → lead.value
+    fixedValue?: number;      // Fixed value to apply if matched
     note?: string;            // Optional human-readable description
 }
 
@@ -113,7 +114,9 @@ export function applyAutoRules(
         if (!rule.keyword.trim()) continue;
         if (lowerMsg.includes(rule.keyword.toLowerCase())) {
             let extractedValue: number | null = null;
-            if (rule.extractValue) {
+            if (rule.fixedValue !== undefined && rule.fixedValue !== null) {
+                extractedValue = rule.fixedValue;
+            } else if (rule.extractValue) {
                 // Extract first number (integer or decimal) found in the message
                 const match = message.match(/[\d]+(?:[.,]\d+)?/);
                 if (match) {

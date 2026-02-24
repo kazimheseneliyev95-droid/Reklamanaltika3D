@@ -4,15 +4,12 @@ import { Lead, LeadStatus } from '../types/crm';
 import { Badge } from '../components/ui/Badge';
 import { Input } from '../components/ui/Input';
 import { WhatsAppConnect } from '../components/WhatsAppConnect';
-import { LeadForm } from '../components/LeadForm';
-import { Plus, Trash2, Calendar, Filter, RefreshCcw, Eraser, Pencil, ShoppingBag, DollarSign, TrendingUp, Users, PlayCircle, Zap, MessageSquare, UserPlus, CheckCircle, XCircle, Phone, Settings } from 'lucide-react';
+import { Trash2, Calendar, Filter, RefreshCcw, Pencil, ShoppingBag, DollarSign, TrendingUp, Users, MessageSquare, UserPlus, CheckCircle, XCircle, Phone, Settings } from 'lucide-react';
 import { cn, formatCurrency } from '../lib/utils';
 import { CrmService } from '../services/CrmService';
 import { LeadDetailsPanel } from '../components/LeadDetailsPanel';
 import { CRMSettingsPanel } from '../components/CRMSettingsPanel';
 import { loadCRMSettings } from '../lib/crmSettings';
-
-const TEST_MODE_ACTIVE = true; // Toggle for visual debug indicators
 
 export default function CRMPage() {
   const [activeMobileTab, setActiveMobileTab] = useState<string>('new');
@@ -20,7 +17,6 @@ export default function CRMPage() {
     leads,
     isLoading,
     isWhatsAppConnected,
-    addLead,
     updateLead,
     updateLeadStatus,
     removeLead,
@@ -30,7 +26,6 @@ export default function CRMPage() {
     setDateRange
   } = useAppStore();
 
-  const [showAddForm, setShowAddForm] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [systemHealth, setSystemHealth] = useState<{ whatsapp: string, socket_clients: number, timestamp: string } | null>(null);
@@ -60,39 +55,8 @@ export default function CRMPage() {
     return { totalLeads, totalRevenue };
   }, [leads]);
 
-  const handleClearAll = () => {
-    if (confirm("Are you sure you want to delete ALL local data? This cannot be undone.")) {
-      leads.forEach(l => removeLead(l.id));
-    }
-  };
-
   const handleEdit = (lead: Lead) => {
     setSelectedLead(lead);
-  };
-
-  const handleSaveLead = (data: any) => {
-    addLead(data);
-    setShowAddForm(false);
-  };
-
-  // TEST FUNCTION: Simulate incoming WhatsApp message
-  const handleTestMessage = async () => {
-    const randomPhone = '+994' + Math.floor(Math.random() * 1000000000);
-    const testNames = ['Test İstifadəçi', 'Demo Müştəri', 'Sınaq Lead', 'WhatsApp Test'];
-    const testMessages = ['Salam, qiymət?', 'Məhsul haqqında məlumat', 'Çatdırılma var?', 'Sifariş vermək istəyirəm'];
-
-    const testLead = {
-      phone: randomPhone,
-      name: testNames[Math.floor(Math.random() * testNames.length)],
-      last_message: testMessages[Math.floor(Math.random() * testMessages.length)],
-      status: 'new' as LeadStatus,
-      source: 'whatsapp' as const,
-      value: 0
-    };
-
-    console.log('🧪 TEST MESSAGE SIMULATED:', testLead);
-    await addLead(testLead);
-    alert('✅ Test mesajı əlavə olundu! Yeni kartı görə bilərsiniz.');
   };
 
   const handleDateFilterChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -177,14 +141,6 @@ export default function CRMPage() {
                   {systemHealth ? `${systemHealth.socket_clients}` : '0'} 🔌
                 </span>
               </div>
-
-              {TEST_MODE_ACTIVE && (
-                <div className="hidden sm:flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-purple-900/30 border border-purple-800 text-[10px] text-purple-400">
-                  <span className="font-bold flex items-center gap-1">
-                    <PlayCircle className="w-2.5 h-2.5" /> DEBUG
-                  </span>
-                </div>
-              )}
             </div>
           </div>
 
@@ -204,33 +160,6 @@ export default function CRMPage() {
               <RefreshCcw className={cn("w-4 h-4", isLoading && "animate-spin")} />
               <span className="hidden sm:inline">Yenilə</span>
             </button>
-
-            <button
-              onClick={() => { setSelectedLead(null); setShowAddForm(true); }}
-              className="bg-purple-600 hover:bg-purple-500 text-white px-3 py-2 rounded-lg flex items-center gap-1.5 text-xs sm:text-sm transition-all shadow-lg shadow-purple-900/20"
-            >
-              <Plus className="w-4 h-4" />
-              <span className="hidden sm:inline">Add Lead</span>
-            </button>
-
-            <button
-              onClick={handleTestMessage}
-              className="bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-2 rounded-lg flex items-center gap-1.5 text-xs sm:text-sm transition-all border border-slate-600"
-              title="Test Message"
-            >
-              <Zap className="w-4 h-4 text-yellow-500" />
-              <span className="hidden sm:inline">Test</span>
-            </button>
-
-            {leads.length > 0 && (
-              <button
-                onClick={handleClearAll}
-                className="flex items-center gap-1.5 px-3 py-2 bg-red-900/20 hover:bg-red-900/40 text-red-400 rounded-lg text-xs sm:text-sm font-medium transition-colors border border-red-900/30"
-              >
-                <Eraser className="w-4 h-4" />
-                <span className="hidden sm:inline">Sil</span>
-              </button>
-            )}
 
             {/* Settings */}
             <button
@@ -312,14 +241,6 @@ export default function CRMPage() {
 
         </div>
       </div>
-
-      {/* ADD NEW LEAD MODAL */}
-      {showAddForm && (
-        <LeadForm
-          onSave={handleSaveLead}
-          onCancel={() => setShowAddForm(false)}
-        />
-      )}
 
       {/* CRM SETTINGS PANEL */}
       {showSettings && (

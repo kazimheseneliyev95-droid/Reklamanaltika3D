@@ -10,7 +10,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const navItems = [
     { name: 'Simulator', path: '/', icon: <Calculator className="w-5 h-5" /> },
     { name: 'CRM (Classic)', path: '/crm', icon: <LayoutDashboard className="w-5 h-5" /> },
-    { name: 'Meta API Lab', path: '/meta-lab', icon: <ShieldCheck className="w-5 h-5" /> },
   ];
 
   return (
