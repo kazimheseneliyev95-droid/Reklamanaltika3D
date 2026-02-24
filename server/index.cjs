@@ -99,23 +99,20 @@ if (chromiumPath) {
   console.log('📋 Using Puppeteer bundled Chromium (no PUPPETEER_EXECUTABLE_PATH set)');
 }
 
-// Initialize WhatsApp Client (Improved Config with full diagnostics)
+// Initialize WhatsApp Client (Improved Config)
 const client = new Client({
   authStrategy: new LocalAuth({
     dataPath: './wwebjs_auth',
     clientId: 'crm-' + (process.env.INSTANCE_ID || 'default')
   }),
-  // Use remote web version cache (fixes cloud hosting issues)
-  webVersionCache: {
-    type: 'remote',
-    remotePath: 'https://raw.githubusercontent.com/nicholasrq/nicholasrq.github.io/refs/heads/main/nicholasrq/nicholasrq.github.io/assets/',
-  },
+  // Removed remote webVersionCache as it can silently hang if GitHub raw servers throttle it.
+  // Using default local version handling.
   puppeteer: {
     headless: true,
     dumpio: true, // CRITICAL: pipes Chrome's stdout/stderr so we can see errors
     executablePath: chromiumPath || undefined,
     defaultViewport: null,
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    // Removed hardcoded userAgent (Chrome 122) as it can trigger WhatsApp "Update Chrome" block screen
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
