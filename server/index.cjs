@@ -105,10 +105,12 @@ const client = new Client({
     dataPath: './wwebjs_auth',
     clientId: 'crm-' + (process.env.INSTANCE_ID || 'default')
   }),
+  authTimeoutMs: 60000,
+  qrMaxRetries: 3,
   // Removed remote webVersionCache as it can silently hang if GitHub raw servers throttle it.
   // Using default local version handling.
   puppeteer: {
-    headless: true,
+    headless: 'new',
     dumpio: true, // CRITICAL: pipes Chrome's stdout/stderr so we can see errors
     executablePath: chromiumPath || undefined,
     defaultViewport: null,
@@ -131,6 +133,7 @@ const client = new Client({
       '--mute-audio',
       '--disable-translate',
       '--disable-features=TranslateUI',
+      '--disable-blink-features=AutomationControlled',
       '--js-flags=--max-old-space-size=256'
     ]
   }
