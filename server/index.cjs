@@ -8,7 +8,7 @@ if (!process.env.DATABASE_URL) {
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
+const { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const cors = require('cors');
 const qrcode = require('qrcode');
@@ -108,9 +108,9 @@ async function gracefulShutdown(signal) {
       console.log('✅ HTTP server closed');
     });
 
-    if (sock) {
-      sock.logout('Shutdown');
-      console.log('✅ WhatsApp client disconnected');
+    if (sock && sock.ws) {
+      sock.ws.close();
+      console.log('✅ WhatsApp client network socket closed (session perserved)');
     }
 
     if (db.closePool) {
@@ -254,7 +254,7 @@ async function startWhatsAppClient() {
       logger: pino({ level: 'silent' }), // Suppress pino debug logs
       printQRInTerminal: false,
       auth: state,
-      browser: ['ReklamAnaltika CRM', 'Chrome', '1.0.0'], // Custom browser name
+      browser: Browsers.macOS('Desktop'), // Standard generic browser to avoid bans
       generateHighQualityLinkPreview: true,
       syncFullHistory: false
     });
