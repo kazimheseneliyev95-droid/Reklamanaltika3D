@@ -159,6 +159,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
     cleanupFunctions.push(cleanupLeadDeleted);
 
+    // Listen for full database reset (Formatla)
+    const cleanupLeadsReset = CrmService.onLeadsReset(() => {
+      console.log('🌀 LEADS RESET IN UI: Clearing all local state');
+      setLeads([]);
+    });
+    cleanupFunctions.push(cleanupLeadsReset);
+
     // 🧪 TEST MODE LISTENER
     const cleanupTestMessage = CrmService.onTestMessage((data: any) => {
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');

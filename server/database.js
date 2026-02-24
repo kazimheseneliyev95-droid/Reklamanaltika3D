@@ -602,7 +602,7 @@ async function appendMessage({ leadId, phone, body, direction, whatsappId, creat
         await pool.query(`
             INSERT INTO messages (lead_id, phone, body, direction, whatsapp_id, created_at)
             VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT (whatsapp_id) DO NOTHING
+            ON CONFLICT (whatsapp_id) WHERE whatsapp_id IS NOT NULL DO NOTHING
         `, [leadId, phone, body || '', direction, whatsappId || null, ts]);
     } catch (error) {
         // Non-fatal - log and continue

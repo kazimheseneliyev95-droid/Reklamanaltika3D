@@ -312,6 +312,15 @@ class CrmServiceImpl {
       this.leadsCache = this.leadsCache.filter(l => l.id !== id);
       this.notifyLeadDeletedListeners(id);
     });
+
+    this.socket.on('leads_reset', () => {
+      console.log('🌀 SOCKET: leads_reset received');
+      this.leadsCache = [];
+      localStorage.removeItem(STORAGE_KEY);
+      if ((this as any).resetListeners) {
+        (this as any).resetListeners.forEach((cb: () => void) => cb());
+      }
+    });
   }
 
   // 🆕 Clean up old processed message IDs
@@ -383,6 +392,15 @@ class CrmServiceImpl {
       this.leadDeletedListeners.delete(listenerId);
     };
   }
+
+  onLeadsReset(cb: () => void): () => void {
+    const id = `reset-${this.listenerIdCounter++}`;
+    // Using a new map for reset listeners
+    if (!(this as any).resetListeners) (this as any).resetListeners = new Map();
+    (this as any).resetListeners.set(id, cb);
+    return () => (this as any).resetListeners.delete(id);
+  }
+
 
   onTestMessage(cb: (data: any) => void): () => void {
     const id = `test-${this.listenerIdCounter++}`;

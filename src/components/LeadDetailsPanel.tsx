@@ -3,7 +3,7 @@ import { Lead, LeadStatus } from '../types/crm';
 import {
     X, User, Phone, Package, MessageSquare, Clock, Hash,
     Save, CheckCircle2, TrendingUp, BarChart2, Edit3, Check,
-    Plus, ChevronDown
+    Plus
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { loadCRMSettings } from '../lib/crmSettings';
@@ -44,12 +44,20 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
 
     // Live: listen for new socket messages
     useEffect(() => {
-        const cleanup = CrmService.onLeadUpdated((updated) => {
+        const cleanupUpdate = CrmService.onLeadUpdated((updated) => {
             if (updated.id === lead.id || updated.phone === lead.phone) {
                 loadMessages();
             }
         });
-        return cleanup;
+        const cleanupNew = CrmService.onNewMessage((newLead) => {
+            if (newLead.id === lead.id || newLead.phone === lead.phone) {
+                loadMessages();
+            }
+        });
+        return () => {
+            cleanupUpdate();
+            cleanupNew();
+        };
     }, [lead.id, lead.phone, loadMessages]);
 
     if (loading) return (
