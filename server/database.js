@@ -44,7 +44,7 @@ async function initDb() {
           source_message TEXT,
           source_contact_name VARCHAR(255),
           whatsapp_id VARCHAR(255) UNIQUE,
-          status VARCHAR(20) DEFAULT 'new' CHECK (status IN ('new', 'potential', 'won', 'lost', 'contacted')),
+          status VARCHAR(50) DEFAULT 'new',
           source VARCHAR(50) DEFAULT 'whatsapp' CHECK (source IN ('whatsapp', 'manual')),
           value DECIMAL(10, 2) DEFAULT 0 CHECK (value >= 0),
           product_name VARCHAR(255),
@@ -60,13 +60,26 @@ async function initDb() {
 
         await client.query(createTableQuery);
 
-        // Add constraint if not exists (for id parameter type)
+        // Migration: Remove old status CHECK constraint if it exists (from previous installs)
+        // This allows custom pipeline stages like 'field_1234_abc' to be stored
+        try {
+            await client.query(`
+                ALTER TABLE leads DROP CONSTRAINT IF EXISTS leads_status_check;
+            `);
+            await client.query(`
+                ALTER TABLE leads ALTER COLUMN status TYPE VARCHAR(50);
+            `);
+        } catch (e) {
+            // Ignore migration errors — table may not have the constraint
+        }
+
+        // Migration: id type
         try {
             await client.query(`
                 ALTER TABLE leads ALTER COLUMN id SET DATA TYPE UUID USING id::uuid;
             `);
         } catch (e) {
-            // Column might already be UUID type, ignore
+            // Already UUID type, ignore
         }
 
         await client.query('COMMIT');
@@ -84,25 +97,28 @@ async function initDb() {
 // VALIDATION HELPERS
 // ═══════════════════════════════════════════════════════════════
 
-function validatePhone(phone) {
-    if (!phone) {
-        throw new Error('Phone number is required');
-    }
-    // Remove all non-digit characters
-    const cleaned = phone.replace(/\D/g, '');
-    // Check if valid phone number (8-15 digits)
-    if (cleaned.length < 8 || cleaned.length > 15) {
-        throw new Error(`Invalid phone number: ${phone}`);
+function normalizePhone(phone) {
+    if (!phone) throw new Error('Phone number is required');
+    // Step 1: Strip Baileys device-ID suffix BEFORE removing non-digits
+    // e.g. "994776069606:12" -> "994776069606:12" split(':')[0] -> "994776069606"
+    const withoutSuffix = String(phone).split(':')[0];
+    // Step 2: Remove all remaining non-digit characters (+/-/spaces)
+    const cleaned = withoutSuffix.replace(/\D/g, '');
+    if (!cleaned || cleaned.length < 7 || cleaned.length > 15) {
+        throw new Error(`Invalid phone: ${phone} (normalized: ${cleaned})`);
     }
     return cleaned;
 }
 
+// Backward compat alias
+const validatePhone = normalizePhone;
+
 function validateStatus(status) {
-    const validStatuses = ['new', 'potential', 'won', 'lost', 'contacted'];
-    if (!validStatuses.includes(status)) {
-        throw new Error(`Invalid status: ${status}. Must be one of: ${validStatuses.join(', ')}`);
+    // Accept any non-empty string to support user-defined pipeline stages
+    if (!status || typeof status !== 'string' || status.trim() === '') {
+        return 'new';
     }
-    return status;
+    return status.trim();
 }
 
 function validateValue(value) {
@@ -192,17 +208,34 @@ async function createLead(data) {
 }
 
 /**
- * Find lead by phone number
+ * Find lead by phone number with fuzzy suffix matching
  */
 async function findLeadByPhone(phone) {
     try {
-        const cleanedPhone = validatePhone(phone);
-        const query = 'SELECT * FROM leads WHERE phone = $1';
-        const result = await pool.query(query, [cleanedPhone]);
-        return result.rows[0] || null;
+        const cleanedPhone = normalizePhone(phone);
+
+        // 1. Exact match first
+        const exact = await pool.query('SELECT * FROM leads WHERE phone = $1', [cleanedPhone]);
+        if (exact.rows[0]) return exact.rows[0];
+
+        // 2. Fuzzy: last 9 digits covers local number without country code variants
+        // Handles: "994776069606" vs "0776069606" vs "776069606"
+        if (cleanedPhone.length >= 9) {
+            const suffix = cleanedPhone.slice(-9);
+            const fuzzy = await pool.query(
+                "SELECT * FROM leads WHERE phone LIKE $1 ORDER BY created_at DESC LIMIT 1",
+                [`%${suffix}`]
+            );
+            if (fuzzy.rows[0]) {
+                console.log(`Fuzzy phone match: ${cleanedPhone} found as ${fuzzy.rows[0].phone}`);
+                return fuzzy.rows[0];
+            }
+        }
+
+        return null;
     } catch (error) {
-        console.error('❌ Error finding lead:', error.message);
-        throw error;
+        console.error('Error finding lead:', error.message);
+        return null; // recoverable
     }
 }
 

@@ -435,6 +435,47 @@ app.delete('/api/leads/:id', asyncHandler(async (req, res) => {
   res.json(lead);
 }));
 
+// 🧹 CLEANUP: Merge duplicate leads with same last 9 phone digits
+app.post('/api/leads/cleanup-duplicates', asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+
+  const result = await db.pool.query('SELECT * FROM leads ORDER BY created_at ASC');
+  const leads = result.rows;
+  const merged = [];
+  const seenSuffixes = new Map(); // suffix -> lead_id
+
+  for (const lead of leads) {
+    const phone = String(lead.phone).replace(/\D/g, '');
+    const suffix = phone.length >= 9 ? phone.slice(-9) : phone;
+
+    if (seenSuffixes.has(suffix)) {
+      // This is a duplicate – merge into the first lead seen with same suffix
+      const canonicalId = seenSuffixes.get(suffix);
+      // Merge: update the canonical lead's last_message if empty, then delete duplicate
+      await db.pool.query(`
+        UPDATE leads
+        SET
+          last_message = COALESCE(leads.last_message, $1),
+          name = COALESCE(leads.name, $2),
+          updated_at = NOW()
+        WHERE id = $3
+      `, [lead.last_message, lead.name, canonicalId]);
+
+      await db.pool.query('DELETE FROM leads WHERE id = $1', [lead.id]);
+      merged.push({ deleted: lead.id, mergedInto: canonicalId, phone: lead.phone });
+      console.log(`🧹 Merged duplicate: ${lead.phone} → ${canonicalId}`);
+    } else {
+      seenSuffixes.set(suffix, lead.id);
+    }
+  }
+
+  // Broadcast updated lead list
+  const updatedLeads = await db.getLeads({});
+  io.emit('leads_updated', updatedLeads);
+
+  res.json({ merged, count: merged.length, message: `Merged ${merged.length} duplicate leads` });
+}));
+
 app.get('/api/stats', asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   const stats = await db.getLeadStats();
