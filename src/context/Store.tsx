@@ -74,22 +74,57 @@ export function AppProvider({ children }: { children: ReactNode }) {
       console.log('   Phone:', newLead.phone);
       console.log('   Message:', newLead.last_message);
 
+      // ─── Apply Auto-Rules ────────────────────────────────────────────────
+      const crmSettings = loadCRMSettings();
+      let finalLead = { ...newLead };
+
+      if (newLead.last_message && crmSettings.autoRules?.length > 0) {
+        const ruleMatch = applyAutoRules(newLead.last_message, crmSettings.autoRules);
+        if (ruleMatch) {
+          const stageExists = crmSettings.pipelineStages.find(s => s.id === ruleMatch.targetStage);
+          if (stageExists) {
+            console.log(`🤖 Auto-rule triggered → moving ${newLead.phone} to stage: ${ruleMatch.targetStage}`);
+
+            // Apply optimistic update immediately
+            finalLead = {
+              ...finalLead,
+              status: ruleMatch.targetStage,
+              ...(ruleMatch.extractedValue !== null ? { value: ruleMatch.extractedValue } : {}),
+            };
+
+            // Persist to DB in background
+            if (newLead.id && !newLead.id.startsWith('test-')) {
+              CrmService.updateStatus(newLead.id, ruleMatch.targetStage).catch((err: unknown) =>
+                console.warn('⚠️ Auto-rule status update failed:', err)
+              );
+
+              if (ruleMatch.extractedValue !== null) {
+                CrmService.updateLead(newLead.id, { value: ruleMatch.extractedValue }).catch((err: unknown) =>
+                  console.warn('⚠️ Auto-rule value update failed:', err)
+                );
+              }
+            }
+          }
+        }
+      }
+      // ─────────────────────────────────────────────────────────────────────
+
       // Check if this lead already exists in current state
       const existingIndex = leadsRef.current.findIndex(l =>
-        l.id === newLead.id || l.phone === newLead.phone
+        l.id === finalLead.id || l.phone === finalLead.phone
       );
 
       if (existingIndex !== -1) {
-        console.log('🔄 Updating existing lead in UI:', newLead.phone);
+        console.log('🔄 Updating existing lead in UI:', finalLead.phone);
         setLeads(prev => {
           const newList = [...prev];
-          newList[existingIndex] = newLead;
+          newList[existingIndex] = { ...newList[existingIndex], ...finalLead };
           return newList;
         });
       } else {
         // New Conversation
-        console.log('➕ Adding new lead to UI:', newLead.phone);
-        setLeads(prev => [newLead, ...prev]);
+        console.log('➕ Adding new lead to UI:', finalLead.phone);
+        setLeads(prev => [finalLead, ...prev]);
       }
     });
     cleanupFunctions.push(cleanupNewMessage);
