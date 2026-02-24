@@ -5,10 +5,11 @@ import { Badge } from '../components/ui/Badge';
 import { Input } from '../components/ui/Input';
 import { WhatsAppConnect } from '../components/WhatsAppConnect';
 import { LeadForm } from '../components/LeadForm';
-import { Plus, Trash2, Calendar, Filter, RefreshCcw, Eraser, Pencil, ShoppingBag, DollarSign, TrendingUp, Users, PlayCircle, Zap, MessageSquare, UserPlus, CheckCircle, XCircle, Phone } from 'lucide-react';
+import { Plus, Trash2, Calendar, Filter, RefreshCcw, Eraser, Pencil, ShoppingBag, DollarSign, TrendingUp, Users, PlayCircle, Zap, MessageSquare, UserPlus, CheckCircle, XCircle, Phone, Settings } from 'lucide-react';
 import { cn, formatCurrency } from '../lib/utils';
 import { CrmService } from '../services/CrmService';
 import { LeadDetailsPanel } from '../components/LeadDetailsPanel';
+import { CRMSettingsPanel } from '../components/CRMSettingsPanel';
 
 const TEST_MODE_ACTIVE = true; // Toggle for visual debug indicators
 
@@ -29,6 +30,7 @@ export default function CRMPage() {
   } = useAppStore();
 
   const [showAddForm, setShowAddForm] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [systemHealth, setSystemHealth] = useState<{ whatsapp: string, socket_clients: number, timestamp: string } | null>(null);
 
@@ -118,10 +120,10 @@ export default function CRMPage() {
   };
 
   const columns: { id: LeadStatus; title: string; color: string; icon: any }[] = [
-    { id: 'new', title: 'New Messages', color: 'blue', icon: <MessageSquare className="w-4 h-4" /> },
-    { id: 'potential', title: 'Potential (Lead)', color: 'purple', icon: <UserPlus className="w-4 h-4" /> },
-    { id: 'won', title: 'Sold (Won)', color: 'green', icon: <CheckCircle className="w-4 h-4" /> },
-    { id: 'lost', title: 'Lost / Ignored', color: 'slate', icon: <XCircle className="w-4 h-4" /> },
+    { id: 'new', title: 'Yeni', color: 'blue', icon: <MessageSquare className="w-4 h-4" /> },
+    { id: 'potential', title: 'Kvalifikasiya', color: 'purple', icon: <UserPlus className="w-4 h-4" /> },
+    { id: 'won', title: 'Satış', color: 'green', icon: <CheckCircle className="w-4 h-4" /> },
+    { id: 'lost', title: 'Uğursuz', color: 'slate', icon: <XCircle className="w-4 h-4" /> },
   ];
 
   return (
@@ -216,6 +218,16 @@ export default function CRMPage() {
                 <span className="hidden sm:inline">Sil</span>
               </button>
             )}
+
+            {/* Settings */}
+            <button
+              onClick={() => setShowSettings(true)}
+              className="flex items-center gap-1.5 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs sm:text-sm transition-all border border-slate-700"
+              title="CRM Ayarları"
+            >
+              <Settings className="w-4 h-4" />
+              <span className="hidden sm:inline">Ayarlar</span>
+            </button>
           </div>
         </div>
 
@@ -294,6 +306,11 @@ export default function CRMPage() {
           onSave={handleSaveLead}
           onCancel={() => setShowAddForm(false)}
         />
+      )}
+
+      {/* CRM SETTINGS PANEL */}
+      {showSettings && (
+        <CRMSettingsPanel onClose={() => setShowSettings(false)} />
       )}
 
       {/* AMOCRM STYLE LEAD DETAILS PANEL */}

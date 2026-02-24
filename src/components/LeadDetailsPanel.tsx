@@ -6,6 +6,7 @@ import {
     AlertCircle, Award, XCircle, Plus
 } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { loadCRMSettings, CustomField } from '../lib/crmSettings';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -43,6 +44,14 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
     const [editingNote, setEditingNote] = useState(false);
     const feedRef = useRef<HTMLDivElement>(null);
 
+    // ─── Custom fields from CRM settings ─────────────────────────────────────
+    const [customFields] = useState<CustomField[]>(() => loadCRMSettings().customFields);
+    const [customValues, setCustomValues] = useState<Record<string, string>>(() => {
+        // Try to read saved extra data from lead object
+        const extra = (lead as any).extra_data;
+        return extra ? (typeof extra === 'string' ? JSON.parse(extra) : extra) : {};
+    });
+
     // Keep localStatus in sync if parent changes the lead
     useEffect(() => { setLocalStatus(lead.status); }, [lead.status]);
     useEffect(() => {
@@ -52,6 +61,8 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
             product_name: lead.product_name || '',
             note: lead.last_message || '',
         });
+        const extra = (lead as any).extra_data;
+        setCustomValues(extra ? (typeof extra === 'string' ? JSON.parse(extra) : extra) : {});
     }, [lead.id]);
 
     // ESC to close
@@ -80,6 +91,8 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
             product_name: formData.product_name,
             last_message: formData.note,
             status: localStatus,
+            // Persist custom field values as extra_data JSON string
+            ...(Object.keys(customValues).length > 0 ? { extra_data: JSON.stringify(customValues) } as any : {}),
         });
         setIsSaving(false);
         setSavedOk(true);
@@ -133,7 +146,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                     className={cn(
                                         'flex items-center gap-1 px-2 sm:px-3 py-1.5 rounded-md text-[10px] sm:text-xs font-bold uppercase tracking-wide border transition-all whitespace-nowrap shrink-0',
                                         isActive
-                                            ? `${ s.bg } text - white border - transparent shadow - lg`
+                                            ? `${s.bg} text - white border - transparent shadow - lg`
                                             : isPast
                                                 ? 'bg-slate-800/70 text-slate-400 border-slate-700 hover:bg-slate-700'
                                                 : 'bg-transparent text-slate-500 border-slate-800 hover:border-slate-600 hover:text-slate-300'
@@ -210,16 +223,43 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                 </div>
                             </FieldGroup>
 
-                            {/* Məhsul */}
-                            <FieldGroup label="Maraqlandığı Məhsul" icon={<Package className="w-3 h-3" />}>
-                                <input
-                                    name="product_name"
-                                    value={formData.product_name}
-                                    onChange={handleChange}
-                                    placeholder="Məhsul / Xidmət adı"
-                                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                />
-                            </FieldGroup>
+                            {/* Dynamic Custom Fields from CRM Settings */}
+                            {customFields.map(field => {
+                                const isBuiltin = field.id === 'product_name';
+                                const value = isBuiltin ? formData.product_name : (customValues[field.id] || '');
+                                const handleFieldChange = (val: string) => {
+                                    if (isBuiltin) {
+                                        setFormData(prev => ({ ...prev, product_name: val }));
+                                    } else {
+                                        setCustomValues(prev => ({ ...prev, [field.id]: val }));
+                                    }
+                                };
+
+                                return (
+                                    <FieldGroup key={field.id} label={field.label} icon={<Package className="w-3 h-3" />}>
+                                        {field.type === 'select' ? (
+                                            <select
+                                                value={value}
+                                                onChange={e => handleFieldChange(e.target.value)}
+                                                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 appearance-none"
+                                            >
+                                                <option value="">-- Seçin --</option>
+                                                {(field.options || []).map(opt => (
+                                                    <option key={opt} value={opt}>{opt}</option>
+                                                ))}
+                                            </select>
+                                        ) : (
+                                            <input
+                                                type={field.type === 'number' ? 'number' : 'text'}
+                                                value={value}
+                                                onChange={e => handleFieldChange(e.target.value)}
+                                                placeholder={field.label}
+                                                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                            />
+                                        )}
+                                    </FieldGroup>
+                                );
+                            })}
 
                             {/* Status göstəricisi */}
                             <FieldGroup label="Cari Status" icon={<BarChart2 className="w-3 h-3" />}>
@@ -445,7 +485,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
 
                                     <div className="grid grid-cols-2 gap-3">
                                         <StatCard label="Cari Status" value={activeStatus.label} accent="text-blue-400" />
-                                        <StatCard label="Büdcə" value={`₼ ${ formData.value } `} accent="text-green-400" />
+                                        <StatCard label="Büdcə" value={`₼ ${formData.value} `} accent="text-green-400" />
                                         <StatCard label="Mənbə" value={lead.source === 'whatsapp' ? 'WhatsApp' : 'Manual'} accent="text-sky-400" />
                                         <StatCard label="Yaradılma" value={new Date(lead.created_at).toLocaleDateString()} accent="text-slate-400" />
                                         {lead.product_name && (
