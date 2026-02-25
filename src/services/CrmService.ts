@@ -494,21 +494,17 @@ class CrmServiceImpl {
    */
   async getLeads(dateRange?: DateRange): Promise<Lead[]> {
     const now = Date.now();
+    const url = this.getServerUrl();
 
-    // Check cache first
-    if (this.leadsCache.length > 0 && (now - this.cacheTimestamp) < this.CACHE_TTL) {
-      console.log('📦 Returning cached leads');
-      return this.filterLeadsByDate(this.leadsCache, dateRange);
-    }
-
-    // Try database API first
-    if (this.serverUrl) {
+    // Skip cache and always hit DB — this ensures fresh data on every page open
+    // Try database API first (always available in production via window.location.origin)
+    if (url) {
       try {
         const params = new URLSearchParams();
         if (dateRange?.start) params.append('startDate', dateRange.start);
         if (dateRange?.end) params.append('endDate', dateRange.end);
 
-        const response = await fetch(`${this.serverUrl}/api/leads?${params}`, {
+        const response = await fetch(`${url}/api/leads?${params}`, {
           headers: this.getAuthHeaders()
         });
         if (response.ok) {
@@ -516,7 +512,7 @@ class CrmServiceImpl {
           this.leadsCache = leads;
           this.cacheTimestamp = now;
           localStorage.setItem(getStorageKey(), JSON.stringify(leads));
-          return leads;
+          return this.filterLeadsByDate(leads, dateRange);
         }
       } catch (error) {
         console.warn('⚠️ Failed to fetch from database, using localStorage fallback:', error);
@@ -555,10 +551,11 @@ class CrmServiceImpl {
   }
 
   async addLead(lead: Omit<Lead, 'id' | 'created_at' | 'updated_at'>): Promise<Lead> {
+    const url = this.getServerUrl();
     // Try database API first
-    if (this.serverUrl) {
+    if (url) {
       try {
-        const response = await fetch(`${this.serverUrl}/api/leads`, {
+        const response = await fetch(`${url}/api/leads`, {
           method: 'POST',
           headers: { ...this.getAuthHeaders(), 'Content-Type': 'application/json' },
           body: JSON.stringify(lead)
@@ -642,14 +639,15 @@ class CrmServiceImpl {
   }
 
   async updateLead(id: string, updates: Partial<Lead>): Promise<void> {
+    const url = this.getServerUrl();
     // Update database if available
-    if (this.serverUrl) {
+    if (url) {
       const isStatusOnly = updates.status && Object.keys(updates).length === 1;
 
       try {
         const endpoint = isStatusOnly
-          ? `${this.serverUrl}/api/leads/${id}/status`
-          : `${this.serverUrl}/api/leads/${id}`;
+          ? `${url}/api/leads/${id}/status`
+          : `${url}/api/leads/${id}`;
 
         const response = await fetch(endpoint, {
           method: 'PUT',
@@ -688,9 +686,10 @@ class CrmServiceImpl {
   }
 
   async deleteLead(id: string): Promise<void> {
-    if (this.serverUrl) {
+    const url = this.getServerUrl();
+    if (url) {
       try {
-        const response = await fetch(`${this.serverUrl}/api/leads/${id}`, {
+        const response = await fetch(`${url}/api/leads/${id}`, {
           method: 'DELETE',
           headers: this.getAuthHeaders()
         });
