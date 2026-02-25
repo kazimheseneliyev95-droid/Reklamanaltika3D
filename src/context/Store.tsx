@@ -275,6 +275,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
     cleanupFunctions.push(cleanupHealthCheck);
 
+    // 🆕 RECONNECT — reload leads from DB whenever the socket re-establishes.
+    // This is what makes messages visible after tab close, screen sleep, or account switch.
+    const cleanupReconnect = CrmService.onReconnect(() => {
+      console.log('🔁 Socket reconnected — reloading leads from DB...');
+      loadLeads();
+    });
+    cleanupFunctions.push(cleanupReconnect);
+
     console.log('✅ Message listener registered successfully!');
 
     // Cleanup function

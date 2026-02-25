@@ -24,7 +24,7 @@ class CrmServiceImpl {
   // 🆕 In-memory cache for better performance and deduplication
   private leadsCache: Lead[] = [];
   private cacheTimestamp: number = 0;
-  private readonly CACHE_TTL = 5000; // 5 seconds
+  private readonly CACHE_TTL = 30000; // 30 seconds — still fresh enough for typical usage
 
   // 🆕 De-duplication cache
   private readonly PROCESSED_MESSAGES_TTL = 30000; // 30 seconds
@@ -36,18 +36,31 @@ class CrmServiceImpl {
   getServerUrl() {
     const saved = localStorage.getItem(SERVER_URL_KEY);
     if (saved) return saved;
+    // In production, the frontend and backend are the same server (monolith),
+    // so window.location.origin is ALWAYS the correct server URL.
+    // This fixes the blank screen on new devices that have no localStorage.
+    if ((import.meta as any).env.PROD) {
+      const origin = window.location.origin;
+      localStorage.setItem(SERVER_URL_KEY, origin); // Save it so next time is instant
+      return origin;
+    }
     return this.serverUrl || (import.meta as any).env.VITE_SERVER_URL || 'http://localhost:4000';
   }
 
-  // 🆕 Auto-reconnect on application boot
+  // Auto-reconnect on application boot
   public autoConnect() {
-    const savedUrl = localStorage.getItem(SERVER_URL_KEY);
     const token = localStorage.getItem('crm_auth_token');
+    if (!token) return; // Not logged in, skip
 
-    // Only auto-connect if we have a saved URL and an active auth session
-    if (savedUrl && token && !this.socket) {
-      console.log('🔄 Auto-connecting to saved CRM backend:', savedUrl);
-      this.connectToServer(savedUrl).catch(err => {
+    // In production, always connect to the current origin (no saved URL needed)
+    // In development, use the saved URL from localStorage
+    const urlToUse = (import.meta as any).env.PROD
+      ? window.location.origin
+      : localStorage.getItem(SERVER_URL_KEY);
+
+    if (urlToUse && !this.socket) {
+      console.log('🔄 Auto-connecting to CRM backend:', urlToUse);
+      this.connectToServer(urlToUse).catch(err => {
         console.warn('⚠️ Auto-connect failed:', err);
       });
     }
@@ -111,6 +124,13 @@ class CrmServiceImpl {
         this.socket?.on('disconnect', (reason) => {
           console.warn('🔌 Socket disconnected:', reason);
           this.cleanupSocketListeners();
+        });
+
+        // 🆕 When socket automatically reconnects (e.g. after tab sleep/idle screen),
+        // trigger a leads reload to pick up any messages that arrived while offline.
+        this.socket?.on('reconnect', () => {
+          console.log('🔁 Socket reconnected — triggering data refresh...');
+          this.notifyReconnectListeners();
         });
 
         timeoutId = setTimeout(() => {
@@ -350,6 +370,7 @@ class CrmServiceImpl {
 
   // 🆕 Helper methods to notify listeners
   private leadDeletedListeners: Map<string, (id: string) => void> = new Map();
+  private reconnectListeners: Map<string, () => void> = new Map();
 
   private notifyMessageListeners(lead: Lead) {
     this.messageListeners.forEach(cb => cb(lead));
@@ -435,19 +456,30 @@ class CrmServiceImpl {
     };
   }
 
+  // 🆕 Called when socket reconnects — Store.tsx uses this to refresh leads from DB
+  onReconnect(cb: () => void): () => void {
+    const id = `reconnect-${this.listenerIdCounter++}`;
+    this.reconnectListeners.set(id, cb);
+    return () => this.reconnectListeners.delete(id);
+  }
+
+  private notifyReconnectListeners() {
+    this.reconnectListeners.forEach(cb => cb());
+  }
+
   private getAuthHeaders(): { [key: string]: string } {
     const token = localStorage.getItem('crm_auth_token');
     return token ? { 'Authorization': `Bearer ${token}` } : {};
   }
 
   async fetchRecentMessages(limit: number = 30): Promise<any[]> {
-    if (!this.serverUrl) return [];
+    const url = this.getServerUrl();
+    if (!url) return [];
     try {
-      const response = await fetch(`${this.serverUrl}/chats/recent?limit=${limit}`, {
+      const response = await fetch(`${url}/chats/recent?limit=${limit}`, {
         headers: this.getAuthHeaders()
       });
       const data = await response.json();
-      // 🆕 Fixed: Direct array, not data.messages
       return Array.isArray(data) ? data : [];
     } catch (e) {
       console.error('❌ Error fetching recent messages:', e);
