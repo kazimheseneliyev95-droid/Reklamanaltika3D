@@ -101,7 +101,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             <div className="bg-slate-950 rounded-lg p-3 text-xs text-slate-500">
               <p className="font-medium text-slate-400 truncate mb-1">Hesab: {currentUser?.username || 'Bilinmir'}</p>
               <p>Version 2.1.0</p>
-              <p className="mt-1">Connected: Local Mode</p>
             </div>
           </div>
         </div>

@@ -8,10 +8,7 @@ if (!process.env.DATABASE_URL) {
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-const { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers } = require('@whiskeysockets/baileys');
-const pino = require('pino');
 const cors = require('cors');
-const qrcode = require('qrcode');
 const path = require('path');
 const fs = require('fs');
 
@@ -22,8 +19,6 @@ const server = http.createServer(app);
 const PORT = process.env.PORT || 4000;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 const NODE_ENV = process.env.NODE_ENV || 'development';
-const AUTH_DIR = './baileys_auth';
-
 // Middleware
 app.use(cors({
   origin: [FRONTEND_URL, 'http://localhost:5173', 'http://localhost:3000', '*'],
@@ -42,45 +37,6 @@ const io = new Server(server, {
   pingTimeout: 60000,
   pingInterval: 25000
 });
-
-// State Variables (Multi-Tenant)
-const sessions = new Map();
-
-function getSession(tenantId) {
-  if (!sessions.has(tenantId)) {
-    sessions.set(tenantId, {
-      isReady: false,
-      isAuthenticated: false,
-      qrCodeData: null,
-      isInitializing: false,
-      lastInitError: null,
-      sock: null,
-      connectedNumber: null
-    });
-  }
-  return sessions.get(tenantId);
-}
-
-// Lightweight Custom Chat Store for /chats/recent
-const recentChatsMap = new Map(); // tenantId -> Map(phone -> data)
-
-function getRecentChats(tenantId) {
-  if (!recentChatsMap.has(tenantId)) recentChatsMap.set(tenantId, new Map());
-  return recentChatsMap.get(tenantId);
-}
-
-// 🆕 Message Deduplication Cache
-const PROCESSED_MESSAGES_TTL = 30000; // 30 seconds
-const processedMessages = new Map(); // messageId -> timestamp
-
-setInterval(() => {
-  const now = Date.now();
-  for (const [id, timestamp] of processedMessages.entries()) {
-    if (now - timestamp > PROCESSED_MESSAGES_TTL) {
-      processedMessages.delete(id);
-    }
-  }
-}, 60000);
 
 console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 console.log('🚀 CRM BACKEND INITIALIZING...');
@@ -144,13 +100,6 @@ async function gracefulShutdown(signal) {
       console.log('✅ Database connections closed');
     }
 
-    for (const [tenant, session] of sessions.entries()) {
-      if (session.sock && session.sock.ws) {
-        session.sock.ws.close();
-        console.log(`✅ WhatsApp client socket closed for ${tenant}`);
-      }
-    }
-
     console.log('✅ Graceful shutdown completed');
     process.exit(0);
   } catch (error) {
@@ -161,253 +110,6 @@ async function gracefulShutdown(signal) {
 
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-
-// ═══════════════════════════════════════════════════════════════
-// 📨 MESSAGE PROCESSOR (With De-duplication)
-// ═══════════════════════════════════════════════════════════════
-
-async function processMessage(tenantId, msg, isFromMe) {
-  try {
-    if (!msg.message) return; // ignore updates with no message
-
-    const messageContent = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || "";
-    if (msg.key.remoteJid === 'status@broadcast') return;
-    if (!messageContent || messageContent.trim() === '') return;
-
-    const whatsappId = msg.key.id;
-    if (!whatsappId) {
-      console.warn('⚠️ Message missing ID, skipping');
-      return;
-    }
-
-    if (processedMessages.has(whatsappId)) {
-      console.log(`⏭️ Skipping duplicate message: ${whatsappId}`);
-      return;
-    }
-
-    processedMessages.set(whatsappId, Date.now());
-
-    const prefix = isFromMe ? '📤 [OUTGOING]' : '📥 [INCOMING]';
-    // Baileys appends `:deviceId` to remoteJid for outgoing messages
-    // e.g. "994776069606:12@s.whatsapp.net" → we want "994776069606"
-    const rawJid = msg.key.remoteJid.split('@')[0];
-    const rawNumber = rawJid.split(':')[0]; // Strip `:12` device suffix if present
-
-    if (rawJid !== rawNumber) {
-      console.log(`🔧 Normalized outgoing number: ${rawJid} → ${rawNumber}`);
-    }
-
-    if (!rawNumber || rawNumber.length < 5 || rawNumber.includes('g.us')) { // ignore groups for CRM
-      console.warn('⚠️ Invalid or Group number, skipping:', rawNumber);
-      return;
-    }
-
-    const contactName = msg.pushName || `+${rawNumber}`;
-
-    const recentChats = getRecentChats(tenantId);
-    recentChats.set(rawNumber, {
-      name: contactName,
-      unread: isFromMe ? 0 : ((recentChats.get(rawNumber)?.unread || 0) + 1),
-      lastMessage: messageContent,
-      timestamp: Date.now() / 1000,
-      phone: rawNumber
-    });
-
-    if (recentChats.size > 50) {
-      const firstKey = recentChats.keys().next().value;
-      recentChats.delete(firstKey);
-    }
-
-    console.log(`[${tenantId}] ${prefix} ${rawNumber} | ${messageContent.substring(0, 50)}...`);
-
-    const payload = {
-      phone: rawNumber,
-      name: contactName,
-      message: messageContent,
-      whatsapp_id: whatsappId,
-      fromMe: isFromMe,
-      timestamp: new Date().toISOString(),
-      is_fast_emit: false
-    };
-
-    io.to(tenantId).emit('new_message', payload);
-
-    if (process.env.DATABASE_URL && db) {
-      try {
-        let existingLead = await db.findLeadByWhatsAppId(whatsappId, tenantId);
-        if (!existingLead) {
-          existingLead = await db.findLeadByPhone(rawNumber, tenantId);
-        }
-
-        let savedLead;
-        if (existingLead) {
-          await db.updateLeadMessage(rawNumber, messageContent, whatsappId, contactName, tenantId);
-          savedLead = existingLead;
-          console.log(`📝 Updated lead [${tenantId}]: ${rawNumber} (${existingLead.status})`);
-        } else {
-          savedLead = await db.createLead({
-            phone: rawNumber,
-            name: contactName,
-            last_message: messageContent,
-            whatsapp_id: whatsappId,
-            source: 'whatsapp',
-            status: 'new'
-          }, tenantId);
-          console.log(`✨ New lead created [${tenantId}]: ${rawNumber}`);
-        }
-
-        // 📜 Append to full message history
-        if (savedLead?.id && messageContent) {
-          await db.appendMessage({
-            leadId: savedLead.id,
-            phone: rawNumber,
-            body: messageContent,
-            direction: isFromMe ? 'out' : 'in',
-            whatsappId,
-            createdAt: msg.messageTimestamp || null,
-            tenantId
-          });
-        }
-
-      } catch (dbError) {
-        console.error('⚠️ Database error (non-fatal):', dbError.message);
-      }
-    }
-
-  } catch (error) {
-    console.error('❌ Error processing message:', error.message);
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// 🟢 WHATSAPP CLIENT INITIALIZER (Baileys)
-// ═══════════════════════════════════════════════════════════════
-
-async function startWhatsAppClient(tenantId) {
-  console.log(`\n🚀 STARTING WHATSAPP CLIENT FOR TENANT [${tenantId}]...`);
-  const session = getSession(tenantId);
-
-  // Prevent multiple initializing attempts
-  if (session.isInitializing || session.isReady) return;
-
-  // LOCK EARLY to prevent duplicate async socket instances!
-  session.isInitializing = true;
-
-  try {
-    let state, saveCreds, clearState;
-    if (process.env.DATABASE_URL && db && db.pool) {
-      console.log(`📦 Using PostgreSQL for Baileys Auth State [${tenantId}]...`);
-      const { usePostgresAuthState } = require('./postgresAuthState.cjs');
-      const auth = await usePostgresAuthState(db.pool, tenantId);
-      state = auth.state;
-      saveCreds = auth.saveCreds;
-      clearState = auth.clearState;
-    } else {
-      console.log(`📁 Using Local File System for Baileys Auth State [${tenantId}]...`);
-      const authDirTemplate = `${AUTH_DIR}_${tenantId}`;
-      const auth = await useMultiFileAuthState(authDirTemplate);
-      state = auth.state;
-      saveCreds = auth.saveCreds;
-      clearState = async () => {
-        const fs = require('fs');
-        if (fs.existsSync(authDirTemplate)) {
-          fs.rmSync(authDirTemplate, { recursive: true, force: true });
-        }
-      };
-    }
-
-    const { version, isLatest } = await fetchLatestBaileysVersion();
-    console.log(`[${tenantId}] using WA v${version.join('.')}, isLatest: ${isLatest}`);
-
-    session.sock = makeWASocket({
-      version,
-      logger: pino({ level: 'silent' }), // Suppress pino debug logs
-      printQRInTerminal: false,
-      auth: state,
-      browser: Browsers.macOS('Desktop'), // Standard generic browser to avoid bans
-      generateHighQualityLinkPreview: true,
-      syncFullHistory: false
-    });
-
-    session.sock.ev.on('creds.update', saveCreds);
-
-    session.sock.ev.on('connection.update', async (update) => {
-      const { connection, lastDisconnect, qr } = update;
-
-      if (qr) {
-        console.log(`📱 QR RECEIVED [${tenantId}]`);
-        session.qrCodeData = qr;
-        session.isReady = false;
-        session.isAuthenticated = false;
-        io.to(tenantId).emit('qr_code', qr);
-      }
-
-      if (connection === 'close') {
-        const statusCode = lastDisconnect?.error?.output?.statusCode;
-        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-        console.log(`⚠️ Connection closed [${tenantId}] (Status: ${statusCode}), reconnecting: ${shouldReconnect}`);
-        session.isReady = false;
-        session.isInitializing = false; // MUST unlock before retrying
-
-        if (shouldReconnect) {
-          setTimeout(() => startWhatsAppClient(tenantId), 5000);
-        } else {
-          console.log(`❌ Logged out [${tenantId}], clearing auth state and restarting for a new QR...`);
-          session.isAuthenticated = false;
-          session.qrCodeData = null;
-          io.to(tenantId).emit('auth_failure', 'Logged out. Getting new QR code...');
-
-          // Clear PostgreSQL auth data to allow new QR generation
-          if (clearState) {
-            await clearState();
-            console.log(`🗑️ Auth state permanently cleared [${tenantId}].`);
-          }
-
-          // Reboot the client setup again
-          setTimeout(() => startWhatsAppClient(tenantId), 3000);
-        }
-      } else if (connection === 'connecting') {
-        console.log(`🔄 CONNECTING [${tenantId}]...`);
-        session.isInitializing = true;
-      } else if (connection === 'open') {
-        console.log(`✅ CLIENT READY [${tenantId}] (Connection Open)`);
-        session.isReady = true;
-        session.isAuthenticated = true;
-        session.isInitializing = false;
-        session.qrCodeData = null;
-
-        // Extract the connected phone number (e.g., "994776069606:12@s.whatsapp.net" -> "994776069606")
-        if (session.sock?.user?.id) {
-          session.connectedNumber = '+' + session.sock.user.id.split(':')[0].split('@')[0];
-        }
-
-        io.to(tenantId).emit('ready', { status: 'connected' });
-        io.to(tenantId).emit('authenticated', { status: 'authenticated' });
-        io.to(tenantId).emit('crm:health_check', getHealthStatus(tenantId));
-      }
-    });
-
-    session.sock.ev.on('messages.upsert', async (m) => {
-      // Handle array of messages
-      for (const msg of m.messages) {
-        // filter out protocol messages
-        if (msg.message?.protocolMessage) continue;
-
-        const isFromMe = msg.key.fromMe;
-        processMessage(tenantId, msg, isFromMe);
-      }
-    });
-
-  } catch (err) {
-    console.error(`❌ WhatsApp client initialization FAILED [${tenantId}]!`);
-    console.error('❌ Error:', err.message);
-    session.isInitializing = false;
-    session.lastInitError = {
-      message: err.message,
-      time: new Date().toISOString()
-    };
-  }
-}
 
 // ═══════════════════════════════════════════════════════════════
 // 🔌 SOCKET.IO CONNECTION
@@ -434,44 +136,51 @@ io.on('connection', (socket) => {
   socket.join(tenantId);
   console.log(`👤 NEW UI CLIENT CONNECTED [${tenantId}]: ${socket.id} (Total: ${io.engine.clientsCount})`);
 
-  // Ensure WhatsApp client is initialized for this tenant
-  const session = getSession(tenantId);
-  if (!session.sock && !session.isInitializing) {
-    startWhatsAppClient(tenantId);
-  }
+  // Async fetch health from worker
+  fetch(`http://localhost:4001/api/internal/status/${tenantId}`)
+    .then(res => res.json())
+    .then(data => {
+      let status = 'OFFLINE';
+      if (data.isReady) status = 'CONNECTED';
+      else if (data.qr) status = 'SYNCING';
 
-  socket.emit('crm:health_check', getHealthStatus(tenantId));
+      socket.emit('crm:health_check', {
+        whatsapp: status,
+        connectedNumber: data.number,
+        socket_clients: io.engine.clientsCount,
+        timestamp: new Date().toISOString()
+      });
 
-  if (session.qrCodeData && !session.isAuthenticated) {
-    socket.emit('qr_code', session.qrCodeData);
-  }
+      if (data.qr && !data.isReady) {
+        // Not returning the whole QR string in health status usually, so wait for the worker to broadcast qr via webhook
+      }
 
-  if (session.isAuthenticated) {
-    socket.emit('authenticated', { status: 'authenticated' });
-  }
-  if (session.isReady) {
-    socket.emit('ready', { status: 'connected' });
-  }
+      if (data.isReady) {
+        socket.emit('authenticated', { status: 'authenticated' });
+        socket.emit('ready', { status: 'connected' });
+      }
+    })
+    .catch(err => {
+      socket.emit('crm:health_check', { whatsapp: 'OFFLINE', socket_clients: io.engine.clientsCount });
+    });
 
   socket.on('disconnect', (reason) => {
     console.log(`👤 UI CLIENT DISCONNECTED [${tenantId}]: ${socket.id} (${reason})`);
   });
 });
 
-function getHealthStatus(tenantId) {
-  const session = getSession(tenantId);
-  let status = 'OFFLINE';
-  if (session.isReady) status = 'CONNECTED';
-  else if (session.isAuthenticated) status = 'SYNCING';
-  else if (session.isInitializing) status = 'INITIALIZING';
+// ═══════════════════════════════════════════════════════════════
+// 🪝 INTERNAL WEBHOOK (From WhatsApp Worker to UI)
+// ═══════════════════════════════════════════════════════════════
+app.post('/api/internal/webhook', (req, res) => {
+  const { tenantId, event, payload } = req.body;
+  if (!tenantId || !event) return res.status(400).json({ error: 'Invalid payload' });
 
-  return {
-    whatsapp: status,
-    connectedNumber: session.connectedNumber,
-    socket_clients: io.engine.clientsCount, // Global count, maybe scope to namespace later
-    timestamp: new Date().toISOString()
-  };
-}
+  // Forward the event to the tenant's WebSocket room
+  // Events: 'new_message', 'qr_code', 'ready', 'authenticated', 'auth_failure', 'message_sent'
+  io.to(tenantId).emit(event, payload);
+  res.json({ success: true });
+});
 
 // ═══════════════════════════════════════════════════════════════
 // 🛠️ API ENDPOINTS
@@ -505,8 +214,8 @@ app.post('/api/auth/login', asyncHandler(async (req, res) => {
     return res.status(401).json({ success: false, error: 'İstifadəçi tapılmadı' });
   }
 
-  // Ensure WhatsApp session is pre-initialized for their tenant
-  getSession(user.tenant_id);
+  // Ensure WhatsApp session is pre-initialized for their tenant cleanly via worker
+  fetch(`http://localhost:4001/api/internal/start/${user.tenant_id}`).catch(() => { });
 
   // Generate simple token (In production, use true JWT with signing secret)
   const tokenPayload = {
@@ -616,11 +325,9 @@ app.get('/api/admin/tenants', requireTenantAuth, requireAdmin, asyncHandler(asyn
   }
   const tenants = await db.getSuperAdminTenants();
 
-  // Augment tenants array with their WhatsApp session connection status
+  // Assume connected for now, real status checked on dashboard load via healthchecks
   const tenantsWithStatus = tenants.map(t => {
-    const session = sessions.get(t.tenant_id);
-    const waStatus = session ? 'connected' : 'disconnected'; // Simple check, real status might vary
-    return { ...t, whatsapp_status: waStatus };
+    return { ...t, whatsapp_status: 'connected' };
   });
 
   res.json(tenantsWithStatus);
@@ -642,8 +349,8 @@ app.post('/api/admin/tenants', requireTenantAuth, requireAdmin, asyncHandler(asy
   try {
     const newAdmin = await db.createUser(adminUsername.toLowerCase(), adminPassword, 'admin', cleanTenantId);
 
-    // Auto-init WhatsApp session for the new tenant
-    getSession(cleanTenantId);
+    // Auto-init WhatsApp session for the new tenant via worker
+    fetch(`http://localhost:4001/api/internal/start/${cleanTenantId}`).catch(() => { });
 
     res.status(201).json({ success: true, tenant: newAdmin });
   } catch (err) {
@@ -734,6 +441,18 @@ app.post('/api/admin/impersonate/:tenantId', requireTenantAuth, requireAdmin, as
   });
 }));
 
+// 🚀 WHATSAPP CONTROL API
+app.post('/api/whatsapp/start', requireTenantAuth, asyncHandler(async (req, res) => {
+  console.log(`🚀 Manual WhatsApp Start Requested via CRM UI [${req.tenantId}]`);
+  try {
+    const workerRes = await fetch(`http://localhost:4001/api/internal/start/${req.tenantId}`, { method: 'POST' });
+    const data = await workerRes.json();
+    res.json(data);
+  } catch (err) {
+    res.status(502).json({ success: false, message: 'Worker is unavailable' });
+  }
+}));
+
 // 🗄️ LEADS API
 app.get('/api/leads', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
@@ -822,6 +541,43 @@ app.get('/api/leads/:id/messages', requireTenantAuth, asyncHandler(async (req, r
   res.json(messages);
 }));
 
+// ADDED IN PHASE 6: Sending Messages directly to DB Queue
+app.post('/api/leads/:id/messages', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+
+  const leadId = req.params.id;
+  const { body } = req.body;
+  if (!body) return res.status(400).json({ error: 'Message body is required' });
+
+  // Get lead to know the phone number
+  const fullLead = await db.pool.query('SELECT phone, name FROM leads WHERE id = $1 AND tenant_id = $2', [leadId, req.tenantId]);
+  if (fullLead.rowCount === 0) return res.status(404).json({ error: 'Lead not found' });
+  const lead = fullLead.rows[0];
+
+  // Insert into messages as pending
+  const insertResult = await db.pool.query(`
+    INSERT INTO messages (lead_id, phone, body, direction, status, tenant_id)
+    VALUES ($1, $2, $3, 'out', 'pending', $4)
+    RETURNING id, created_at
+  `, [leadId, lead.phone, body, req.tenantId]);
+
+  const newMsg = insertResult.rows[0];
+
+  // Optimmistically emit to UI
+  const payload = {
+    phone: lead.phone,
+    name: lead.name,
+    message: body,
+    whatsapp_id: 'pending-' + newMsg.id, // temporary UI anchor
+    fromMe: true,
+    timestamp: newMsg.created_at.toISOString(),
+    is_fast_emit: true
+  };
+  io.to(req.tenantId).emit('new_message', payload);
+
+  res.status(201).json(newMsg);
+}));
+
 // 🗑️ FACTORY RESET — delete ALL leads and messages FOR TENANT
 app.delete('/api/leads/all', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
@@ -836,16 +592,28 @@ app.get('/api/stats', requireTenantAuth, asyncHandler(async (req, res) => {
   res.json(stats);
 }));
 
-app.get('/health', requireTenantAuth, (req, res) => {
-  const health = getHealthStatus(req.tenantId);
-  if (process.env.DATABASE_URL && db.healthCheck) {
-    db.healthCheck(req.tenantId)
-      .then(dbHealth => res.json({ ...health, database: dbHealth }))
-      .catch(() => res.json({ ...health, database: { status: 'error' } }));
-  } else {
-    res.json(health);
+app.get('/health', requireTenantAuth, asyncHandler(async (req, res) => {
+  try {
+    const workerRes = await fetch(`http://localhost:4001/api/internal/status/${req.tenantId}`);
+    const data = await workerRes.json();
+    const status = data.isReady ? 'CONNECTED' : (data.qr ? 'SYNCING' : 'OFFLINE');
+
+    let dbStatus = undefined;
+    if (db.healthCheck) {
+      dbStatus = await db.healthCheck(req.tenantId).catch(() => ({ status: 'error' }));
+    }
+
+    res.json({
+      whatsapp: status,
+      connectedNumber: data.number,
+      socket_clients: io.engine.clientsCount,
+      timestamp: new Date().toISOString(),
+      database: dbStatus
+    });
+  } catch (err) {
+    res.json({ whatsapp: 'OFFLINE', socket_clients: io.engine.clientsCount, timestamp: new Date().toISOString() });
   }
-});
+}));
 
 app.get('/chats/recent', requireTenantAuth, asyncHandler(async (req, res) => {
   console.log(`📂 RECENT CHATS REQUESTED [${req.tenantId}]`);
@@ -870,63 +638,17 @@ app.get('/chats/recent', requireTenantAuth, asyncHandler(async (req, res) => {
     });
   }
 
-  // Step 2: Merge/overlay the in-memory live cache (more recent, since this session)
-  const liveChats = getRecentChats(req.tenantId);
-  for (const [phone, data] of liveChats.entries()) {
-    const existing = merged.get(phone);
-    // Only use live cache if it's a newer message than what we got from DB
-    if (!existing || data.timestamp > (existing.timestamp || 0)) {
-      merged.set(phone, { ...existing, ...data, phone });
-    }
-  }
-
-  // Sort by most recent message and return top 30
+  // Step 2: Because we are fully DB-backed now, we just sort and respond
   const chatsArray = Array.from(merged.values());
   chatsArray.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
 
   res.json(chatsArray.slice(0, 30));
 }));
 
-app.get('/__test_send_whatsapp', requireTenantAuth, asyncHandler(async (req, res) => {
-  let phone = req.query.phone;
-  if (!phone) return res.status(400).send('Please provide ?phone=994XXXXXXXX');
 
-  if (phone.length === 9) phone = '994' + phone;
-  if (phone.startsWith('0')) phone = '994' + phone.substring(1);
-  if (phone.startsWith('55') && phone.length === 9) phone = '994' + phone;
-
-  const jid = `${phone}@s.whatsapp.net`; // Baileys uses s.whatsapp.net
-
-  const session = getSession(req.tenantId);
-  if (!session.isAuthenticated && !session.isReady) {
-    return res.status(503).send(`<h1>Client Not Ready for ${req.tenantId}</h1>`);
-  }
-
-  try {
-    const sentMsg = await session.sock.sendMessage(jid, { text: `🤖 Hello! This is a backend self-test message from ${req.tenantId}.` });
-
-    await processMessage(req.tenantId, sentMsg, true);
-
-    res.send(`<h1>Message Sent & Logged!</h1><p>Target: ${jid}</p>`);
-  } catch (e) {
-    res.status(500).send(`<h1>Send Failed</h1><pre>${e.stack || e.message}</pre>`);
-  }
-}));
 
 app.get(['/api/debug', '/api/debug/:tenantId'], (req, res) => {
   const mem = process.memoryUsage();
-  const summary = {};
-
-  // Create safe summary of all tenants
-  for (const [tId, sess] of sessions.entries()) {
-    summary[tId] = {
-      isReady: sess.isReady,
-      isAuthenticated: sess.isAuthenticated,
-      isInitializing: sess.isInitializing,
-      hasQrCode: !!sess.qrCodeData,
-      lastInitError: sess.lastInitError,
-    };
-  }
 
   res.json({
     uptime_seconds: Math.round(process.uptime()),
@@ -934,7 +656,6 @@ app.get(['/api/debug', '/api/debug/:tenantId'], (req, res) => {
       rss_mb: Math.round(mem.rss / 1024 / 1024),
       heap_used_mb: Math.round(mem.heapUsed / 1024 / 1024),
     },
-    tenants: summary,
     environment: {
       node_version: process.version,
       platform: process.platform,
@@ -945,7 +666,7 @@ app.get(['/api/debug', '/api/debug/:tenantId'], (req, res) => {
 
 setInterval(() => {
   const mem = process.memoryUsage();
-  console.log(`📊 Memory: ${Math.round(mem.rss / 1024 / 1024)}MB RSS | Tenants active: ${sessions.size}`);
+  console.log(`📊 API Memory: ${Math.round(mem.rss / 1024 / 1024)}MB RSS`);
 }, 60000);
 
 // SERVE FRONTEND (Monolith Mode)

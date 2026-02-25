@@ -38,6 +38,11 @@ export function WhatsAppConnect({ isConnected, connectedNumber, onConnect, onDis
 
       if (isOnline) {
         console.log('✅ Server connection successful!');
+
+        // Explicitly tell the backend to boot this tenant's WhatsApp client if it isn't already
+        if (url !== 'demo') {
+          await CrmService.startWhatsApp();
+        }
         // Start listening for QR
         CrmService.onQrCode((qr) => {
           console.log('📱 QR Code received!');

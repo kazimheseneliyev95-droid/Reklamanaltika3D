@@ -147,6 +147,33 @@ class CrmServiceImpl {
     }
   }
 
+  // 🚀 Manual WhatsApp Boot Command
+  async startWhatsApp(): Promise<boolean> {
+    try {
+      if (this.isDemoMode) return true;
+      const url = this.getServerUrl();
+      const token = localStorage.getItem('crm_auth_token');
+      if (!url || !token) return false;
+
+      console.log('🚀 Triggering manual WhatsApp start...');
+      const response = await fetch(`${url}/api/whatsapp/start`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+          'x-tenant-id': localStorage.getItem('crm_tenant_id') || 'admin'
+        }
+      });
+
+      const data = await response.json();
+      console.log('🚀 Manual start response:', data);
+      return data.success;
+    } catch (e) {
+      console.error('❌ Failed to trigger manual WhatsApp start:', e);
+      return false;
+    }
+  }
+
   disconnect() {
     if (this.isDemoMode) {
       this.isDemoMode = false;
@@ -493,7 +520,6 @@ class CrmServiceImpl {
    * Get leads with caching for better performance
    */
   async getLeads(dateRange?: DateRange): Promise<Lead[]> {
-    const now = Date.now();
     const url = this.getServerUrl();
 
     // Skip cache and always hit DB — this ensures fresh data on every page open
@@ -510,7 +536,6 @@ class CrmServiceImpl {
         if (response.ok) {
           const leads = await response.json();
           this.leadsCache = leads;
-          this.cacheTimestamp = now;
           localStorage.setItem(getStorageKey(), JSON.stringify(leads));
           return this.filterLeadsByDate(leads, dateRange);
         }
@@ -524,7 +549,6 @@ class CrmServiceImpl {
     let leads: Lead[] = raw ? JSON.parse(raw) : [];
 
     this.leadsCache = leads;
-    this.cacheTimestamp = now;
 
     return this.filterLeadsByDate(leads, dateRange);
   }
@@ -599,7 +623,6 @@ class CrmServiceImpl {
       const updatedList = [existingLead, ...allLeads];
       localStorage.setItem(getStorageKey(), JSON.stringify(updatedList));
       this.leadsCache = updatedList;
-      this.cacheTimestamp = Date.now();
       return existingLead;
     }
 
@@ -612,7 +635,6 @@ class CrmServiceImpl {
     const updated = [newLead, ...allLeads];
     localStorage.setItem(getStorageKey(), JSON.stringify(updated));
     this.leadsCache = updated;
-    this.cacheTimestamp = Date.now();
     return newLead;
   }
 
@@ -635,7 +657,6 @@ class CrmServiceImpl {
       allLeads.unshift(lead);
     }
     localStorage.setItem(getStorageKey(), JSON.stringify(allLeads));
-    this.cacheTimestamp = Date.now();
   }
 
   async updateLead(id: string, updates: Partial<Lead>): Promise<void> {
@@ -678,7 +699,6 @@ class CrmServiceImpl {
     if (cacheIndex !== -1) {
       this.leadsCache[cacheIndex] = { ...this.leadsCache[cacheIndex], ...updates, updated_at: new Date().toISOString() };
     }
-    this.cacheTimestamp = Date.now();
   }
 
   async updateStatus(id: string, status: LeadStatus): Promise<void> {
@@ -711,7 +731,6 @@ class CrmServiceImpl {
 
     // Update cache
     this.leadsCache = this.leadsCache.filter(l => l.id !== id);
-    this.cacheTimestamp = Date.now();
   }
 
   /**
@@ -737,7 +756,6 @@ class CrmServiceImpl {
     // Clear localStorage and cache
     localStorage.removeItem(getStorageKey());
     this.leadsCache = [];
-    this.cacheTimestamp = 0;
     this.processedMessageIds.clear();
     console.log('✅ All leads cleared');
   }

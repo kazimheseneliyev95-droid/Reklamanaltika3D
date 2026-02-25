@@ -73,6 +73,7 @@ async function initDb() {
           direction VARCHAR(10) NOT NULL CHECK (direction IN ('in', 'out')),
           whatsapp_id VARCHAR(255),
           tenant_id VARCHAR(50) DEFAULT 'admin',
+          status VARCHAR(50) DEFAULT 'delivered',
           created_at TIMESTAMP DEFAULT NOW(),
           CONSTRAINT messages_wa_tenant_unique UNIQUE (whatsapp_id, tenant_id)
         );
@@ -94,6 +95,7 @@ async function initDb() {
                 ALTER TABLE leads ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(50) DEFAULT 'admin';
                 ALTER TABLE messages ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(50) DEFAULT 'admin';
                 ALTER TABLE leads ADD COLUMN IF NOT EXISTS assignee_id UUID REFERENCES users(id) ON DELETE SET NULL;
+                ALTER TABLE messages ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'delivered';
             `);
         } catch (e) {
             console.error("Migration warning (can be ignored on fresh install):", e.message);
@@ -117,6 +119,7 @@ async function initDb() {
             CREATE INDEX IF NOT EXISTS idx_whatsapp_id ON leads(whatsapp_id);
             CREATE INDEX IF NOT EXISTS idx_messages_lead_id ON messages(lead_id);
             CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at ASC);
+            CREATE INDEX IF NOT EXISTS idx_messages_polling ON messages(direction, status);
         `);
 
         await client.query('COMMIT');
