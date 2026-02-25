@@ -22,6 +22,7 @@ interface TenantStatus {
     user_count: number;
     lead_count: number;
     whatsapp_status: 'connected' | 'disconnected';
+    connectedNumber?: string;
 }
 
 export default function SuperAdminDashboard() {
@@ -335,13 +336,20 @@ export default function SuperAdminDashboard() {
                                                 {t.admin_username}
                                             </td>
                                             <td className="p-4">
-                                                <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border ${t.whatsapp_status === 'connected'
-                                                    ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
-                                                    : 'bg-rose-500/10 border-rose-500/20 text-rose-400'
-                                                    }`}>
-                                                    <span className={`w-1.5 h-1.5 rounded-full ${t.whatsapp_status === 'connected' ? 'bg-emerald-500' : 'bg-rose-500'}`}></span>
-                                                    {t.whatsapp_status === 'connected' ? 'Connected' : 'Offline'}
-                                                </span>
+                                                <div className="flex flex-col gap-1 items-start">
+                                                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border ${t.whatsapp_status === 'connected'
+                                                        ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
+                                                        : 'bg-rose-500/10 border-rose-500/20 text-rose-400'
+                                                        }`}>
+                                                        <span className={`w-1.5 h-1.5 rounded-full ${t.whatsapp_status === 'connected' ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`}></span>
+                                                        {t.whatsapp_status === 'connected' ? 'Connected' : 'Offline'}
+                                                    </span>
+                                                    {t.whatsapp_status === 'connected' && t.connectedNumber && (
+                                                        <span className="text-[10px] font-mono text-slate-400 opacity-80 tracking-wide">
+                                                            {t.connectedNumber}
+                                                        </span>
+                                                    )}
+                                                </div>
                                             </td>
                                             <td className="p-4 text-sm text-slate-300">
                                                 <div className="flex items-center gap-1">

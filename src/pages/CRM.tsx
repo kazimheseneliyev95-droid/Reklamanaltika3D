@@ -31,7 +31,7 @@ export default function CRMPage() {
   const [assigneeFilter, setAssigneeFilter] = useState<string>('');
   const [showSettings, setShowSettings] = useState(false);
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
-  const [systemHealth, setSystemHealth] = useState<{ whatsapp: string, socket_clients: number, timestamp: string } | null>(null);
+  const [systemHealth, setSystemHealth] = useState<{ whatsapp: string, socket_clients: number, timestamp: string, connectedNumber?: string } | null>(null);
 
   const filteredLeads = useMemo(() => {
     return leads.filter(l => !assigneeFilter || l.assignee_id === assigneeFilter);
@@ -154,6 +154,7 @@ export default function CRMPage() {
           <div className="flex flex-wrap items-center gap-2">
             <WhatsAppConnect
               isConnected={isWhatsAppConnected}
+              connectedNumber={systemHealth?.connectedNumber}
               onConnect={toggleWhatsAppConnection}
               onDisconnect={toggleWhatsAppConnection}
             />

@@ -8,11 +8,12 @@ import { CrmService } from '../services/CrmService';
 
 interface WhatsAppConnectProps {
   isConnected: boolean;
+  connectedNumber?: string | null;
   onConnect: () => void;
   onDisconnect: () => void;
 }
 
-export function WhatsAppConnect({ isConnected, onConnect, onDisconnect }: WhatsAppConnectProps) {
+export function WhatsAppConnect({ isConnected, connectedNumber, onConnect, onDisconnect }: WhatsAppConnectProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [serverUrl, setServerUrl] = useState(import.meta.env.PROD ? window.location.origin : 'http://localhost:4000');
   const [serverStatus, setServerStatus] = useState<'checking' | 'online' | 'offline' | 'demo'>('offline');
@@ -84,7 +85,7 @@ export function WhatsAppConnect({ isConnected, onConnect, onDisconnect }: WhatsA
             {serverStatus === 'demo' ? "Demo Mode" : "WhatsApp Active"}
           </span>
           <span className={cn("text-[8px] sm:text-[10px] hidden sm:block", serverStatus === 'demo' ? "text-blue-500/70" : "text-green-500/70")}>
-            {serverStatus === 'demo' ? "Simulating..." : "Receiving messages"}
+            {connectedNumber ? connectedNumber : (serverStatus === 'demo' ? "Simulating..." : "Receiving messages")}
           </span>
         </div>
         <button

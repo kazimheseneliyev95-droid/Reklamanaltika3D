@@ -54,7 +54,8 @@ function getSession(tenantId) {
       qrCodeData: null,
       isInitializing: false,
       lastInitError: null,
-      sock: null
+      sock: null,
+      connectedNumber: null
     });
   }
   return sessions.get(tenantId);
@@ -375,6 +376,11 @@ async function startWhatsAppClient(tenantId) {
         session.isInitializing = false;
         session.qrCodeData = null;
 
+        // Extract the connected phone number (e.g., "994776069606:12@s.whatsapp.net" -> "994776069606")
+        if (session.sock?.user?.id) {
+          session.connectedNumber = '+' + session.sock.user.id.split(':')[0].split('@')[0];
+        }
+
         io.to(tenantId).emit('ready', { status: 'connected' });
         io.to(tenantId).emit('authenticated', { status: 'authenticated' });
         io.to(tenantId).emit('crm:health_check', getHealthStatus(tenantId));
@@ -461,6 +467,7 @@ function getHealthStatus(tenantId) {
 
   return {
     whatsapp: status,
+    connectedNumber: session.connectedNumber,
     socket_clients: io.engine.clientsCount, // Global count, maybe scope to namespace later
     timestamp: new Date().toISOString()
   };
