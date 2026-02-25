@@ -11,11 +11,11 @@ const pino = require('pino');
 const db = require('./database');
 const { usePostgresAuthState, getAllAuthenticatedTenants } = require('./postgresAuthState.cjs');
 
-const app = express();
-app.use(express.json());
+const workerApp = express();
+workerApp.use(express.json());
 
 const WORKER_PORT = process.env.WORKER_PORT || 4001;
-const API_URL = process.env.API_URL || 'http://localhost:4000'; // Location of main index.cjs
+const API_URL = process.env.API_URL || 'http://localhost:4000';
 
 // State Variables (Multi-Tenant)
 const sessions = new Map();
@@ -35,7 +35,7 @@ function getSession(tenantId) {
     return sessions.get(tenantId);
 }
 
-// 🆕 Message Deduplication Cache
+// Message Deduplication Cache
 const PROCESSED_MESSAGES_TTL = 30000;
 const processedMessages = new Map();
 
@@ -50,19 +50,19 @@ setInterval(() => {
 
 console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 console.log('🤖 WHATSAPP BACKGROUND WORKER INITIALIZING...');
-console.log(`📋 Port: ${WORKER_PORT}`);
+console.log('📋 Worker Port: ' + WORKER_PORT);
 console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
 // Notify Main API Server via Webhook
 async function notifyApiServer(tenantId, event, payload) {
     try {
-        await fetch(`${API_URL}/api/internal/webhook`, {
+        await fetch(API_URL + '/api/internal/webhook', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ tenantId, event, payload })
         });
     } catch (err) {
-        console.error(`⚠️ Failed to notify API Server for event ${event}:`, err.message);
+        console.error('⚠️ Failed to notify API Server for event ' + event + ':', err.message);
     }
 }
 
@@ -86,14 +86,14 @@ async function processMessage(tenantId, msg, isFromMe) {
 
         const prefix = isFromMe ? '📤 [OUTGOING]' : '📥 [INCOMING]';
         const rawJid = msg.key.remoteJid.split('@')[0];
-        const rawNumber = rawJid.split(':')[0]; // Strip `:12` device suffix if present
+        const rawNumber = rawJid.split(':')[0];
 
         if (!rawNumber || rawNumber.length < 5 || rawNumber.includes('g.us')) return;
 
-        const contactName = msg.pushName || `+${rawNumber}`;
-        console.log(`[${tenantId}] ${prefix} ${rawNumber} | ${messageContent.substring(0, 50)}...`);
+        const contactName = msg.pushName || ('+' + rawNumber);
+        console.log('[' + tenantId + '] ' + prefix + ' ' + rawNumber + ' | ' + messageContent.substring(0, 50) + '...');
 
-        // Only process incoming messages here (outgoing are processed by the poller when DB writes them)
+        // Only process incoming messages here
         if (!isFromMe) {
             if (process.env.DATABASE_URL && db) {
                 try {
@@ -106,7 +106,7 @@ async function processMessage(tenantId, msg, isFromMe) {
                     if (existingLead) {
                         await db.updateLeadMessage(rawNumber, messageContent, whatsappId, contactName, tenantId);
                         savedLead = existingLead;
-                        console.log(`📝 Updated lead [${tenantId}]: ${rawNumber}`);
+                        console.log('📝 Updated lead [' + tenantId + ']: ' + rawNumber);
                     } else {
                         savedLead = await db.createLead({
                             phone: rawNumber,
@@ -116,18 +116,18 @@ async function processMessage(tenantId, msg, isFromMe) {
                             source: 'whatsapp',
                             status: 'new'
                         }, tenantId);
-                        console.log(`✨ New lead created [${tenantId}]: ${rawNumber}`);
+                        console.log('✨ New lead created [' + tenantId + ']: ' + rawNumber);
                     }
 
-                    if (savedLead?.id) {
+                    if (savedLead && savedLead.id) {
                         await db.appendMessage({
                             leadId: savedLead.id,
                             phone: rawNumber,
                             body: messageContent,
                             direction: 'in',
-                            whatsappId,
+                            whatsappId: whatsappId,
                             createdAt: msg.messageTimestamp || null,
-                            tenantId
+                            tenantId: tenantId
                         });
                     }
                 } catch (dbError) {
@@ -136,7 +136,7 @@ async function processMessage(tenantId, msg, isFromMe) {
             }
         }
 
-        // Always tell the UI to refresh
+        // Always tell the UI to refresh via webhook
         notifyApiServer(tenantId, 'new_message', {
             phone: rawNumber,
             name: contactName,
@@ -156,26 +156,25 @@ async function processMessage(tenantId, msg, isFromMe) {
 // ═══════════════════════════════════════════════════════════════
 
 async function startWhatsAppClient(tenantId) {
-    console.log(`\n🚀 STARTING WHATSAPP CLIENT FOR TENANT [${tenantId}]...`);
+    console.log('\n🚀 STARTING WHATSAPP CLIENT FOR TENANT [' + tenantId + ']...');
     const session = getSession(tenantId);
 
     if (session.isInitializing || session.isReady) return;
     session.isInitializing = true;
 
     try {
-        let state, saveCreds, clearState;
-        console.log(`📦 Using PostgreSQL for Baileys Auth State [${tenantId}]...`);
+        console.log('📦 Using PostgreSQL for Baileys Auth State [' + tenantId + ']...');
         const auth = await usePostgresAuthState(db.pool, tenantId);
-        state = auth.state;
-        saveCreds = auth.saveCreds;
-        clearState = auth.clearState;
+        const state = auth.state;
+        const saveCreds = auth.saveCreds;
+        const clearState = auth.clearState;
 
         const { version, isLatest } = await fetchLatestBaileysVersion();
-        console.log(`[${tenantId}] using WA v${version.join('.')}, isLatest: ${isLatest}`);
+        console.log('[' + tenantId + '] using WA v' + version.join('.') + ', isLatest: ' + isLatest);
 
         session.sock = makeWASocket({
-            version,
-            logger: pino({ level: 'silent' }), // Suppress pino
+            version: version,
+            logger: pino({ level: 'silent' }),
             printQRInTerminal: false,
             auth: state,
             browser: Browsers.macOS('Desktop'),
@@ -185,11 +184,13 @@ async function startWhatsAppClient(tenantId) {
 
         session.sock.ev.on('creds.update', saveCreds);
 
-        session.sock.ev.on('connection.update', async (update) => {
-            const { connection, lastDisconnect, qr } = update;
+        session.sock.ev.on('connection.update', async function (update) {
+            var connection = update.connection;
+            var lastDisconnect = update.lastDisconnect;
+            var qr = update.qr;
 
             if (qr) {
-                console.log(`📱 QR RECEIVED [${tenantId}]`);
+                console.log('📱 QR RECEIVED [' + tenantId + ']');
                 session.qrCodeData = qr;
                 session.isReady = false;
                 session.isAuthenticated = false;
@@ -197,16 +198,16 @@ async function startWhatsAppClient(tenantId) {
             }
 
             if (connection === 'close') {
-                const statusCode = lastDisconnect?.error?.output?.statusCode;
-                const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-                console.log(`⚠️ Connection closed [${tenantId}] (Status: ${statusCode}), reconnecting: ${shouldReconnect}`);
+                var statusCode = lastDisconnect && lastDisconnect.error && lastDisconnect.error.output ? lastDisconnect.error.output.statusCode : null;
+                var shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+                console.log('⚠️ Connection closed [' + tenantId + '] (Status: ' + statusCode + '), reconnecting: ' + shouldReconnect);
                 session.isReady = false;
                 session.isInitializing = false;
 
                 if (shouldReconnect) {
-                    setTimeout(() => startWhatsAppClient(tenantId), 5000);
+                    setTimeout(function () { startWhatsAppClient(tenantId); }, 5000);
                 } else {
-                    console.log(`❌ Logged out [${tenantId}], clearing auth state...`);
+                    console.log('❌ Logged out [' + tenantId + '], clearing auth state...');
                     session.isAuthenticated = false;
                     session.qrCodeData = null;
                     notifyApiServer(tenantId, 'auth_failure', 'Logged out. Getting new QR code...');
@@ -214,34 +215,37 @@ async function startWhatsAppClient(tenantId) {
                     if (clearState) {
                         await clearState();
                     }
-                    setTimeout(() => startWhatsAppClient(tenantId), 3000);
+                    setTimeout(function () { startWhatsAppClient(tenantId); }, 3000);
                 }
             } else if (connection === 'connecting') {
                 session.isInitializing = true;
             } else if (connection === 'open') {
-                console.log(`✅ CLIENT READY [${tenantId}] (Connection Open)`);
+                console.log('✅ CLIENT READY [' + tenantId + '] (Connection Open)');
                 session.isReady = true;
                 session.isAuthenticated = true;
                 session.isInitializing = false;
                 session.qrCodeData = null;
 
-                if (session.sock?.user?.id) {
+                if (session.sock && session.sock.user && session.sock.user.id) {
                     session.connectedNumber = '+' + session.sock.user.id.split(':')[0].split('@')[0];
                 }
 
                 notifyApiServer(tenantId, 'ready', { status: 'connected' });
+                notifyApiServer(tenantId, 'authenticated', { status: 'authenticated' });
             }
         });
 
-        session.sock.ev.on('messages.upsert', async (m) => {
-            for (const msg of m.messages) {
-                if (msg.message?.protocolMessage) continue;
+        session.sock.ev.on('messages.upsert', async function (m) {
+            for (var i = 0; i < m.messages.length; i++) {
+                var msg = m.messages[i];
+                if (msg.message && msg.message.protocolMessage) continue;
                 processMessage(tenantId, msg, msg.key.fromMe);
             }
         });
 
     } catch (err) {
-        console.error(`❌ WhatsApp client initialization FAILED [${tenantId}]!`);
+        console.error('❌ WhatsApp client initialization FAILED [' + tenantId + ']!');
+        console.error('Error:', err.message);
         session.isInitializing = false;
     }
 }
@@ -253,87 +257,91 @@ async function startWhatsAppClient(tenantId) {
 async function pollOutgoingMessages() {
     if (!db.pool) return;
     try {
-        // Find all pending outgoing messages
-        const result = await db.pool.query(\`
-      SELECT id, tenant_id, phone, body 
-      FROM messages 
-      WHERE direction = 'out' AND status = 'pending'
-      ORDER BY created_at ASC
-    \`);
-    
-    for (const msg of result.rows) {
-      const session = sessions.get(msg.tenant_id);
-      if (session && session.isReady && session.sock) {
-        console.log(\`[${msg.tenant_id}] 🤖 Auto-Sending pending message to ${msg.phone}...\`);
-        try {
-          const jid = \`\${msg.phone}@s.whatsapp.net\`;
-          const sentMsg = await session.sock.sendMessage(jid, { text: msg.body });
-          
-          if (sentMsg?.key?.id) {
-            await db.pool.query(\`UPDATE messages SET status = 'sent', whatsapp_id = $1 WHERE id = $2\`, [sentMsg.key.id, msg.id]);
-            notifyApiServer(msg.tenant_id, 'message_sent', { id: msg.id, status: 'sent', whatsapp_id: sentMsg.key.id });
-          }
-        } catch (sendErr) {
-          console.error(\`⚠️ Failed to send message \${msg.id}:\`, sendErr.message);
-          // Optional: Mark as failed so we don't infinitely retry broken ones, but for now leave pending or add a retry counter
-          await db.pool.query(\`UPDATE messages SET status = 'failed' WHERE id = $1\`, [msg.id]);
+        var result = await db.pool.query(
+            "SELECT id, tenant_id, phone, body FROM messages WHERE direction = 'out' AND status = 'pending' ORDER BY created_at ASC"
+        );
+
+        for (var i = 0; i < result.rows.length; i++) {
+            var msg = result.rows[i];
+            var session = sessions.get(msg.tenant_id);
+            if (session && session.isReady && session.sock) {
+                console.log('[' + msg.tenant_id + '] 🤖 Auto-Sending pending message to ' + msg.phone + '...');
+                try {
+                    var jid = msg.phone + '@s.whatsapp.net';
+                    var sentMsg = await session.sock.sendMessage(jid, { text: msg.body });
+
+                    if (sentMsg && sentMsg.key && sentMsg.key.id) {
+                        await db.pool.query("UPDATE messages SET status = 'sent', whatsapp_id = $1 WHERE id = $2", [sentMsg.key.id, msg.id]);
+                        notifyApiServer(msg.tenant_id, 'message_sent', { id: msg.id, status: 'sent', whatsapp_id: sentMsg.key.id });
+                    }
+                } catch (sendErr) {
+                    console.error('⚠️ Failed to send message ' + msg.id + ':', sendErr.message);
+                    await db.pool.query("UPDATE messages SET status = 'failed' WHERE id = $1", [msg.id]);
+                }
+            }
         }
-      }
+    } catch (err) {
+        console.error("Poller error:", err.message);
     }
-  } catch (err) {
-    console.error("Poller error:", err.message);
-  }
 }
 
 // Poll every 3 seconds
 setInterval(pollOutgoingMessages, 3000);
 
-
 // ═══════════════════════════════════════════════════════════════
 // 🌐 INTERNAL WORKER API (Port 4001)
 // ═══════════════════════════════════════════════════════════════
 
-// API Server requests worker to boot/re-boot a tenant's WhatsApp instance
-app.post('/api/internal/start/:tenantId', (req, res) => {
-  const tenantId = req.params.tenantId;
-  const session = getSession(tenantId);
-  
-  if (session.isReady) {
-    return res.json({ success: true, status: 'already_connected' });
-  } else if (session.qrCodeData) {
-    return res.json({ success: true, status: 'qr_ready', qr: session.qrCodeData });
-  } else {
-    // Kick off the boot
-    startWhatsAppClient(tenantId);
-    res.json({ success: true, status: 'starting' });
-  }
-});
+workerApp.post('/api/internal/start/:tenantId', function (req, res) {
+    var tenantId = req.params.tenantId;
+    var session = getSession(tenantId);
 
-app.get('/api/internal/status/:tenantId', (req, res) => {
-  const tenantId = req.params.tenantId;
-  const session = getSession(tenantId);
-  res.json({
-    isReady: session.isReady,
-    qr: session.qrCodeData ? true : false,
-    number: session.connectedNumber
-  });
-});
-
-// Boot all saved tenants on startup
-db.initDb().then(async () => {
-  try {
-    const activeTenants = await getAllAuthenticatedTenants(db.pool);
-    console.log(\`🤖 Found \${activeTenants.length} active tenants. Booting background syncing...\`);
-    for (const tId of activeTenants) {
-      startWhatsAppClient(tId);
-      // Small delay between boots to prevent rate limiting / high CPU spike
-      await new Promise(r => setTimeout(r, 2000));
+    if (session.isReady) {
+        return res.json({ success: true, status: 'already_connected' });
+    } else if (session.qrCodeData) {
+        return res.json({ success: true, status: 'qr_ready', qr: session.qrCodeData });
+    } else {
+        startWhatsAppClient(tenantId);
+        res.json({ success: true, status: 'starting' });
     }
-  } catch (err) {
-    console.error('Failed to boot background tenants', err);
-  }
+});
 
-  app.listen(WORKER_PORT, '0.0.0.0', () => {
-    console.log(\`✅ WhatsApp Worker internal API listening on port \${WORKER_PORT}\`);
-  });
-}).catch(console.error);
+workerApp.get('/api/internal/status/:tenantId', function (req, res) {
+    var tenantId = req.params.tenantId;
+    var session = getSession(tenantId);
+    res.json({
+        isReady: session.isReady,
+        qr: session.qrCodeData ? true : false,
+        number: session.connectedNumber
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// 🚀 WORKER BOOT SEQUENCE
+// ═══════════════════════════════════════════════════════════════
+
+async function bootWorker() {
+    // If DB is already initialized (embedded mode from index.cjs), skip initDb
+    if (!db.pool) {
+        await db.initDb();
+    }
+
+    try {
+        var activeTenants = await getAllAuthenticatedTenants(db.pool);
+        console.log('🤖 Found ' + activeTenants.length + ' active tenants. Booting background syncing...');
+        for (var i = 0; i < activeTenants.length; i++) {
+            startWhatsAppClient(activeTenants[i]);
+            await new Promise(function (r) { setTimeout(r, 2000); });
+        }
+    } catch (err) {
+        console.error('Failed to boot background tenants:', err.message);
+    }
+
+    workerApp.listen(WORKER_PORT, '0.0.0.0', function () {
+        console.log('✅ WhatsApp Worker internal API listening on port ' + WORKER_PORT);
+    });
+}
+
+bootWorker().catch(function (err) {
+    console.error('Worker boot failed:', err.message);
+});

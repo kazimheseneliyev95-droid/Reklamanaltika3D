@@ -697,49 +697,14 @@ if (fs.existsSync(DIST_PATH)) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// 🚀 SERVER STARTUP — bind port AFTER DB is ready
+// 🤖 EMBED WHATSAPP WORKER IN SAME PROCESS
+// On Render Free tier, only one service runs. We start the Worker
+// in-process so both API (:4000) and Worker (:4001) share one Node.
 // ═══════════════════════════════════════════════════════════════
 
-function startServer() {
-  server.listen(PORT, '0.0.0.0', () => {
-    console.log(`\n🚀 ============================================`);
-    console.log(`🚀  Server is LIVE on port ${PORT}`);
-    console.log(`🚀  Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`🚀  Database: ${process.env.DATABASE_URL ? 'PostgreSQL' : 'None (local file)'}`);
-    console.log(`🚀 ============================================\n`);
-  });
-}
-
-if (process.env.DATABASE_URL && db && db.initDb) {
-  db.initDb()
-    .then(async () => {
-      console.log('✅ Database initialized successfully. Starting HTTP server...');
-      startServer();
-
-      // 🤖 Boot all background WhatsApp sessions so CRM continues functioning 24/7 
-      // even if no browser tabs are currently open (Render restart resilience).
-      try {
-        const { getAllAuthenticatedTenants } = require('./postgresAuthState.cjs');
-        const activeTenants = await getAllAuthenticatedTenants(db.pool);
-        if (activeTenants.length > 0) {
-          console.log(`🤖 Background Sync: Booting WhatsApp for ${activeTenants.length} tenants...`);
-          // Stagger boots by 3 seconds each to prevent CPU spikes / rate limits
-          for (let i = 0; i < activeTenants.length; i++) {
-            setTimeout(() => {
-              startWhatsAppClient(activeTenants[i]);
-            }, 3000 * i);
-          }
-        }
-      } catch (err) {
-        console.error('❌ Failed to boot background WhatsApp tenants:', err.message);
-      }
-    })
-    .catch((err) => {
-      console.error('❌ Database initialization failed:', err.message);
-      console.warn('⚠️  Starting server anyway without database...');
-      startServer();
-    });
-} else {
-  console.log('ℹ️  No DATABASE_URL set. Starting server in local mode...');
-  startServer();
+try {
+  require('./worker.cjs');
+  console.log('🤖 WhatsApp Worker embedded in same process (single-service mode).');
+} catch (err) {
+  console.error('⚠️ Failed to start embedded Worker:', err.message);
 }
