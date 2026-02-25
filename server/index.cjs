@@ -95,7 +95,23 @@ if (!process.env.DATABASE_URL) {
 }
 
 db.initDb()
-  .then(() => console.log('✅ Storage initialized successfully'))
+  .then(() => {
+    console.log('✅ Storage initialized successfully');
+
+    // Start HTTP Server ONLY after DB is ready to prevent Port Binding timeouts on Render
+    server.listen(PORT, '0.0.0.0', async () => {
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.log(`🚀 Server running on port ${PORT}`);
+      try {
+        if (db.pool) {
+          console.log('✅ Waiting for frontend UI login to instantiate specific Baileys clients.');
+        }
+      } catch (err) {
+        console.error('Boot err', err);
+      }
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    });
+  })
   .catch(err => {
     console.error('⚠️ Storage initialization failed:', err.message);
   });
@@ -910,19 +926,4 @@ if (fs.existsSync(DIST_PATH)) {
   });
 }
 
-server.listen(PORT, '0.0.0.0', async () => {
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log(`🚀 Server running on port ${PORT}`);
-
-  try {
-    if (db.pool) {
-      // On boot, optionally load tenants to start their clients
-      // For now, let's wait until a tenant logs in via the UI/socket connection.
-      console.log('✅ Waiting for frontend UI login to instantiate specific Baileys clients.');
-    }
-  } catch (err) {
-    console.error('Boot err', err);
-  }
-
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-});
+// Server start moved to db.initDb().then() above
