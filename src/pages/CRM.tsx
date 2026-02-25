@@ -23,12 +23,19 @@ export default function CRMPage() {
     syncLeadsFromWhatsApp,
     toggleWhatsAppConnection,
     dateRange,
-    setDateRange
+    setDateRange,
+    teamMembers,
+    currentUser
   } = useAppStore();
 
+  const [assigneeFilter, setAssigneeFilter] = useState<string>('');
   const [showSettings, setShowSettings] = useState(false);
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [systemHealth, setSystemHealth] = useState<{ whatsapp: string, socket_clients: number, timestamp: string } | null>(null);
+
+  const filteredLeads = useMemo(() => {
+    return leads.filter(l => !assigneeFilter || l.assignee_id === assigneeFilter);
+  }, [leads, assigneeFilter]);
 
   // Keep selectedLead in sync with the global leads store
   useEffect(() => {
@@ -47,13 +54,13 @@ export default function CRMPage() {
 
   // --- METRICS CALCULATION ---
   const metrics = useMemo(() => {
-    const totalLeads = leads.length;
-    const totalRevenue = leads
+    const totalLeads = filteredLeads.length;
+    const totalRevenue = filteredLeads
       .filter(l => l.status === 'won')
       .reduce((sum, l) => sum + (l.value || 0), 0);
 
     return { totalLeads, totalRevenue };
-  }, [leads]);
+  }, [filteredLeads]);
 
   const handleEdit = (lead: Lead) => {
     setSelectedLead(lead);
@@ -205,6 +212,19 @@ export default function CRMPage() {
               <Filter className="w-4 h-4" />
               <span className="text-xs font-medium">Filter:</span>
             </div>
+
+            {/* Assignee Filter */}
+            <select
+              className="bg-slate-950 border border-slate-800 text-slate-300 text-xs rounded px-3 py-1.5 focus:ring-1 focus:ring-blue-500 outline-none max-w-[140px]"
+              value={assigneeFilter}
+              onChange={(e) => setAssigneeFilter(e.target.value)}
+            >
+              <option value="">Hamısı (Komanda)</option>
+              {currentUser && <option value={currentUser.id}>Mənim Leadlərim</option>}
+              {teamMembers.map(tm => (
+                <option key={tm.id} value={tm.id}>{tm.username}</option>
+              ))}
+            </select>
 
             {/* Dropdown Filter */}
             <select

@@ -2,7 +2,7 @@ import { Lead, LeadStatus, DateRange } from '../types/crm';
 import { io, Socket } from 'socket.io-client';
 import { faker } from '@faker-js/faker';
 
-const STORAGE_KEY = 'dualite_crm_leads_v3';
+const getStorageKey = () => `dualite_crm_leads_v3_${localStorage.getItem('crm_tenant_id') || 'admin'}`;
 const SERVER_URL_KEY = 'dualite_server_url';
 
 class CrmServiceImpl {
@@ -39,6 +39,20 @@ class CrmServiceImpl {
     return this.serverUrl || (import.meta as any).env.VITE_SERVER_URL || 'http://localhost:4000';
   }
 
+  // 🆕 Auto-reconnect on application boot
+  public autoConnect() {
+    const savedUrl = localStorage.getItem(SERVER_URL_KEY);
+    const token = localStorage.getItem('crm_auth_token');
+
+    // Only auto-connect if we have a saved URL and an active auth session
+    if (savedUrl && token && !this.socket) {
+      console.log('🔄 Auto-connecting to saved CRM backend:', savedUrl);
+      this.connectToServer(savedUrl).catch(err => {
+        console.warn('⚠️ Auto-connect failed:', err);
+      });
+    }
+  }
+
   async connectToServer(url: string): Promise<boolean> {
     if (url === 'demo') {
       this.isDemoMode = true;
@@ -62,6 +76,7 @@ class CrmServiceImpl {
       this.socket = io(url, {
         withCredentials: true,
         transports: ['websocket', 'polling'],
+        auth: { token: localStorage.getItem('crm_auth_token') },
         reconnection: true,
         reconnectionAttempts: 10,
         reconnectionDelay: 2000,
@@ -289,13 +304,13 @@ class CrmServiceImpl {
       }
 
       // Update localStorage to match database
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const raw = localStorage.getItem(getStorageKey());
       const allLeads: Lead[] = raw ? JSON.parse(raw) : [];
       const index = allLeads.findIndex(l => l.phone === updatedLead.phone);
 
       if (index !== -1) {
         allLeads[index] = updatedLead;
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(allLeads));
+        localStorage.setItem(getStorageKey(), JSON.stringify(allLeads));
         console.log('✅ Lead synced with database');
         this.notifyLeadUpdateListeners(updatedLead);
       }
@@ -304,10 +319,10 @@ class CrmServiceImpl {
     this.socket.on('lead_deleted', (id: string) => {
       console.log('🗑️ SOCKET: lead_deleted received', id);
 
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const raw = localStorage.getItem(getStorageKey());
       const allLeads: Lead[] = raw ? JSON.parse(raw) : [];
       const updated = allLeads.filter(l => l.id !== id);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+      localStorage.setItem(getStorageKey(), JSON.stringify(updated));
 
       this.leadsCache = this.leadsCache.filter(l => l.id !== id);
       this.notifyLeadDeletedListeners(id);
@@ -316,7 +331,7 @@ class CrmServiceImpl {
     this.socket.on('leads_reset', () => {
       console.log('🌀 SOCKET: leads_reset received');
       this.leadsCache = [];
-      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(getStorageKey());
       if ((this as any).resetListeners) {
         (this as any).resetListeners.forEach((cb: () => void) => cb());
       }
@@ -420,10 +435,17 @@ class CrmServiceImpl {
     };
   }
 
+  private getAuthHeaders(): { [key: string]: string } {
+    const token = localStorage.getItem('crm_auth_token');
+    return token ? { 'Authorization': `Bearer ${token}` } : {};
+  }
+
   async fetchRecentMessages(limit: number = 30): Promise<any[]> {
     if (!this.serverUrl) return [];
     try {
-      const response = await fetch(`${this.serverUrl}/chats/recent?limit=${limit}`);
+      const response = await fetch(`${this.serverUrl}/chats/recent?limit=${limit}`, {
+        headers: this.getAuthHeaders()
+      });
       const data = await response.json();
       // 🆕 Fixed: Direct array, not data.messages
       return Array.isArray(data) ? data : [];
@@ -454,12 +476,14 @@ class CrmServiceImpl {
         if (dateRange?.start) params.append('startDate', dateRange.start);
         if (dateRange?.end) params.append('endDate', dateRange.end);
 
-        const response = await fetch(`${this.serverUrl}/api/leads?${params}`);
+        const response = await fetch(`${this.serverUrl}/api/leads?${params}`, {
+          headers: this.getAuthHeaders()
+        });
         if (response.ok) {
           const leads = await response.json();
           this.leadsCache = leads;
           this.cacheTimestamp = now;
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(leads));
+          localStorage.setItem(getStorageKey(), JSON.stringify(leads));
           return leads;
         }
       } catch (error) {
@@ -468,7 +492,7 @@ class CrmServiceImpl {
     }
 
     // Fallback to localStorage
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(getStorageKey());
     let leads: Lead[] = raw ? JSON.parse(raw) : [];
 
     this.leadsCache = leads;
@@ -504,7 +528,7 @@ class CrmServiceImpl {
       try {
         const response = await fetch(`${this.serverUrl}/api/leads`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { ...this.getAuthHeaders(), 'Content-Type': 'application/json' },
           body: JSON.stringify(lead)
         });
 
@@ -520,7 +544,7 @@ class CrmServiceImpl {
     }
 
     // Fallback: localStorage only
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(getStorageKey());
     const allLeads: Lead[] = raw ? JSON.parse(raw) : [];
 
     // Fuzzy phone match for localStorage dedup (last 9 digits)
@@ -544,7 +568,7 @@ class CrmServiceImpl {
       if (lead.value && lead.value > (existingLead.value || 0)) existingLead.value = lead.value;
       allLeads.splice(existingIndex, 1);
       const updatedList = [existingLead, ...allLeads];
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedList));
+      localStorage.setItem(getStorageKey(), JSON.stringify(updatedList));
       this.leadsCache = updatedList;
       this.cacheTimestamp = Date.now();
       return existingLead;
@@ -557,7 +581,7 @@ class CrmServiceImpl {
       updated_at: new Date().toISOString(),
     };
     const updated = [newLead, ...allLeads];
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    localStorage.setItem(getStorageKey(), JSON.stringify(updated));
     this.leadsCache = updated;
     this.cacheTimestamp = Date.now();
     return newLead;
@@ -573,7 +597,7 @@ class CrmServiceImpl {
     }
 
     // Update localStorage
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(getStorageKey());
     const allLeads: Lead[] = raw ? JSON.parse(raw) : [];
     const storageIndex = allLeads.findIndex(l => l.phone === lead.phone);
     if (storageIndex !== -1) {
@@ -581,7 +605,7 @@ class CrmServiceImpl {
     } else {
       allLeads.unshift(lead);
     }
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(allLeads));
+    localStorage.setItem(getStorageKey(), JSON.stringify(allLeads));
     this.cacheTimestamp = Date.now();
   }
 
@@ -597,7 +621,7 @@ class CrmServiceImpl {
 
         const response = await fetch(endpoint, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { ...this.getAuthHeaders(), 'Content-Type': 'application/json' },
           body: JSON.stringify(isStatusOnly ? { status: updates.status } : updates)
         });
 
@@ -612,12 +636,12 @@ class CrmServiceImpl {
     }
 
     // Always update localStorage cache
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(getStorageKey());
     const allLeads: Lead[] = raw ? JSON.parse(raw) : [];
     const updated = allLeads.map(l =>
       l.id === id ? { ...l, ...updates, updated_at: new Date().toISOString() } : l
     );
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    localStorage.setItem(getStorageKey(), JSON.stringify(updated));
 
     // Update cache
     const cacheIndex = this.leadsCache.findIndex(l => l.id === id);
@@ -634,7 +658,10 @@ class CrmServiceImpl {
   async deleteLead(id: string): Promise<void> {
     if (this.serverUrl) {
       try {
-        const response = await fetch(`${this.serverUrl}/api/leads/${id}`, { method: 'DELETE' });
+        const response = await fetch(`${this.serverUrl}/api/leads/${id}`, {
+          method: 'DELETE',
+          headers: this.getAuthHeaders()
+        });
         if (response.ok) {
           console.log(`✅ Lead ${id} deleted from database`);
         } else {
@@ -645,11 +672,11 @@ class CrmServiceImpl {
       }
     }
 
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(getStorageKey());
     const allLeads: Lead[] = raw ? JSON.parse(raw) : [];
 
     const updated = allLeads.filter(l => l.id !== id);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    localStorage.setItem(getStorageKey(), JSON.stringify(updated));
 
     // Update cache
     this.leadsCache = this.leadsCache.filter(l => l.id !== id);
@@ -666,7 +693,8 @@ class CrmServiceImpl {
         const leads = await this.getLeads();
         for (const lead of leads) {
           await fetch(`${this.serverUrl}/api/leads/${lead.id}`, {
-            method: 'DELETE'
+            method: 'DELETE',
+            headers: this.getAuthHeaders()
           });
         }
         console.log('✅ All leads cleared from database');
@@ -676,7 +704,7 @@ class CrmServiceImpl {
     }
 
     // Clear localStorage and cache
-    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(getStorageKey());
     this.leadsCache = [];
     this.cacheTimestamp = 0;
     this.processedMessageIds.clear();

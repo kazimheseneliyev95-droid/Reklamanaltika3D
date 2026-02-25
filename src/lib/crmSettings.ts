@@ -39,7 +39,7 @@ export interface CRMSettings {
     autoRules: AutoRule[];
 }
 
-const STORAGE_KEY = 'crm_settings';
+const getStorageKey = () => `crm_settings_${localStorage.getItem('crm_tenant_id') || 'admin'}`;
 
 const DEFAULT_FIELDS: CustomField[] = [
     {
@@ -77,7 +77,7 @@ const DEFAULT_RULES: AutoRule[] = [
 
 export function loadCRMSettings(): CRMSettings {
     try {
-        const raw = localStorage.getItem(STORAGE_KEY);
+        const raw = localStorage.getItem(getStorageKey());
         if (raw) {
             const parsed = JSON.parse(raw) as CRMSettings;
             if (!parsed.pipelineStages || parsed.pipelineStages.length === 0) {
@@ -93,7 +93,7 @@ export function loadCRMSettings(): CRMSettings {
 }
 
 export function saveCRMSettings(settings: CRMSettings): void {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+    localStorage.setItem(getStorageKey(), JSON.stringify(settings));
 }
 
 export function generateFieldId(): string {

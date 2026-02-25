@@ -1,0 +1,1 @@
+require('dotenv').config(); const db = require('./server/database.js'); async function tests() { try { console.log('Admin:', await db.getTenantAdmin('kazim')); await db.deleteTenant('kazim'); console.log('DEL OK'); } catch(e) { console.error('Caught:', e); } finally { process.exit(); } }; tests();

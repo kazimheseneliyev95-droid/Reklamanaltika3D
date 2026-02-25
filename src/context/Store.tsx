@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react';
-import { Lead, LeadStatus, DateRange } from '../types/crm';
+import { Lead, LeadStatus, DateRange, User } from '../types/crm';
 import { CrmService } from '../services/CrmService';
 import { loadCRMSettings, applyAutoRules } from '../lib/crmSettings';
 
@@ -8,6 +8,8 @@ interface AppContextType {
   isLoading: boolean;
   isWhatsAppConnected: boolean;
   dateRange: DateRange;
+  currentUser: User | null;
+  teamMembers: User[];
 
   // Auth State
   isAuthenticated: boolean;
@@ -25,6 +27,7 @@ interface AppContextType {
   clearAllLeads: () => Promise<void>;
 
   login: (username: string, pass: string) => Promise<void>;
+  impersonate: (tenantId: string) => Promise<void>;
   logout: () => void;
 
   // Metrics
@@ -40,6 +43,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
 
   const [leads, setLeads] = useState<Lead[]>([]);
+  const [teamMembers, setTeamMembers] = useState<User[]>([]);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isWhatsAppConnected, setIsWhatsAppConnected] = useState(false);
 
@@ -83,9 +88,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
         });
         const data = await res.json();
         if (data.valid) {
+          localStorage.setItem('crm_tenant_id', data.tenantId);
+          setCurrentUser({
+            id: data.id,
+            username: data.username,
+            role: data.role,
+            tenant_id: data.tenantId
+          });
           setIsAuthenticated(true);
+          // 🆕 Automatically restore WhatsApp Socket if there is a saved server URL
+          CrmService.autoConnect();
         } else {
           localStorage.removeItem('crm_auth_token');
+          localStorage.removeItem('crm_tenant_id');
         }
       } catch (err) {
         console.error('Auth verification failed', err);
@@ -96,11 +111,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
     verifyToken();
   }, []);
 
-  useEffect(() => {
-    if (isAuthenticated) {
-      loadLeads();
+  const loadTeamMembers = useCallback(async () => {
+    try {
+      const res = await fetch(`${CrmService.getServerUrl()}/api/users`, {
+        headers: CrmService['getAuthHeaders']()
+      });
+      if (res.ok) {
+        const users = await res.json();
+        setTeamMembers(users);
+      }
+    } catch (e) {
+      console.error('Failed to load team members', e);
     }
-  }, [dateRange, isAuthenticated]);
+  }, []);
 
   // 🆕 Improved WhatsApp Message Listener with proper cleanup
   useEffect(() => {
@@ -149,9 +172,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       // ─────────────────────────────────────────────────────────────────────
 
+      // Ensure new leads have a resilient ID mapping in case backend hasn't supplied one sequentially yet
+      if (!finalLead.id) {
+        finalLead.id = `wa-${Date.now()}`;
+      }
+
       // Check if this lead already exists in current state
       const existingIndex = leadsRef.current.findIndex(l =>
-        l.id === finalLead.id || l.phone === finalLead.phone
+        l.id === finalLead.id || l.whatsapp_id === finalLead.whatsapp_id || l.phone === finalLead.phone
       );
 
       if (existingIndex !== -1) {
@@ -162,7 +190,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           return newList;
         });
       } else {
-        // New Conversation
+        // New Conversation!
         console.log('➕ Adding new lead to UI:', finalLead.phone);
         setLeads(prev => [finalLead, ...prev]);
       }
@@ -271,6 +299,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setIsLoading(false);
     }
   }, [dateRange]);
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      loadLeads();
+      loadTeamMembers();
+    }
+  }, [dateRange, isAuthenticated, loadLeads, loadTeamMembers]);
 
   // --- ACTIONS ---
 
@@ -426,7 +461,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // --- AUTH ---
   const login = async (u: string, p: string) => {
-    setIsLoading(true);
+    setIsLoadingAuth(true);
     setError(null);
     try {
       const res = await fetch(`${CrmService.getServerUrl()}/api/auth/login`, {
@@ -437,6 +472,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const data = await res.json();
       if (data.success) {
         localStorage.setItem('crm_auth_token', data.token);
+        localStorage.setItem('crm_tenant_id', data.tenantId);
+        setCurrentUser({
+          id: data.id,
+          username: data.username,
+          role: data.role,
+          tenant_id: data.tenantId
+        });
         setIsAuthenticated(true);
       } else {
         setError(data.error || 'İstifadəçi adı və ya şifrə yanlışdır');
@@ -444,14 +486,50 @@ export function AppProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       setError('Serverə qoşulmaq mümkün olmadı');
     } finally {
-      setIsLoading(false);
+      setIsLoadingAuth(false);
     }
   };
 
-  const logout = () => {
-    localStorage.removeItem('crm_auth_token');
-    setIsAuthenticated(false);
+  const impersonate = async (tenantId: string) => {
+    setIsLoadingAuth(true);
+    setError(null);
+    try {
+      const res = await fetch(`${CrmService.getServerUrl()}/api/admin/impersonate/${tenantId}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('crm_auth_token')}`
+        }
+      });
+      const data = await res.json();
+      if (data.success) {
+        localStorage.setItem('crm_auth_token', data.token);
+        localStorage.setItem('crm_tenant_id', data.tenantId);
+        setCurrentUser({
+          id: data.id,
+          username: data.username,
+          role: data.role,
+          tenant_id: data.tenantId
+        });
+        setIsAuthenticated(true);
+      } else {
+        throw new Error(data.error || 'İmpersonasiya xətası');
+      }
+    } catch (err: any) {
+      alert(err.message || 'Server xətası');
+      throw err;
+    } finally {
+      setIsLoadingAuth(false);
+    }
   };
+
+  const logout = useCallback(() => {
+    localStorage.removeItem('crm_auth_token');
+    localStorage.removeItem('crm_tenant_id');
+    setIsAuthenticated(false);
+    setLeads([]);
+    CrmService.disconnect();
+  }, []);
 
   return (
     <AppContext.Provider value={{
@@ -459,6 +537,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       isLoading,
       isWhatsAppConnected,
       dateRange,
+      currentUser,
+      teamMembers,
 
       isAuthenticated,
       isLoadingAuth,
@@ -475,6 +555,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       getMetrics,
 
       login,
+      impersonate,
       logout
     }}>
       {children}

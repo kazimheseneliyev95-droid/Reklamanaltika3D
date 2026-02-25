@@ -7,6 +7,7 @@ import {
 import { cn } from '../lib/utils';
 import { loadCRMSettings } from '../lib/crmSettings';
 import { CrmService } from '../services/CrmService';
+import { useAppStore } from '../context/Store';
 
 // ─── Chat History Sub-component ───────────────────────────────────────────────
 
@@ -133,12 +134,14 @@ interface LeadDetailsPanelProps {
 export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: LeadDetailsPanelProps) {
 
     // LOCAL STATE (mirrors lead props - updated on save)
+    const { teamMembers, currentUser } = useAppStore();
     const [localStatus, setLocalStatus] = useState<LeadStatus>(lead.status);
     const [formData, setFormData] = useState({
         name: lead.name || '',
         value: lead.value?.toString() || '0',
         product_name: lead.product_name || '',
         note: lead.last_message || '',
+        assignee_id: lead.assignee_id || '',
     });
     const [activeTab, setActiveTab] = useState<'feed' | 'chat' | 'stats'>('feed');
     const [isSaving, setIsSaving] = useState(false);
@@ -190,6 +193,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
             value: lead.value?.toString() || '0',
             product_name: lead.product_name || '',
             note: lead.last_message || '',
+            assignee_id: lead.assignee_id || '',
         });
         const extra = (lead as any).extra_data;
         setCustomValues(extra ? (typeof extra === 'string' ? JSON.parse(extra) : extra) : {});
@@ -221,6 +225,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
             product_name: formData.product_name,
             last_message: formData.note,
             status: localStatus,
+            assignee_id: formData.assignee_id || null,
             // Persist custom field values as extra_data JSON string
             ...(Object.keys(customValues).length > 0 ? { extra_data: JSON.stringify(customValues) } as any : {}),
         });
@@ -321,6 +326,33 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
 
                         {/* Fields */}
                         <div className="p-4 space-y-4 flex-1">
+
+                            {/* Məsul Şəxs (Assignee) */}
+                            <FieldGroup label="Məsul Şəxs" icon={<User className="w-3 h-3" />}>
+                                <div className="flex gap-2">
+                                    <select
+                                        name="assignee_id"
+                                        value={formData.assignee_id}
+                                        onChange={(e: any) => handleChange(e)}
+                                        className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 appearance-none"
+                                    >
+                                        <option value="">-- Təyin Edilməyib --</option>
+                                        {teamMembers.map(tm => (
+                                            <option key={tm.id} value={tm.id}>{tm.username}</option>
+                                        ))}
+                                    </select>
+
+                                    {currentUser && formData.assignee_id !== currentUser.id && (
+                                        <button
+                                            onClick={() => setFormData(prev => ({ ...prev, assignee_id: currentUser.id }))}
+                                            className="whitespace-nowrap px-3 py-2 bg-blue-600/20 hover:bg-blue-600/40 text-blue-400 border border-blue-500/30 rounded-lg text-[10px] font-bold uppercase shrink-0 transition-colors"
+                                            title="Özümə Təyin Et"
+                                        >
+                                            Mən Baxıram
+                                        </button>
+                                    )}
+                                </div>
+                            </FieldGroup>
 
                             {/* Büdcə */}
                             <FieldGroup label="Büdcə (₼)" icon={<TrendingUp className="w-3 h-3" />}>

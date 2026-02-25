@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
     Settings, X, Plus, Trash2, GripVertical,
     Type, Hash, List, ChevronDown, ChevronUp, Save, Check,
-    Zap, ToggleLeft, ToggleRight, AlertTriangle
+    Zap, ToggleLeft, ToggleRight, AlertTriangle, Users
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import {
@@ -10,6 +10,7 @@ import {
     loadCRMSettings, saveCRMSettings, generateFieldId
 } from '../lib/crmSettings';
 import { CrmService } from '../services/CrmService';
+import { UsersSettings } from './UsersSettings';
 
 // ─── Format (Factory Reset) Button ────────────────────────────────────────────
 function FormatButton({ serverUrl, onClose }: { serverUrl: string; onClose: () => void }) {
@@ -82,12 +83,13 @@ const TYPE_LABELS: Record<FieldType, { label: string; icon: React.ReactNode }> =
 };
 
 // ─── Tabs ─────────────────────────────────────────────────────────────────────
-type Tab = 'rules' | 'stages' | 'fields';
+type Tab = 'rules' | 'stages' | 'fields' | 'users';
 
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: 'rules', label: 'Avtomatik Qaydalar', icon: <Zap className="w-3.5 h-3.5" /> },
     { id: 'stages', label: 'Kanban Sütunları', icon: <List className="w-3.5 h-3.5" /> },
     { id: 'fields', label: 'Xüsusi Sahələr', icon: <Type className="w-3.5 h-3.5" /> },
+    { id: 'users', label: 'İstifadəçilər', icon: <Users className="w-3.5 h-3.5" /> },
 ];
 
 export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
@@ -568,6 +570,11 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
                                 ))}
                             </div>
                         </section>
+                    )}
+
+                    {/* ─── TAB: Users ───────────────────────────────────────────── */}
+                    {activeTab === 'users' && (
+                        <UsersSettings />
                     )}
 
                 </div>

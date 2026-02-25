@@ -16,6 +16,15 @@ export interface Lead {
   source_contact_name?: string;
   source_message?: string;
   is_fast_emit?: boolean; // For tracking initial vs enriched updates
+  assignee_id?: string | null; // Worker assignment
+}
+
+export interface User {
+  id: string;
+  username: string;
+  role: 'admin' | 'worker' | 'superadmin';
+  tenant_id: string;
+  created_at?: string;
 }
 
 export interface DateRange {

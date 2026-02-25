@@ -1,16 +1,22 @@
 import { Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Calculator, ShieldCheck, Menu, X } from 'lucide-react';
+import { LayoutDashboard, Calculator, ShieldCheck, Menu, X, LogOut } from 'lucide-react';
+import { useAppStore } from '../context/Store';
 import { cn } from '../lib/utils';
 import { useState } from 'react';
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const { logout, currentUser } = useAppStore();
 
-  const navItems = [
-    { name: 'Simulator', path: '/', icon: <Calculator className="w-5 h-5" /> },
-    { name: 'CRM (Classic)', path: '/crm', icon: <LayoutDashboard className="w-5 h-5" /> },
-  ];
+  const navItems = currentUser?.role === 'superadmin'
+    ? [
+      { name: 'Global İdarəetmə', path: '/superadmin', icon: <ShieldCheck className="w-5 h-5" /> }
+    ]
+    : [
+      { name: 'Simulator', path: '/', icon: <Calculator className="w-5 h-5" /> },
+      { name: 'CRM (Classic)', path: '/crm', icon: <LayoutDashboard className="w-5 h-5" /> },
+    ];
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-50 flex flex-col md:flex-row">
@@ -46,6 +52,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               {item.name}
             </Link>
           ))}
+          <button
+            onClick={logout}
+            className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 transition-colors mt-2"
+          >
+            <LogOut className="w-5 h-5" />
+            Çıxış
+          </button>
         </div>
       )}
 
@@ -77,9 +90,19 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         </nav>
 
         <div className="p-4 border-t border-slate-800">
-          <div className="bg-slate-950 rounded-lg p-3 text-xs text-slate-500">
-            <p>Version 2.1.0</p>
-            <p className="mt-1">Connected: Local Mode</p>
+          <div className="flex flex-col gap-3">
+            <button
+              onClick={logout}
+              className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 rounded-lg transition-colors w-full"
+            >
+              <LogOut className="w-4 h-4" />
+              Çıxış et
+            </button>
+            <div className="bg-slate-950 rounded-lg p-3 text-xs text-slate-500">
+              <p className="font-medium text-slate-400 truncate mb-1">Hesab: {currentUser?.username || 'Bilinmir'}</p>
+              <p>Version 2.1.0</p>
+              <p className="mt-1">Connected: Local Mode</p>
+            </div>
           </div>
         </div>
       </aside>

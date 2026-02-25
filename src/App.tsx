@@ -4,6 +4,7 @@ import FunnelSimulator from './components/FunnelSimulator';
 import CRMPage from './pages/CRM';
 import { AppProvider, useAppStore } from './context/Store';
 import Login from './pages/Login';
+import SuperAdminDashboard from './pages/SuperAdminDashboard';
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoadingAuth } = useAppStore();
@@ -23,17 +24,36 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+// Sub-component to enforce role-based routing
+function RoleBasedRouter() {
+  const { currentUser } = useAppStore();
+
+  if (currentUser?.role === 'superadmin') {
+    return (
+      <Routes>
+        <Route path="/superadmin" element={<SuperAdminDashboard />} />
+        <Route path="*" element={<Navigate to="/superadmin" replace />} />
+      </Routes>
+    );
+  }
+
+  return (
+    <Routes>
+      <Route path="/" element={<FunnelSimulator />} />
+      <Route path="/crm" element={<CRMPage />} />
+      <Route path="/whatsapp" element={<Navigate to="/crm" replace />} />
+      <Route path="*" element={<Navigate to="/crm" replace />} />
+    </Routes>
+  );
+}
+
 function App() {
   return (
     <AppProvider>
       <AuthGuard>
         <BrowserRouter>
           <Layout>
-            <Routes>
-              <Route path="/" element={<FunnelSimulator />} />
-              <Route path="/crm" element={<CRMPage />} />
-              <Route path="/whatsapp" element={<Navigate to="/crm" replace />} />
-            </Routes>
+            <RoleBasedRouter />
           </Layout>
         </BrowserRouter>
       </AuthGuard>

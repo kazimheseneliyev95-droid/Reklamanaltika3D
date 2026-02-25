@@ -119,7 +119,8 @@ export function WhatsAppConnect({ isConnected, onConnect, onDisconnect }: WhatsA
           <div className={cn(
             "z-50 animate-in fade-in zoom-in-95 duration-200",
             // Mobile: fixed position, full-width with padding
-            "fixed inset-x-3 top-16 bottom-auto sm:absolute sm:top-12 sm:right-0 sm:left-auto sm:inset-x-auto sm:w-96"
+            // Desktop: fixed position to viewport top-right to prevent horizontal page overflow
+            "fixed inset-x-3 top-16 sm:top-20 sm:right-6 sm:left-auto sm:w-96 sm:w-[400px]"
           )}>
             <Card className="bg-white text-slate-900 border-slate-200 shadow-2xl overflow-hidden max-h-[calc(100vh-100px)] overflow-y-auto">
               <div className="p-3 border-b border-slate-100 flex justify-between items-center bg-slate-50 sticky top-0 z-10">

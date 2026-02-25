@@ -43,16 +43,30 @@ const io = new Server(server, {
   pingInterval: 25000
 });
 
-// State Variables
-let isReady = false;
-let isAuthenticated = false;
-let qrCodeData = null;
-let isInitializing = false;
-let lastInitError = null;
-let sock = null;
+// State Variables (Multi-Tenant)
+const sessions = new Map();
+
+function getSession(tenantId) {
+  if (!sessions.has(tenantId)) {
+    sessions.set(tenantId, {
+      isReady: false,
+      isAuthenticated: false,
+      qrCodeData: null,
+      isInitializing: false,
+      lastInitError: null,
+      sock: null
+    });
+  }
+  return sessions.get(tenantId);
+}
 
 // Lightweight Custom Chat Store for /chats/recent
-const recentChats = new Map();
+const recentChatsMap = new Map(); // tenantId -> Map(phone -> data)
+
+function getRecentChats(tenantId) {
+  if (!recentChatsMap.has(tenantId)) recentChatsMap.set(tenantId, new Map());
+  return recentChatsMap.get(tenantId);
+}
 
 // 🆕 Message Deduplication Cache
 const PROCESSED_MESSAGES_TTL = 30000; // 30 seconds
@@ -108,14 +122,16 @@ async function gracefulShutdown(signal) {
       console.log('✅ HTTP server closed');
     });
 
-    if (sock && sock.ws) {
-      sock.ws.close();
-      console.log('✅ WhatsApp client network socket closed (session perserved)');
-    }
-
     if (db.closePool) {
       await db.closePool();
       console.log('✅ Database connections closed');
+    }
+
+    for (const [tenant, session] of sessions.entries()) {
+      if (session.sock && session.sock.ws) {
+        session.sock.ws.close();
+        console.log(`✅ WhatsApp client socket closed for ${tenant}`);
+      }
     }
 
     console.log('✅ Graceful shutdown completed');
@@ -133,7 +149,7 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 // 📨 MESSAGE PROCESSOR (With De-duplication)
 // ═══════════════════════════════════════════════════════════════
 
-async function processMessage(msg, isFromMe) {
+async function processMessage(tenantId, msg, isFromMe) {
   try {
     if (!msg.message) return; // ignore updates with no message
 
@@ -171,6 +187,7 @@ async function processMessage(msg, isFromMe) {
 
     const contactName = msg.pushName || `+${rawNumber}`;
 
+    const recentChats = getRecentChats(tenantId);
     recentChats.set(rawNumber, {
       name: contactName,
       unread: isFromMe ? 0 : ((recentChats.get(rawNumber)?.unread || 0) + 1),
@@ -184,7 +201,7 @@ async function processMessage(msg, isFromMe) {
       recentChats.delete(firstKey);
     }
 
-    console.log(`${prefix} ${rawNumber} | ${messageContent.substring(0, 50)}...`);
+    console.log(`[${tenantId}] ${prefix} ${rawNumber} | ${messageContent.substring(0, 50)}...`);
 
     const payload = {
       phone: rawNumber,
@@ -196,20 +213,20 @@ async function processMessage(msg, isFromMe) {
       is_fast_emit: false
     };
 
-    io.emit('new_message', payload);
+    io.to(tenantId).emit('new_message', payload);
 
     if (process.env.DATABASE_URL && db) {
       try {
-        let existingLead = await db.findLeadByWhatsAppId(whatsappId);
+        let existingLead = await db.findLeadByWhatsAppId(whatsappId, tenantId);
         if (!existingLead) {
-          existingLead = await db.findLeadByPhone(rawNumber);
+          existingLead = await db.findLeadByPhone(rawNumber, tenantId);
         }
 
         let savedLead;
         if (existingLead) {
-          await db.updateLeadMessage(rawNumber, messageContent, whatsappId, contactName);
+          await db.updateLeadMessage(rawNumber, messageContent, whatsappId, contactName, tenantId);
           savedLead = existingLead;
-          console.log(`📝 Updated lead: ${rawNumber} (${existingLead.status})`);
+          console.log(`📝 Updated lead [${tenantId}]: ${rawNumber} (${existingLead.status})`);
         } else {
           savedLead = await db.createLead({
             phone: rawNumber,
@@ -218,8 +235,8 @@ async function processMessage(msg, isFromMe) {
             whatsapp_id: whatsappId,
             source: 'whatsapp',
             status: 'new'
-          });
-          console.log(`✨ New lead created: ${rawNumber}`);
+          }, tenantId);
+          console.log(`✨ New lead created [${tenantId}]: ${rawNumber}`);
         }
 
         // 📜 Append to full message history
@@ -230,7 +247,8 @@ async function processMessage(msg, isFromMe) {
             body: messageContent,
             direction: isFromMe ? 'out' : 'in',
             whatsappId,
-            createdAt: msg.messageTimestamp || null
+            createdAt: msg.messageTimestamp || null,
+            tenantId
           });
         }
 
@@ -248,37 +266,43 @@ async function processMessage(msg, isFromMe) {
 // 🟢 WHATSAPP CLIENT INITIALIZER (Baileys)
 // ═══════════════════════════════════════════════════════════════
 
-async function startWhatsAppClient() {
-  console.log('\n🚀 STARTING WHATSAPP CLIENT (Baileys)...');
+async function startWhatsAppClient(tenantId) {
+  console.log(`\n🚀 STARTING WHATSAPP CLIENT FOR TENANT [${tenantId}]...`);
+  const session = getSession(tenantId);
+
+  // Prevent multiple initializing attempts
+  if (session.isInitializing || session.isReady) return;
+
+  // LOCK EARLY to prevent duplicate async socket instances!
+  session.isInitializing = true;
 
   try {
     let state, saveCreds, clearState;
     if (process.env.DATABASE_URL && db && db.pool) {
-      console.log('📦 Using PostgreSQL for Baileys Auth State...');
+      console.log(`📦 Using PostgreSQL for Baileys Auth State [${tenantId}]...`);
       const usePostgresAuthState = require('./postgresAuthState.cjs');
-      const auth = await usePostgresAuthState(db.pool);
+      const auth = await usePostgresAuthState(db.pool, tenantId); // Need to update this helper later
       state = auth.state;
       saveCreds = auth.saveCreds;
       clearState = auth.clearState;
     } else {
-      console.log('📁 Using Local File System for Baileys Auth State...');
-      const auth = await useMultiFileAuthState(AUTH_DIR);
+      console.log(`📁 Using Local File System for Baileys Auth State [${tenantId}]...`);
+      const authDirTemplate = `${AUTH_DIR}_${tenantId}`;
+      const auth = await useMultiFileAuthState(authDirTemplate);
       state = auth.state;
       saveCreds = auth.saveCreds;
       clearState = async () => {
         const fs = require('fs');
-        if (fs.existsSync(AUTH_DIR)) {
-          fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+        if (fs.existsSync(authDirTemplate)) {
+          fs.rmSync(authDirTemplate, { recursive: true, force: true });
         }
       };
     }
 
     const { version, isLatest } = await fetchLatestBaileysVersion();
-    console.log(`using WA v${version.join('.')}, isLatest: ${isLatest}`);
+    console.log(`[${tenantId}] using WA v${version.join('.')}, isLatest: ${isLatest}`);
 
-    isInitializing = true;
-
-    sock = makeWASocket({
+    session.sock = makeWASocket({
       version,
       logger: pino({ level: 'silent' }), // Suppress pino debug logs
       printQRInTerminal: false,
@@ -288,75 +312,75 @@ async function startWhatsAppClient() {
       syncFullHistory: false
     });
 
-    sock.ev.on('creds.update', saveCreds);
+    session.sock.ev.on('creds.update', saveCreds);
 
-    sock.ev.on('connection.update', async (update) => {
+    session.sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
-        console.log('📱 QR RECEIVED');
-        qrCodeData = qr;
-        isReady = false;
-        isAuthenticated = false;
-        io.emit('qr_code', qr);
+        console.log(`📱 QR RECEIVED [${tenantId}]`);
+        session.qrCodeData = qr;
+        session.isReady = false;
+        session.isAuthenticated = false;
+        io.to(tenantId).emit('qr_code', qr);
       }
 
       if (connection === 'close') {
         const statusCode = lastDisconnect?.error?.output?.statusCode;
         const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-        console.log(`⚠️ Connection closed (Status: ${statusCode}), reconnecting: ${shouldReconnect}`);
-        isReady = false;
+        console.log(`⚠️ Connection closed [${tenantId}] (Status: ${statusCode}), reconnecting: ${shouldReconnect}`);
+        session.isReady = false;
+        session.isInitializing = false; // MUST unlock before retrying
 
         if (shouldReconnect) {
-          setTimeout(startWhatsAppClient, 5000);
+          setTimeout(() => startWhatsAppClient(tenantId), 5000);
         } else {
-          console.log('❌ Logged out, clearing auth state and restarting for a new QR...');
-          isAuthenticated = false;
-          qrCodeData = null;
-          isInitializing = false;
-          io.emit('auth_failure', 'Logged out. Getting new QR code...');
+          console.log(`❌ Logged out [${tenantId}], clearing auth state and restarting for a new QR...`);
+          session.isAuthenticated = false;
+          session.qrCodeData = null;
+          io.to(tenantId).emit('auth_failure', 'Logged out. Getting new QR code...');
 
           // Clear PostgreSQL auth data to allow new QR generation
           if (clearState) {
             await clearState();
-            console.log('🗑️ Auth state permanently cleared.');
+            console.log(`🗑️ Auth state permanently cleared [${tenantId}].`);
           }
 
           // Reboot the client setup again
-          setTimeout(startWhatsAppClient, 3000);
+          setTimeout(() => startWhatsAppClient(tenantId), 3000);
         }
       } else if (connection === 'connecting') {
-        console.log('🔄 CONNECTING...');
-        isInitializing = true;
+        console.log(`🔄 CONNECTING [${tenantId}]...`);
+        session.isInitializing = true;
       } else if (connection === 'open') {
-        console.log('✅ CLIENT READY (Connection Open)');
-        isReady = true;
-        isAuthenticated = true;
-        isInitializing = false;
-        qrCodeData = null;
+        console.log(`✅ CLIENT READY [${tenantId}] (Connection Open)`);
+        session.isReady = true;
+        session.isAuthenticated = true;
+        session.isInitializing = false;
+        session.qrCodeData = null;
 
-        io.emit('ready', { status: 'connected' });
-        io.emit('authenticated', { status: 'authenticated' });
-        io.emit('crm:health_check', getHealthStatus());
+        io.to(tenantId).emit('ready', { status: 'connected' });
+        io.to(tenantId).emit('authenticated', { status: 'authenticated' });
+        io.to(tenantId).emit('crm:health_check', getHealthStatus(tenantId));
       }
     });
 
-    sock.ev.on('messages.upsert', async (m) => {
+    session.sock.ev.on('messages.upsert', async (m) => {
       // Handle array of messages
       for (const msg of m.messages) {
         // filter out protocol messages
         if (msg.message?.protocolMessage) continue;
 
         const isFromMe = msg.key.fromMe;
-        processMessage(msg, isFromMe);
+        processMessage(tenantId, msg, isFromMe);
       }
     });
 
   } catch (err) {
-    console.error('❌ WhatsApp client initialization FAILED!');
+    console.error(`❌ WhatsApp client initialization FAILED [${tenantId}]!`);
     console.error('❌ Error:', err.message);
-    isInitializing = false;
-    lastInitError = {
+    session.isInitializing = false;
+    session.lastInitError = {
       message: err.message,
       time: new Date().toISOString()
     };
@@ -367,36 +391,61 @@ async function startWhatsAppClient() {
 // 🔌 SOCKET.IO CONNECTION
 // ═══════════════════════════════════════════════════════════════
 
+io.use((socket, next) => {
+  const token = socket.handshake.auth.token || socket.handshake.query.token;
+  if (!token) {
+    return next(new Error('Authentication error: Token required'));
+  }
+  try {
+    const raw = Buffer.from(token, 'base64').toString('utf-8');
+    const data = JSON.parse(raw);
+    if (!data.tenantId) throw new Error();
+    socket.tenantId = data.tenantId;
+    next();
+  } catch (err) {
+    next(new Error('Authentication error: Invalid format'));
+  }
+});
+
 io.on('connection', (socket) => {
-  console.log(`👤 NEW UI CLIENT CONNECTED: ${socket.id} (Total: ${io.engine.clientsCount})`);
+  const tenantId = socket.tenantId;
+  socket.join(tenantId);
+  console.log(`👤 NEW UI CLIENT CONNECTED [${tenantId}]: ${socket.id} (Total: ${io.engine.clientsCount})`);
 
-  socket.emit('crm:health_check', getHealthStatus());
-
-  if (qrCodeData && !isAuthenticated) {
-    socket.emit('qr_code', qrCodeData);
+  // Ensure WhatsApp client is initialized for this tenant
+  const session = getSession(tenantId);
+  if (!session.sock && !session.isInitializing) {
+    startWhatsAppClient(tenantId);
   }
 
-  if (isAuthenticated) {
+  socket.emit('crm:health_check', getHealthStatus(tenantId));
+
+  if (session.qrCodeData && !session.isAuthenticated) {
+    socket.emit('qr_code', session.qrCodeData);
+  }
+
+  if (session.isAuthenticated) {
     socket.emit('authenticated', { status: 'authenticated' });
   }
-  if (isReady) {
+  if (session.isReady) {
     socket.emit('ready', { status: 'connected' });
   }
 
   socket.on('disconnect', (reason) => {
-    console.log(`👤 UI CLIENT DISCONNECTED: ${socket.id} (${reason})`);
+    console.log(`👤 UI CLIENT DISCONNECTED [${tenantId}]: ${socket.id} (${reason})`);
   });
 });
 
-function getHealthStatus() {
+function getHealthStatus(tenantId) {
+  const session = getSession(tenantId);
   let status = 'OFFLINE';
-  if (isReady) status = 'CONNECTED';
-  else if (isAuthenticated) status = 'SYNCING';
-  else if (isInitializing) status = 'INITIALIZING';
+  if (session.isReady) status = 'CONNECTED';
+  else if (session.isAuthenticated) status = 'SYNCING';
+  else if (session.isInitializing) status = 'INITIALIZING';
 
   return {
     whatsapp: status,
-    socket_clients: io.engine.clientsCount,
+    socket_clients: io.engine.clientsCount, // Global count, maybe scope to namespace later
     timestamp: new Date().toISOString()
   };
 }
@@ -406,75 +455,305 @@ function getHealthStatus() {
 // ═══════════════════════════════════════════════════════════════
 
 // 🔐 AUTHENTICATION API
-const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin';
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'crm_auth_token_secure_4021';
-
-app.post('/api/auth/login', (req, res) => {
-  const { username, password } = req.body;
-  if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
-    res.json({ success: true, token: ADMIN_TOKEN });
-  } else {
-    res.status(401).json({ success: false, error: 'İstifadəçi adı və ya şifrə yanlışdır' });
-  }
-});
-
-app.post('/api/auth/verify', (req, res) => {
-  const { token } = req.body;
-  if (token === ADMIN_TOKEN) {
-    res.json({ success: true, valid: true });
-  } else {
-    res.status(401).json({ success: false, valid: false });
-  }
-});
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'kazimks12';
 
 const asyncHandler = (fn) => (req, res, next) => {
   Promise.resolve(fn(req, res, next)).catch(next);
 };
 
+app.post('/api/auth/login', asyncHandler(async (req, res) => {
+  const { username, password } = req.body;
+
+  if (!username || username.trim() === '') {
+    return res.status(400).json({ success: false, error: 'İstifadəçi adı daxil edilməlidir' });
+  }
+
+  const normalizedUsername = username.toLowerCase().trim();
+
+  // Accept the global master password
+  if (password !== ADMIN_PASSWORD) {
+    return res.status(401).json({ success: false, error: 'Şifrə yalnışdır' });
+  }
+
+  // Find user in database to determine role and tenant mapping
+  let user = await db.findUserByUsername(normalizedUsername);
+
+  if (!user) {
+    return res.status(401).json({ success: false, error: 'İstifadəçi tapılmadı' });
+  }
+
+  // Ensure WhatsApp session is pre-initialized for their tenant
+  getSession(user.tenant_id);
+
+  // Generate simple token (In production, use true JWT with signing secret)
+  const tokenPayload = {
+    id: user.id,
+    username: user.username,
+    tenantId: user.tenant_id,
+    role: user.role
+  };
+  const token = Buffer.from(JSON.stringify(tokenPayload)).toString('base64');
+
+  res.json({ success: true, token, tenantId: user.tenant_id, role: user.role, id: user.id, username: user.username });
+}));
+
+app.post('/api/auth/verify', (req, res) => {
+  const { token } = req.body;
+  try {
+    const raw = Buffer.from(token, 'base64').toString('utf-8');
+    const data = JSON.parse(raw);
+    if (data.tenantId) {
+      res.json({ success: true, valid: true, tenantId: data.tenantId, id: data.id, role: data.role, username: data.username });
+    } else {
+      throw new Error();
+    }
+  } catch (err) {
+    res.status(401).json({ success: false, valid: false });
+  }
+});
+
+// Middleware for API routes
+const requireTenantAuth = (req, res, next) => {
+  const token = req.headers['authorization']?.replace('Bearer ', '') || req.headers['x-tenant-id'];
+  if (!token) return res.status(401).json({ error: 'Unauthorized: No token provided' });
+
+  try {
+    const raw = Buffer.from(token, 'base64').toString('utf-8');
+    const data = JSON.parse(raw);
+    if (!data.tenantId) throw new Error();
+    req.tenantId = data.tenantId;
+    req.userRole = data.role; // Extract role from token
+    req.userId = data.id;     // Extract ID from token
+    next();
+  } catch (err) {
+    res.status(401).json({ error: 'Unauthorized: Invalid token' });
+  }
+};
+
+const requireAdmin = (req, res, next) => {
+  if (req.userRole !== 'admin' && req.userRole !== 'superadmin') {
+    return res.status(403).json({ error: 'Forbidden: Admin access required' });
+  }
+  next();
+};
+
+// 👥 USER MANAGEMENT API (Phase 2)
+app.get('/api/users', requireTenantAuth, asyncHandler(async (req, res) => {
+  // Superadmin can see all, regular admin/worker only sees their tenant's users
+  const targetTenant = req.userRole === 'superadmin' ? null : req.tenantId;
+  const users = await db.getUsers(targetTenant);
+  res.json(users);
+}));
+
+app.post('/api/users', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  const { username, password, role } = req.body;
+  if (!username || !password || !role) {
+    return res.status(400).json({ error: 'Username, password, and role are required' });
+  }
+
+  if (role !== 'admin' && role !== 'worker') {
+    return res.status(400).json({ error: 'Invalid role. Must be admin or worker' });
+  }
+
+  // Regular admins cannot create users for other tenants
+  const tenantId = req.tenantId;
+
+  try {
+    const newUser = await db.createUser(username.toLowerCase(), password, role, tenantId);
+    res.status(201).json(newUser);
+  } catch (err) {
+    if (err.message === 'Username already exists') {
+      res.status(409).json({ error: 'İstifadəçi adı artıq mövcuddur' });
+    } else {
+      throw err;
+    }
+  }
+}));
+
+app.put('/api/users/:id/role', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  const { role } = req.body;
+
+  if (role !== 'admin' && role !== 'worker') {
+    return res.status(400).json({ error: 'Invalid role' });
+  }
+
+  const updatedUser = await db.updateUserRole(req.params.id, role, req.tenantId);
+  res.json(updatedUser);
+}));
+
+app.delete('/api/users/:id', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  await db.deleteUser(req.params.id, req.tenantId);
+  res.json({ success: true });
+}));
+
+// � SUPER ADMIN API (Phase 3)
+app.get('/api/admin/tenants', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (req.userRole !== 'superadmin') {
+    return res.status(403).json({ error: 'Forbidden: Superadmin access required' });
+  }
+  const tenants = await db.getSuperAdminTenants();
+
+  // Augment tenants array with their WhatsApp session connection status
+  const tenantsWithStatus = tenants.map(t => {
+    const session = sessions.get(t.tenant_id);
+    const waStatus = session ? 'connected' : 'disconnected'; // Simple check, real status might vary
+    return { ...t, whatsapp_status: waStatus };
+  });
+
+  res.json(tenantsWithStatus);
+}));
+
+app.post('/api/admin/tenants', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (req.userRole !== 'superadmin') {
+    return res.status(403).json({ error: 'Forbidden: Superadmin access required' });
+  }
+
+  const { tenantId, adminUsername, adminPassword } = req.body;
+
+  if (!tenantId || !tenantId.trim() || !adminUsername || !adminPassword) {
+    return res.status(400).json({ error: 'Müştəri ID-si, admin adı və şifrə mütləqdir' });
+  }
+
+  const cleanTenantId = tenantId.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+
+  try {
+    const newAdmin = await db.createUser(adminUsername.toLowerCase(), adminPassword, 'admin', cleanTenantId);
+
+    // Auto-init WhatsApp session for the new tenant
+    getSession(cleanTenantId);
+
+    res.status(201).json({ success: true, tenant: newAdmin });
+  } catch (err) {
+    if (err.message === 'Username already exists') {
+      res.status(409).json({ error: 'Bu admin istifadəçi adı artıq mövcuddur' });
+    } else {
+      throw err;
+    }
+  }
+}));
+
+app.delete('/api/admin/tenants/:id', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (req.userRole !== 'superadmin') {
+    return res.status(403).json({ error: 'Forbidden: Superadmin access required' });
+  }
+
+  const targetTenantId = req.params.id;
+  if (!targetTenantId || targetTenantId === 'admin') {
+    return res.status(400).json({ error: 'Yanlış şirkət ID-si və ya əsas admin silinə bilməz' });
+  }
+
+  try {
+    const success = await db.deleteTenant(targetTenantId);
+    if (success) {
+      res.json({ success: true, message: 'Şirkət uğurla silindi' });
+    } else {
+      res.status(400).json({ error: 'Şirkət silinə bilmədi' });
+    }
+  } catch (err) {
+    console.error('Error deleting tenant:', err);
+    res.status(500).json({ error: 'Server xətası: Şirkət silinə bilmədi' });
+  }
+}));
+
+app.get('/api/admin/tenants/:id/details', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (req.userRole !== 'superadmin') {
+    return res.status(403).json({ error: 'Forbidden: Superadmin access required' });
+  }
+
+  const targetTenantId = req.params.id;
+  if (!targetTenantId) return res.status(400).json({ error: 'Tenant ID required' });
+
+  try {
+    const users = await db.getUsers(targetTenantId);
+    const leadStats = await db.getLeadStats(targetTenantId);
+    // Fetch the 10 most recent leads
+    const recentLeads = await db.getLeads({ limit: 10 }, targetTenantId);
+
+    res.json({
+      tenantId: targetTenantId,
+      users,
+      leadStats,
+      recentLeads
+    });
+  } catch (err) {
+    console.error('Error fetching tenant details:', err);
+    res.status(500).json({ error: 'Failed to fetch tenant details' });
+  }
+}));
+
+app.post('/api/admin/impersonate/:tenantId', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (req.userRole !== 'superadmin') {
+    return res.status(403).json({ error: 'Forbidden: Superadmin access required' });
+  }
+
+  const targetTenantId = req.params.tenantId;
+  const adminUser = await db.getTenantAdmin(targetTenantId);
+
+  if (!adminUser) {
+    return res.status(404).json({ error: 'Bu şirkət üçün aktiv admin tapılmadı' });
+  }
+
+  const tokenPayload = {
+    id: adminUser.id,
+    role: adminUser.role,
+    tenantId: adminUser.tenant_id,
+    username: adminUser.username
+  };
+  const token = Buffer.from(JSON.stringify(tokenPayload)).toString('base64');
+
+  res.json({
+    success: true,
+    token,
+    tenantId: adminUser.tenant_id,
+    id: adminUser.id,
+    username: adminUser.username,
+    role: adminUser.role
+  });
+}));
+
 // 🗄️ LEADS API
-app.get('/api/leads', asyncHandler(async (req, res) => {
+app.get('/api/leads', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   const { status, startDate, endDate, limit, offset } = req.query;
-  const leads = await db.getLeads({ status, startDate, endDate, limit: limit ? parseInt(limit) : undefined, offset: offset ? parseInt(offset) : undefined });
+  const leads = await db.getLeads({ status, startDate, endDate, limit: limit ? parseInt(limit) : undefined, offset: offset ? parseInt(offset) : undefined }, req.tenantId);
   res.json(leads);
 }));
 
-app.post('/api/leads', asyncHandler(async (req, res) => {
+app.post('/api/leads', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
-  const lead = await db.createLead(req.body);
+  const lead = await db.createLead(req.body, req.tenantId);
   res.status(201).json(lead);
 }));
 
-app.put('/api/leads/:id/status', asyncHandler(async (req, res) => {
+app.put('/api/leads/:id/status', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
-  const lead = await db.updateLeadStatus(req.params.id, req.body.status);
+  const lead = await db.updateLeadStatus(req.params.id, req.body.status, req.tenantId);
   if (!lead) return res.status(404).json({ error: 'Lead not found' });
-  io.emit('lead_updated', lead);
+  io.to(req.tenantId).emit('lead_updated', lead);
   res.json(lead);
 }));
 
-app.put('/api/leads/:id', asyncHandler(async (req, res) => {
+app.put('/api/leads/:id', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
-  const lead = await db.updateLeadFields(req.params.id, req.body);
+  const lead = await db.updateLeadFields(req.params.id, req.body, req.tenantId);
   if (!lead) return res.status(404).json({ error: 'Lead not found' });
-  io.emit('lead_updated', lead);
+  io.to(req.tenantId).emit('lead_updated', lead);
   res.json(lead);
 }));
 
-app.delete('/api/leads/:id', asyncHandler(async (req, res) => {
+app.delete('/api/leads/:id', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
-  const lead = await db.deleteLead(req.params.id);
+  const lead = await db.deleteLead(req.params.id, req.tenantId);
   if (!lead) return res.status(404).json({ error: 'Lead not found' });
 
-  // Broadcast deletion to all clients
-  io.emit('lead_deleted', lead.id);
+  // Broadcast deletion to tenant clients
+  io.to(req.tenantId).emit('lead_deleted', lead.id);
 
   res.json(lead);
 }));
 
-// 🧹 CLEANUP: Merge duplicate leads with same last 9 phone digits
-app.post('/api/leads/cleanup-duplicates', asyncHandler(async (req, res) => {
+// 🧹 CLEANUP: Merge duplicate leads with same last 9 phone digits (Global Script - Can be secured in phase 2)
+app.post('/api/leads/cleanup-duplicates', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
 
   const result = await db.pool.query('SELECT * FROM leads ORDER BY created_at ASC');
@@ -507,54 +786,59 @@ app.post('/api/leads/cleanup-duplicates', asyncHandler(async (req, res) => {
     }
   }
 
-  // Broadcast updated lead list
-  const updatedLeads = await db.getLeads({});
-  io.emit('leads_updated', updatedLeads);
+  // Broadcast updated lead list to the tenant
+  const updatedLeads = await db.getLeads({}, req.tenantId);
+  io.to(req.tenantId).emit('leads_updated', updatedLeads);
 
   res.json({ merged, count: merged.length, message: `Merged ${merged.length} duplicate leads` });
 }));
-app.get('/api/leads/:id/messages', asyncHandler(async (req, res) => {
+
+app.get('/api/leads/:id/messages', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
-  const messages = await db.getMessages(req.params.id);
+  const messages = await db.getMessages(req.params.id, req.tenantId);
   res.json(messages);
 }));
 
-// 🗑️ FACTORY RESET — delete ALL leads and messages
-app.delete('/api/leads/all', asyncHandler(async (req, res) => {
+// 🗑️ FACTORY RESET — delete ALL leads and messages FOR TENANT
+app.delete('/api/leads/all', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
-  await db.deleteAllLeads();
-  io.emit('leads_reset', {});
-  res.json({ success: true, message: 'All leads and messages deleted' });
+  await db.deleteAllLeads(req.tenantId);
+  io.to(req.tenantId).emit('leads_reset', {});
+  res.json({ success: true, message: 'All leads and messages deleted for tenant' });
 }));
 
-app.get('/api/stats', asyncHandler(async (req, res) => {
+app.get('/api/stats', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
-  const stats = await db.getLeadStats();
+  const stats = await db.getLeadStats(req.tenantId);
   res.json(stats);
 }));
 
-app.get('/health', (req, res) => {
-  const health = getHealthStatus();
+app.get('/health', requireTenantAuth, (req, res) => {
+  const health = getHealthStatus(req.tenantId);
   if (process.env.DATABASE_URL && db.healthCheck) {
-    db.healthCheck().then(dbHealth => res.json({ ...health, database: dbHealth })).catch(() => res.json({ ...health, database: { status: 'error' } }));
+    db.healthCheck(req.tenantId)
+      .then(dbHealth => res.json({ ...health, database: dbHealth }))
+      .catch(() => res.json({ ...health, database: { status: 'error' } }));
   } else {
     res.json(health);
   }
 });
 
-app.get('/chats/recent', asyncHandler(async (req, res) => {
-  console.log('📂 RECENT CHATS REQUESTED');
-  if (!isReady) return res.status(503).json({ error: 'WhatsApp client not ready yet' });
+app.get('/chats/recent', requireTenantAuth, asyncHandler(async (req, res) => {
+  console.log(`📂 RECENT CHATS REQUESTED [${req.tenantId}]`);
+  const session = getSession(req.tenantId);
 
-  // Custom recentChats map 
-  const chatsArray = Array.from(recentChats.values());
+  if (!session.isReady) return res.status(503).json({ error: 'WhatsApp client not ready yet' });
+
+  // Custom recentChats map for this tenant
+  const chatsArray = Array.from(getRecentChats(req.tenantId).values());
   // Sort by latest message
   chatsArray.sort((a, b) => b.timestamp - a.timestamp);
 
   res.json(chatsArray.slice(0, 20));
 }));
 
-app.get('/__test_send_whatsapp', asyncHandler(async (req, res) => {
+app.get('/__test_send_whatsapp', requireTenantAuth, asyncHandler(async (req, res) => {
   let phone = req.query.phone;
   if (!phone) return res.status(400).send('Please provide ?phone=994XXXXXXXX');
 
@@ -564,14 +848,15 @@ app.get('/__test_send_whatsapp', asyncHandler(async (req, res) => {
 
   const jid = `${phone}@s.whatsapp.net`; // Baileys uses s.whatsapp.net
 
-  if (!isAuthenticated && !isReady) {
-    return res.status(503).send(`<h1>Client Not Ready</h1>`);
+  const session = getSession(req.tenantId);
+  if (!session.isAuthenticated && !session.isReady) {
+    return res.status(503).send(`<h1>Client Not Ready for ${req.tenantId}</h1>`);
   }
 
   try {
-    const sentMsg = await sock.sendMessage(jid, { text: '🤖 Hello! This is a backend self-test message. If you see this, sending works!' });
+    const sentMsg = await session.sock.sendMessage(jid, { text: `🤖 Hello! This is a backend self-test message from ${req.tenantId}.` });
 
-    await processMessage(sentMsg, true);
+    await processMessage(req.tenantId, sentMsg, true);
 
     res.send(`<h1>Message Sent & Logged!</h1><p>Target: ${jid}</p>`);
   } catch (e) {
@@ -579,21 +864,28 @@ app.get('/__test_send_whatsapp', asyncHandler(async (req, res) => {
   }
 }));
 
-app.get('/api/debug', (req, res) => {
+app.get('/api/debug/:tenantId?', (req, res) => {
   const mem = process.memoryUsage();
+  const summary = {};
+
+  // Create safe summary of all tenants
+  for (const [tId, sess] of sessions.entries()) {
+    summary[tId] = {
+      isReady: sess.isReady,
+      isAuthenticated: sess.isAuthenticated,
+      isInitializing: sess.isInitializing,
+      hasQrCode: !!sess.qrCodeData,
+      lastInitError: sess.lastInitError,
+    };
+  }
+
   res.json({
     uptime_seconds: Math.round(process.uptime()),
     memory: {
       rss_mb: Math.round(mem.rss / 1024 / 1024),
       heap_used_mb: Math.round(mem.heapUsed / 1024 / 1024),
     },
-    whatsapp: {
-      isReady,
-      isAuthenticated,
-      isInitializing,
-      hasQrCode: !!qrCodeData,
-      lastInitError,
-    },
+    tenants: summary,
     environment: {
       node_version: process.version,
       platform: process.platform,
@@ -604,8 +896,8 @@ app.get('/api/debug', (req, res) => {
 
 setInterval(() => {
   const mem = process.memoryUsage();
-  console.log(`📊 Memory: ${Math.round(mem.rss / 1024 / 1024)}MB RSS | WA: ${isReady ? 'READY' : isInitializing ? 'INITIALIZING' : 'OFFLINE'} | QR: ${qrCodeData ? 'YES' : 'NO'}`);
-}, 30000);
+  console.log(`📊 Memory: ${Math.round(mem.rss / 1024 / 1024)}MB RSS | Tenants active: ${sessions.size}`);
+}, 60000);
 
 // SERVE FRONTEND (Monolith Mode)
 const DIST_PATH = path.join(__dirname, '../dist');
@@ -618,12 +910,19 @@ if (fs.existsSync(DIST_PATH)) {
   });
 }
 
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, '0.0.0.0', async () => {
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log(`🚀 Server running on port ${PORT}`);
 
-  setTimeout(() => {
-    startWhatsAppClient();
-  }, 2000);
+  try {
+    if (db.pool) {
+      // On boot, optionally load tenants to start their clients
+      // For now, let's wait until a tenant logs in via the UI/socket connection.
+      console.log('✅ Waiting for frontend UI login to instantiate specific Baileys clients.');
+    }
+  } catch (err) {
+    console.error('Boot err', err);
+  }
+
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 });
