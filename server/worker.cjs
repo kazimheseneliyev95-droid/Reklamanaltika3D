@@ -15,7 +15,8 @@ const workerApp = express();
 workerApp.use(express.json());
 
 const WORKER_PORT = process.env.WORKER_PORT || 4001;
-const API_URL = process.env.API_URL || 'http://localhost:4000';
+var apiPort = process.env.PORT || 4000;
+var API_URL = process.env.API_URL || ('http://localhost:' + apiPort);
 
 // State Variables (Multi-Tenant)
 const sessions = new Map();
