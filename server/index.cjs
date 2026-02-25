@@ -849,16 +849,42 @@ app.get('/health', requireTenantAuth, (req, res) => {
 
 app.get('/chats/recent', requireTenantAuth, asyncHandler(async (req, res) => {
   console.log(`📂 RECENT CHATS REQUESTED [${req.tenantId}]`);
-  const session = getSession(req.tenantId);
 
-  if (!session.isReady) return res.status(503).json({ error: 'WhatsApp client not ready yet' });
+  // Step 1: Always load from DB first (persistent/resilient to restarts)
+  let dbChats = [];
+  if (process.env.DATABASE_URL && db && db.getRecentLeadsWithLatestMessage) {
+    dbChats = await db.getRecentLeadsWithLatestMessage(req.tenantId, 50);
+  }
 
-  // Custom recentChats map for this tenant
-  const chatsArray = Array.from(getRecentChats(req.tenantId).values());
-  // Sort by latest message
-  chatsArray.sort((a, b) => b.timestamp - a.timestamp);
+  // Build a map of phone → data from DB results
+  const merged = new Map();
+  for (const row of dbChats) {
+    merged.set(row.phone, {
+      name: row.name || `+${row.phone}`,
+      lastMessage: row.lastmessage || '',
+      timestamp: row.timestamp ? new Date(row.timestamp).getTime() / 1000 : 0,
+      phone: row.phone,
+      unread: 0,
+      lead_id: row.lead_id,
+      status: row.status,
+    });
+  }
 
-  res.json(chatsArray.slice(0, 20));
+  // Step 2: Merge/overlay the in-memory live cache (more recent, since this session)
+  const liveChats = getRecentChats(req.tenantId);
+  for (const [phone, data] of liveChats.entries()) {
+    const existing = merged.get(phone);
+    // Only use live cache if it's a newer message than what we got from DB
+    if (!existing || data.timestamp > (existing.timestamp || 0)) {
+      merged.set(phone, { ...existing, ...data, phone });
+    }
+  }
+
+  // Sort by most recent message and return top 30
+  const chatsArray = Array.from(merged.values());
+  chatsArray.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+  res.json(chatsArray.slice(0, 30));
 }));
 
 app.get('/__test_send_whatsapp', requireTenantAuth, asyncHandler(async (req, res) => {

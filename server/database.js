@@ -659,6 +659,47 @@ async function getMessages(leadId, tenantId = 'admin') {
 }
 
 /**
+ * Get recent conversations from DB: one row per unique phone (latest message per lead).
+ * Used as the DB-backed replacement for the in-memory recentChatsMap.
+ * Returns up to `limit` conversations sorted by most recent message.
+ */
+async function getRecentLeadsWithLatestMessage(tenantId = 'admin', limit = 50) {
+    try {
+        // Join leads with their most recent message for rich conversation data
+        const result = await pool.query(`
+            SELECT
+                l.id as lead_id,
+                l.phone,
+                l.name,
+                l.status,
+                l.updated_at,
+                COALESCE(m.body, l.last_message) as lastMessage,
+                COALESCE(m.created_at, l.updated_at) as timestamp,
+                COALESCE(m.direction, 'in') as last_direction,
+                (
+                    SELECT COUNT(*) FROM messages
+                    WHERE lead_id = l.id AND tenant_id = l.tenant_id AND direction = 'in'
+                ) as total_messages
+            FROM leads l
+            LEFT JOIN LATERAL (
+                SELECT body, created_at, direction
+                FROM messages
+                WHERE lead_id = l.id AND tenant_id = l.tenant_id
+                ORDER BY created_at DESC
+                LIMIT 1
+            ) m ON true
+            WHERE l.tenant_id = $1
+            ORDER BY COALESCE(m.created_at, l.updated_at) DESC
+            LIMIT $2
+        `, [tenantId, limit]);
+        return result.rows;
+    } catch (error) {
+        console.error('❌ getRecentLeadsWithLatestMessage error:', error.message);
+        return [];
+    }
+}
+
+/**
  * Delete ALL leads and messages (Format / Factory Reset)
  */
 async function deleteAllLeads(tenantId = 'admin') {
@@ -882,6 +923,7 @@ module.exports = {
     getLeads,
     getMessages,
     appendMessage,
+    getRecentLeadsWithLatestMessage,
     deleteLead,
     deleteAllLeads,
     getLeadStats,

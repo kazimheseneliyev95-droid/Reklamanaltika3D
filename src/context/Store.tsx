@@ -385,49 +385,50 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const syncLeadsFromWhatsApp = useCallback(async () => {
     setIsLoading(true);
     try {
-      console.log('🔄 Starting manual sync from WhatsApp...');
-      const messages = await CrmService.fetchRecentMessages(30);
-      const existingLeads = await CrmService.getLeads(); // Get ALL for proper de-duplication
+      console.log('🔄 Starting manual sync from WhatsApp (DB-backed)...');
+
+      // Always reload leads from DB first
+      await loadLeads();
+
+      // Fetch recent conversations (now DB-backed, survives restarts)
+      const messages = await CrmService.fetchRecentMessages(50);
+
+      // Get fresh list from DB for de-duplication
+      const existingLeads = await CrmService.getLeads();
 
       let newLeadsAdded = 0;
-      const newLeads: Lead[] = [];
-
       for (const msg of messages) {
-        // De-duplication check: WhatsApp ID or (Phone + Message)
-        const exists = existingLeads.some(l =>
-          (l as any).whatsapp_id === msg.whatsapp_id ||
-          (l.phone === msg.phone && l.last_message === msg.message)
-        );
+        const msgText = msg.lastMessage || msg.message || '';
+        const msgPhone = String(msg.phone || '').replace(/\D/g, '');
 
-        if (!exists) {
+        // Skip if this phone already exists in DB (the /chats/recent now returns DB leads,
+        // so most entries will already exist — we only upsert truly new ones)
+        const phoneExists = existingLeads.some(l => {
+          const lPhone = String(l.phone || '').replace(/\D/g, '');
+          const lSuffix = lPhone.slice(-9);
+          const mSuffix = msgPhone.slice(-9);
+          return lPhone === msgPhone || (lSuffix.length >= 7 && lSuffix === mSuffix);
+        });
+
+        if (!phoneExists && msgPhone.length >= 7) {
           const leadData: Omit<Lead, 'id' | 'created_at' | 'updated_at'> = {
-            phone: msg.phone,
+            phone: msgPhone,
             name: msg.name,
-            last_message: msg.message,
+            last_message: msgText,
             status: 'new',
             source: 'whatsapp',
             value: 0,
-            whatsapp_id: msg.whatsapp_id
           };
-
-          // PERSIST to storage
-          const savedLead = await CrmService.addLead(leadData);
-          newLeads.push(savedLead);
+          await CrmService.addLead(leadData);
           newLeadsAdded++;
         }
       }
 
-      console.log(`✅ Sync complete. Added ${newLeadsAdded} new leads to storage.`);
-
-      // Reload from storage to ensure UI is in sync with persistent data and filters
+      console.log(`✅ Sync complete. Added ${newLeadsAdded} new leads.`);
+      // Reload from DB to ensure UI is always in sync
       await loadLeads();
-
-      if (newLeadsAdded > 0) {
-        console.log('🔄 UI refreshed with new sync data');
-      }
     } catch (e) {
       console.error('❌ Sync failed:', e);
-      // Could add toast notification here
     } finally {
       setIsLoading(false);
     }
