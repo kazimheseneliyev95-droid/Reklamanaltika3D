@@ -975,4 +975,32 @@ if (fs.existsSync(DIST_PATH)) {
   });
 }
 
-// Server start moved to db.initDb().then() above
+// ═══════════════════════════════════════════════════════════════
+// 🚀 SERVER STARTUP — bind port AFTER DB is ready
+// ═══════════════════════════════════════════════════════════════
+
+function startServer() {
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`\n🚀 ============================================`);
+    console.log(`🚀  Server is LIVE on port ${PORT}`);
+    console.log(`🚀  Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`🚀  Database: ${process.env.DATABASE_URL ? 'PostgreSQL' : 'None (local file)'}`);
+    console.log(`🚀 ============================================\n`);
+  });
+}
+
+if (process.env.DATABASE_URL && db && db.initDb) {
+  db.initDb()
+    .then(() => {
+      console.log('✅ Database initialized successfully. Starting HTTP server...');
+      startServer();
+    })
+    .catch((err) => {
+      console.error('❌ Database initialization failed:', err.message);
+      console.warn('⚠️  Starting server anyway without database...');
+      startServer();
+    });
+} else {
+  console.log('ℹ️  No DATABASE_URL set. Starting server in local mode...');
+  startServer();
+}
