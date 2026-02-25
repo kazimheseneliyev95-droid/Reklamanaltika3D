@@ -297,8 +297,8 @@ async function startWhatsAppClient(tenantId) {
     let state, saveCreds, clearState;
     if (process.env.DATABASE_URL && db && db.pool) {
       console.log(`📦 Using PostgreSQL for Baileys Auth State [${tenantId}]...`);
-      const usePostgresAuthState = require('./postgresAuthState.cjs');
-      const auth = await usePostgresAuthState(db.pool, tenantId); // Need to update this helper later
+      const { usePostgresAuthState } = require('./postgresAuthState.cjs');
+      const auth = await usePostgresAuthState(db.pool, tenantId);
       state = auth.state;
       saveCreds = auth.saveCreds;
       clearState = auth.clearState;
@@ -991,9 +991,27 @@ function startServer() {
 
 if (process.env.DATABASE_URL && db && db.initDb) {
   db.initDb()
-    .then(() => {
+    .then(async () => {
       console.log('✅ Database initialized successfully. Starting HTTP server...');
       startServer();
+
+      // 🤖 Boot all background WhatsApp sessions so CRM continues functioning 24/7 
+      // even if no browser tabs are currently open (Render restart resilience).
+      try {
+        const { getAllAuthenticatedTenants } = require('./postgresAuthState.cjs');
+        const activeTenants = await getAllAuthenticatedTenants(db.pool);
+        if (activeTenants.length > 0) {
+          console.log(`🤖 Background Sync: Booting WhatsApp for ${activeTenants.length} tenants...`);
+          // Stagger boots by 3 seconds each to prevent CPU spikes / rate limits
+          for (let i = 0; i < activeTenants.length; i++) {
+            setTimeout(() => {
+              startWhatsAppClient(activeTenants[i]);
+            }, 3000 * i);
+          }
+        }
+      } catch (err) {
+        console.error('❌ Failed to boot background WhatsApp tenants:', err.message);
+      }
     })
     .catch((err) => {
       console.error('❌ Database initialization failed:', err.message);

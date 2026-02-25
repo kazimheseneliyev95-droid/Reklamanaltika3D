@@ -1,6 +1,6 @@
 const { initAuthCreds, BufferJSON } = require('@whiskeysockets/baileys');
 
-module.exports = async (pool, tenantId) => {
+const usePostgresAuthState = async (pool, tenantId) => {
     if (!tenantId) throw new Error("tenantId is required for Multi-Tenant Baileys Auth State");
 
     // 1. Create the tenant-aware auth table if it doesn't exist
@@ -96,4 +96,25 @@ module.exports = async (pool, tenantId) => {
             }
         },
     };
+};
+
+/**
+ * Returns a list of all distinct tenant IDs that currently have a saved WhatsApp session creds.
+ * We use this on server boot to start WhatsApp for all tenants automatically natively in background.
+ */
+const getAllAuthenticatedTenants = async (pool) => {
+    try {
+        const result = await pool.query(
+            "SELECT DISTINCT tenant_id FROM baileys_auth_multi WHERE id = 'creds'"
+        );
+        return result.rows.map(row => row.tenant_id);
+    } catch (err) {
+        console.error("❌ Error fetching authenticated tenants from Postgres:", err.message);
+        return [];
+    }
+};
+
+module.exports = {
+    usePostgresAuthState,
+    getAllAuthenticatedTenants
 };

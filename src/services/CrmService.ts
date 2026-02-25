@@ -23,8 +23,6 @@ class CrmServiceImpl {
 
   // 🆕 In-memory cache for better performance and deduplication
   private leadsCache: Lead[] = [];
-  private cacheTimestamp: number = 0;
-  private readonly CACHE_TTL = 30000; // 30 seconds — still fresh enough for typical usage
 
   // 🆕 De-duplication cache
   private readonly PROCESSED_MESSAGES_TTL = 30000; // 30 seconds
@@ -39,7 +37,8 @@ class CrmServiceImpl {
     // In production, the frontend and backend are the same server (monolith),
     // so window.location.origin is ALWAYS the correct server URL.
     // This fixes the blank screen on new devices that have no localStorage.
-    if ((import.meta as any).env.PROD) {
+    const isProd = window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
+    if (isProd) {
       const origin = window.location.origin;
       localStorage.setItem(SERVER_URL_KEY, origin); // Save it so next time is instant
       return origin;
@@ -54,7 +53,8 @@ class CrmServiceImpl {
 
     // In production, always connect to the current origin (no saved URL needed)
     // In development, use the saved URL from localStorage
-    const urlToUse = (import.meta as any).env.PROD
+    const isProd = window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
+    const urlToUse = isProd
       ? window.location.origin
       : localStorage.getItem(SERVER_URL_KEY);
 
