@@ -880,7 +880,7 @@ app.get('/__test_send_whatsapp', requireTenantAuth, asyncHandler(async (req, res
   }
 }));
 
-app.get('/api/debug/:tenantId?', (req, res) => {
+app.get(['/api/debug', '/api/debug/:tenantId'], (req, res) => {
   const mem = process.memoryUsage();
   const summary = {};
 
@@ -917,12 +917,28 @@ setInterval(() => {
 
 // SERVE FRONTEND (Monolith Mode)
 const DIST_PATH = path.join(__dirname, '../dist');
+console.log(`🔍 Checking Frontend Build Directory: ${DIST_PATH} -> Exists: ${fs.existsSync(DIST_PATH)}`);
+
 if (fs.existsSync(DIST_PATH)) {
   app.use(express.static(DIST_PATH));
   app.use((req, res, next) => {
     const file = req.path.split('/').pop();
     if (file && file.includes('.')) return res.status(404).send('Not found');
     res.sendFile(path.join(DIST_PATH, 'index.html'));
+  });
+} else {
+  // Graceful fallback warning if user forgot to configure the Build Command in Render
+  app.get('*', (req, res) => {
+    res.status(404).send(`
+      <div style="font-family: sans-serif; padding: 40px; text-align: center;">
+        <h1 style="color: #ff4444;">Frontend Build Missing!</h1>
+        <p>The <b>dist</b> folder was not found at <code>${DIST_PATH}</code>.</p>
+        <p>This means your Server started, but the Frontend interface hasn't been compiled.</p>
+        <h3 style="color: #333;">How to fix this in Render.com:</h3>
+        <p>Go to your service Settings and ensure your <b>Build Command</b> is exactly:</p>
+        <code style="background: #eee; padding: 10px; border-radius: 4px; display: inline-block;">npm install && npm run build</code>
+      </div>
+    `);
   });
 }
 
