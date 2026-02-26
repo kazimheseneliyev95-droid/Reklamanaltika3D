@@ -1,13 +1,32 @@
 const { Pool } = require('pg');
 
+function normalizeDatabaseUrl(rawUrl) {
+    if (!rawUrl) return rawUrl;
+    try {
+        const parsed = new URL(rawUrl);
+        if (parsed.hostname.endsWith('.pooler.supabase.com') && (!parsed.port || parsed.port === '5432')) {
+            parsed.port = '6543';
+            console.warn('⚠️ Supabase pooler detected on port 5432. Auto-correcting to 6543.');
+        }
+        return parsed.toString();
+    } catch (err) {
+        console.warn('⚠️ DATABASE_URL parse warning:', err.message);
+        return rawUrl;
+    }
+}
+
+const normalizedDatabaseUrl = normalizeDatabaseUrl(process.env.DATABASE_URL);
+
 // Database Configuration
 const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
+    connectionString: normalizedDatabaseUrl,
     ssl: { rejectUnauthorized: false }, // Required for Supabase
     max: 25, // Increased pool size for better concurrency
     idleTimeoutMillis: 60000, // Increased from 30s to 60s
     connectionTimeoutMillis: 10000, // Increased from 2s to 10s for production
 });
+
+let didLogAuthHint = false;
 
 // Connection pool health monitoring
 let poolConnectCount = 0;
@@ -26,6 +45,13 @@ pool.on('remove', () => {
 
 pool.on('error', (err) => {
     console.error('❌ Unexpected database pool error:', err.message);
+    if (!didLogAuthHint) {
+        const msg = String(err && err.message ? err.message : '').toLowerCase();
+        if ((err && err.code === '28P01') || msg.includes('authentication') || msg.includes('sasl')) {
+            didLogAuthHint = true;
+            console.error('❌ Database authentication failed. Verify DATABASE_URL username/password.');
+        }
+    }
 });
 
 // Initialize database tables with better error handling

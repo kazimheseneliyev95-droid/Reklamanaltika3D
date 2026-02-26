@@ -96,6 +96,15 @@ function getSession(tenantId) {
 // Message Deduplication Cache
 const PROCESSED_MESSAGES_TTL = 30000;
 const processedMessages = new Map();
+let outgoingPollPauseUntil = 0;
+let outgoingPollAuthHintShown = false;
+
+function isDatabaseAuthError(err) {
+    if (!err) return false;
+    if (err.code === '28P01') return true;
+    const message = String(err.message || '').toLowerCase();
+    return message.includes('authentication') || message.includes('sasl') || message.includes('password');
+}
 
 setInterval(function () {
     var now = Date.now();
@@ -314,6 +323,7 @@ async function startWhatsAppClient(tenantId) {
 
 async function pollOutgoingMessages() {
     if (!HAS_DATABASE || !db || !db.pool) return;
+    if (Date.now() < outgoingPollPauseUntil) return;
     try {
         var result = await db.pool.query(
             "SELECT id, tenant_id, phone, body FROM messages WHERE direction = 'out' AND status = 'pending' ORDER BY created_at ASC"
@@ -339,7 +349,24 @@ async function pollOutgoingMessages() {
             }
         }
     } catch (err) {
+        if (isDatabaseAuthError(err)) {
+            outgoingPollPauseUntil = Date.now() + 120000;
+            if (!outgoingPollAuthHintShown) {
+                outgoingPollAuthHintShown = true;
+                console.error('❌ Worker DB authentication error. Pausing outgoing poller for 120s. Check DATABASE_URL credentials.');
+            }
+        }
         if (err && err.errors && Array.isArray(err.errors)) {
+            for (const nestedErr of err.errors) {
+                if (isDatabaseAuthError(nestedErr)) {
+                    outgoingPollPauseUntil = Date.now() + 120000;
+                    if (!outgoingPollAuthHintShown) {
+                        outgoingPollAuthHintShown = true;
+                        console.error('❌ Worker DB authentication error. Pausing outgoing poller for 120s. Check DATABASE_URL credentials.');
+                    }
+                    break;
+                }
+            }
             console.error('⚠️ pollOutgoingMessages error: AggregateError');
             for (const e of err.errors) {
                 console.error('   -', (e && (e.code || e.name)) || 'ERR', (e && e.message) || e);

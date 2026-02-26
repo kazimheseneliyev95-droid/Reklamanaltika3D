@@ -887,7 +887,7 @@ if (fs.existsSync(DIST_PATH)) {
   });
 } else {
   // Graceful fallback warning if user forgot to configure the Build Command in Render
-  app.get('*', (req, res) => {
+  app.use((req, res) => {
     res.status(404).send(`
       <div style="font-family: sans-serif; padding: 40px; text-align: center;">
         <h1 style="color: #ff4444;">Frontend Build Missing!</h1>
