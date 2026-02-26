@@ -6,8 +6,6 @@ services:
     plan: free
     autoDeploy: true
     envVars:
-      - key: PORT
-        value: 4000
       - key: DATABASE_URL
         sync: false
       - key: JWT_SECRET

@@ -202,6 +202,7 @@ async function startWhatsAppClient(tenantId) {
     session.isInitializing = true;
 
     try {
+        session.lastInitError = null;
         console.log('📦 PostgreSQL Auth State [' + tenantId + ']...');
         var auth = await usePostgresAuthState(db.pool, tenantId);
 
@@ -276,6 +277,7 @@ async function startWhatsAppClient(tenantId) {
 
     } catch (err) {
         console.error('❌ Init FAILED [' + tenantId + ']: ' + err.message);
+        session.lastInitError = err && (err.stack || err.message) ? String(err.stack || err.message) : 'init_failed';
         session.isInitializing = false;
     }
 }
@@ -348,7 +350,8 @@ workerApp.get('/api/internal/status/:tenantId', function (req, res) {
     res.json({
         isReady: session.isReady,
         qr: session.qrCodeData ? true : false,
-        number: session.connectedNumber
+        number: session.connectedNumber,
+        error: session.lastInitError
     });
 });
 

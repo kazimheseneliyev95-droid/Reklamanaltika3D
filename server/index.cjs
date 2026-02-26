@@ -246,6 +246,7 @@ io.on('connection', (socket) => {
       socket.emit('crm:health_check', {
         whatsapp: status,
         connectedNumber: data.number,
+        error: data.error,
         socket_clients: io.engine.clientsCount,
         timestamp: new Date().toISOString()
       });
@@ -405,6 +406,9 @@ const requireAdmin = (req, res, next) => {
 
 // 👥 USER MANAGEMENT API (Phase 2)
 app.get('/api/users', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
   // Superadmin can see all, regular admin/worker only sees their tenant's users
   const targetTenant = req.userRole === 'superadmin' ? null : req.tenantId;
   const users = await db.getUsers(targetTenant);
@@ -412,6 +416,9 @@ app.get('/api/users', requireTenantAuth, asyncHandler(async (req, res) => {
 }));
 
 app.post('/api/users', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
   const { username, password, role } = req.body;
   if (!username || !password || !role) {
     return res.status(400).json({ error: 'Username, password, and role are required' });
@@ -438,6 +445,9 @@ app.post('/api/users', requireTenantAuth, requireAdmin, asyncHandler(async (req,
 }));
 
 app.put('/api/users/:id/role', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
   const { role } = req.body;
 
   if (role !== 'admin' && role !== 'worker') {
@@ -449,6 +459,9 @@ app.put('/api/users/:id/role', requireTenantAuth, requireAdmin, asyncHandler(asy
 }));
 
 app.delete('/api/users/:id', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
   await db.deleteUser(req.params.id, req.tenantId);
   res.json({ success: true });
 }));
