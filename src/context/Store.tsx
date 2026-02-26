@@ -111,6 +111,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
     verifyToken();
   }, []);
 
+  const loadLeads = useCallback(async () => {
+    setIsLoading(true);
+    console.log('🔍 Loading leads for range:', dateRange);
+    try {
+      const data = await CrmService.getLeads(dateRange);
+      console.log(`📊 Found ${data.length} leads in range.`);
+      setLeads(data);
+      leadsRef.current = data;
+    } catch (error) {
+      console.error('❌ Error loading leads:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [dateRange]);
+
   const loadTeamMembers = useCallback(async () => {
     try {
       const res = await fetch(`${CrmService.getServerUrl()}/api/users`, {
@@ -291,22 +306,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       cleanupFunctions.forEach(cleanup => cleanup());
     };
   }, [loadLeads]);
-
-  const loadLeads = useCallback(async () => {
-    setIsLoading(true);
-    console.log('🔍 Loading leads for range:', dateRange);
-    try {
-      const data = await CrmService.getLeads(dateRange);
-      console.log(`📊 Found ${data.length} leads in range.`);
-      setLeads(data);
-      leadsRef.current = data;
-    } catch (error) {
-      console.error('❌ Error loading leads:', error);
-      // Show error to user (could add toast notification here)
-    } finally {
-      setIsLoading(false);
-    }
-  }, [dateRange]);
 
   useEffect(() => {
     if (isAuthenticated) {

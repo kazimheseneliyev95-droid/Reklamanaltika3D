@@ -311,7 +311,14 @@ async function pollOutgoingMessages() {
             }
         }
     } catch (err) {
-        console.error('⚠️ pollOutgoingMessages error:', (err && (err.stack || err.message)) || err);
+        if (err && err.errors && Array.isArray(err.errors)) {
+            console.error('⚠️ pollOutgoingMessages error: AggregateError');
+            for (const e of err.errors) {
+                console.error('   -', (e && (e.code || e.name)) || 'ERR', (e && e.message) || e);
+            }
+        } else {
+            console.error('⚠️ pollOutgoingMessages error:', (err && (err.stack || err.message)) || err);
+        }
     }
 }
 
