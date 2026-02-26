@@ -881,9 +881,20 @@ app.use((err, req, res, next) => {
 
 // SERVE FRONTEND (Monolith Mode)
 const DIST_PATH = path.join(__dirname, '../dist');
-console.log(`🔍 Checking Frontend Build Directory: ${DIST_PATH} -> Exists: ${fs.existsSync(DIST_PATH)}`);
+const distExists = fs.existsSync(DIST_PATH);
+console.log(`🔍 Checking Frontend Build Directory: ${DIST_PATH} -> Exists: ${distExists}`);
+if (distExists) {
+  try {
+    const files = fs.readdirSync(DIST_PATH);
+    console.log(`📂 dist/ contents: [${files.join(', ')}]`);
+    const hasIndex = fs.existsSync(path.join(DIST_PATH, 'index.html'));
+    console.log(`📄 dist/index.html exists: ${hasIndex}`);
+  } catch (e) {
+    console.error('⚠️ Error reading dist/:', e.message);
+  }
+}
 
-if (fs.existsSync(DIST_PATH)) {
+if (distExists) {
   app.use(express.static(DIST_PATH));
   app.use((req, res, next) => {
     const file = req.path.split('/').pop();
