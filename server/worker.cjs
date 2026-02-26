@@ -6,7 +6,18 @@ if (!process.env.DATABASE_URL) {
 
 const express = require('express');
 const path = require('path');
-const { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers } = require('@whiskeysockets/baileys');
+const {
+    makeWASocket,
+    useMultiFileAuthState,
+    DisconnectReason,
+    fetchLatestBaileysVersion,
+    Browsers,
+    jidDecode,
+    jidNormalizedUser,
+    isJidGroup,
+    isJidBroadcast,
+    isJidStatusBroadcast
+} = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const HAS_DATABASE = Boolean(process.env.DATABASE_URL);
 const db = HAS_DATABASE ? require('./database') : null;
@@ -145,14 +156,80 @@ async function notifyApiServer(tenantId, event, payload) {
 
 async function processMessage(tenantId, msg, isFromMe) {
     try {
-        if (!msg.message) return;
+        if (!msg || !msg.key) return;
 
-        var messageContent = '';
-        if (msg.message.conversation) messageContent = msg.message.conversation;
-        else if (msg.message.extendedTextMessage && msg.message.extendedTextMessage.text) messageContent = msg.message.extendedTextMessage.text;
-        else if (msg.message.imageMessage && msg.message.imageMessage.caption) messageContent = msg.message.imageMessage.caption;
+        function unwrapMessage(m) {
+            if (!m) return m;
+            if (m.ephemeralMessage && m.ephemeralMessage.message) return unwrapMessage(m.ephemeralMessage.message);
+            if (m.viewOnceMessageV2 && m.viewOnceMessageV2.message) return unwrapMessage(m.viewOnceMessageV2.message);
+            if (m.viewOnceMessageV2Extension && m.viewOnceMessageV2Extension.message) return unwrapMessage(m.viewOnceMessageV2Extension.message);
+            if (m.editedMessage && m.editedMessage.message) return unwrapMessage(m.editedMessage.message);
+            return m;
+        }
 
-        if (msg.key.remoteJid === 'status@broadcast') return;
+        function extractText(m) {
+            if (!m) return '';
+            if (m.conversation) return m.conversation;
+            if (m.extendedTextMessage && m.extendedTextMessage.text) return m.extendedTextMessage.text;
+            if (m.imageMessage && m.imageMessage.caption) return m.imageMessage.caption;
+            if (m.videoMessage && m.videoMessage.caption) return m.videoMessage.caption;
+            if (m.documentMessage && m.documentMessage.caption) return m.documentMessage.caption;
+
+            if (m.buttonsResponseMessage) {
+                return m.buttonsResponseMessage.selectedDisplayText || m.buttonsResponseMessage.selectedButtonId || '';
+            }
+            if (m.listResponseMessage && m.listResponseMessage.singleSelectReply) {
+                return m.listResponseMessage.title || m.listResponseMessage.singleSelectReply.selectedRowId || '';
+            }
+            if (m.templateMessage && m.templateMessage.hydratedTemplate) {
+                return m.templateMessage.hydratedTemplate.hydratedContentText || '';
+            }
+
+            return '';
+        }
+
+        function phoneFromJid(jid) {
+            if (!jid) return null;
+            var decoded = jidDecode(jid);
+            var user = decoded && decoded.user ? decoded.user : String(jid).split('@')[0];
+            user = String(user).split(':')[0];
+            var digits = String(user).replace(/\D/g, '');
+            if (!digits || digits.length < 7 || digits.length > 15) return null;
+            return digits;
+        }
+
+        function getPeerJid() {
+            var remoteJid = msg.key.remoteJid;
+            if (!remoteJid) return null;
+            if (remoteJid === 'status@broadcast' || isJidStatusBroadcast(remoteJid)) return null;
+            if (isJidGroup(remoteJid)) return null;
+            if (isJidBroadcast(remoteJid)) return null;
+
+            var remote = jidDecode(remoteJid);
+            var participantJid = msg.key.participant;
+            var participant = participantJid ? jidDecode(participantJid) : null;
+
+            // LID threads: participant often contains the real phone WAID
+            if (remote && remote.server === 'lid' && participant && participant.server === 's.whatsapp.net') {
+                return participantJid;
+            }
+
+            // If remoteJid resolves to ourselves, participant is the other party (edge cases)
+            var session = sessions.get(tenantId);
+            var me = session && session.sock && session.sock.user && session.sock.user.id;
+            if (me && participantJid) {
+                if (jidNormalizedUser(remoteJid) === jidNormalizedUser(me)) {
+                    return participantJid;
+                }
+            }
+
+            return remoteJid;
+        }
+
+        var unwrapped = unwrapMessage(msg.message);
+        if (!unwrapped) return;
+
+        var messageContent = extractText(unwrapped);
         if (!messageContent || messageContent.trim() === '') return;
 
         var whatsappId = msg.key.id;
@@ -163,21 +240,13 @@ async function processMessage(tenantId, msg, isFromMe) {
 
         var prefix = isFromMe ? '📤 [OUT]' : '📥 [IN]';
 
-        // CRITICAL FIX: The thread ID is ALWAYS the remoteJid (the customer's JID)
-        // whether the message is incoming (from customer) or outgoing (to customer).
-        // If we use 'from' on an outgoing message, it would be our own business number,
-        // which splits the thread and creates a fake lead of ourselves.
-        var rawJid = msg.key.remoteJid;
-        if (!rawJid) return;
+        var peerJid = getPeerJid();
+        var rawNumber = phoneFromJid(peerJid);
+        if (!rawNumber) return;
 
-        var rawNumber = rawJid.split('@')[0].split(':')[0];
-
-        if (!rawNumber || rawNumber.length < 5 || rawNumber.includes('g.us')) return;
-
-        // Normalize: strip all non-digit characters
-        rawNumber = rawNumber.replace(/\D/g, '');
-
-        var contactName = msg.pushName || ('+' + rawNumber);
+        // Avoid overwriting the lead name with our own display name on outgoing messages
+        var contactName = (!isFromMe && msg.pushName) ? msg.pushName : null;
+        var displayName = contactName || ('+' + rawNumber);
         console.log('[' + tenantId + '] ' + prefix + ' ' + rawNumber + ' | ' + messageContent.substring(0, 50));
 
         // Write ALL messages (incoming AND outgoing caught by Baileys) to DB
@@ -194,7 +263,7 @@ async function processMessage(tenantId, msg, isFromMe) {
                 } else {
                     savedLead = await db.createLead({
                         phone: rawNumber,
-                        name: contactName,
+                        name: displayName,
                         last_message: messageContent,
                         whatsapp_id: whatsappId,
                         source: 'whatsapp',
@@ -224,7 +293,7 @@ async function processMessage(tenantId, msg, isFromMe) {
 
         notifyApiServer(tenantId, 'new_message', {
             phone: canonicalPhoneEmit,
-            name: contactName,
+            name: displayName,
             message: messageContent,
             whatsapp_id: whatsappId,
             fromMe: isFromMe,
