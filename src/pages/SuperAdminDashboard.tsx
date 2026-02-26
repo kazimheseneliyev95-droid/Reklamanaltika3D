@@ -36,6 +36,7 @@ export default function SuperAdminDashboard() {
     const [newTenantId, setNewTenantId] = useState('');
     const [newAdminUser, setNewAdminUser] = useState('');
     const [newAdminPass, setNewAdminPass] = useState('kazimks12'); // Default
+    const [newDisplayName, setNewDisplayName] = useState('');
     const [createMsg, setCreateMsg] = useState({ type: '', text: '' });
 
     // Details Modal State
@@ -78,7 +79,8 @@ export default function SuperAdminDashboard() {
                 body: JSON.stringify({
                     tenantId: newTenantId,
                     adminUsername: newAdminUser,
-                    adminPassword: newAdminPass
+                    adminPassword: newAdminPass,
+                    displayName: newDisplayName
                 })
             });
 
@@ -88,6 +90,7 @@ export default function SuperAdminDashboard() {
             setCreateMsg({ type: 'success', text: 'Yeni müştəri profili uğurla yaradıldı!' });
             setNewTenantId('');
             setNewAdminUser('');
+            setNewDisplayName('');
             setIsCreating(false);
             loadTenants(); // refresh list
         } catch (err: any) {
@@ -264,7 +267,7 @@ export default function SuperAdminDashboard() {
                                 </div>
                             )}
 
-                            <form onSubmit={handleCreateTenant} className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+                            <form onSubmit={handleCreateTenant} className="grid grid-cols-1 md:grid-cols-5 gap-4 items-end">
                                 <div>
                                     <label className="block text-xs font-medium text-slate-500 mb-1">Şirkət ID (Tenant ID)</label>
                                     <input
@@ -276,6 +279,17 @@ export default function SuperAdminDashboard() {
                                         className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:ring-2 focus:ring-rose-500 focus:border-transparent outline-none"
                                     />
                                     <p className="text-[10px] text-slate-600 mt-1">Yalnız ingilis hərfləri və rəqəm</p>
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-medium text-slate-500 mb-1">Şirkətin Adı</label>
+                                    <input
+                                        type="text"
+                                        placeholder="Məs: Əla Şirkət MMC"
+                                        value={newDisplayName}
+                                        onChange={(e) => setNewDisplayName(e.target.value)}
+                                        className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:ring-2 focus:ring-rose-500 focus:border-transparent outline-none"
+                                    />
+                                    <p className="text-[10px] text-slate-600 mt-1">İstəyə bağlı (Görünən ad)</p>
                                 </div>
                                 <div>
                                     <label className="block text-xs font-medium text-slate-500 mb-1">Admin Username</label>

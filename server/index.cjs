@@ -511,7 +511,7 @@ app.post('/api/admin/tenants', requireTenantAuth, requireAdmin, asyncHandler(asy
     return res.status(403).json({ error: 'Forbidden: Superadmin access required' });
   }
 
-  const { tenantId, adminUsername, adminPassword } = req.body;
+  const { tenantId, adminUsername, adminPassword, displayName } = req.body;
 
   if (!tenantId || !tenantId.trim() || !adminUsername || !adminPassword) {
     return res.status(400).json({ error: 'Müştəri ID-si, admin adı və şifrə mütləqdir' });
@@ -521,7 +521,7 @@ app.post('/api/admin/tenants', requireTenantAuth, requireAdmin, asyncHandler(asy
 
   try {
     const adminPasswordHash = await hashPassword(adminPassword);
-    const newAdmin = await db.createUser(adminUsername.toLowerCase(), adminPasswordHash, 'admin', cleanTenantId);
+    const newAdmin = await db.createUser(adminUsername.toLowerCase(), adminPasswordHash, 'admin', {}, cleanTenantId, displayName);
 
     // Auto-init WhatsApp session for the new tenant via worker
     fetchJsonWithRetry(`http://localhost:4001/api/internal/start/${cleanTenantId}`, {

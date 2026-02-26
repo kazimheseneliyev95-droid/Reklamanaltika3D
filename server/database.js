@@ -138,6 +138,7 @@ async function initDb() {
                 ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(50) DEFAULT 'admin';
                 ALTER TABLE users ADD COLUMN IF NOT EXISTS permissions JSONB DEFAULT '{}';
                 ALTER TABLE users ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(50) DEFAULT 'admin';
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(255);
             `);
         } catch (e) {
             console.error("Migration warning (can be ignored on fresh install):", e.message);
@@ -798,11 +799,11 @@ async function deleteAllLeads(tenantId = 'admin') {
 /**
  * Creates a new user
  */
-async function createUser(username, passwordHash, role, permissions, tenantId) {
+async function createUser(username, passwordHash, role, permissions, tenantId, displayName = null) {
     try {
         const result = await pool.query(
-            'INSERT INTO users (username, password_hash, role, permissions, tenant_id) VALUES ($1, $2, $3, $4, $5) RETURNING id, username, role, permissions, tenant_id, created_at',
-            [username, passwordHash, role, permissions || {}, tenantId]
+            'INSERT INTO users (username, password_hash, role, permissions, tenant_id, display_name) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, username, role, permissions, tenant_id, display_name, created_at',
+            [username, passwordHash, role, permissions || {}, tenantId, displayName]
         );
         return result.rows[0];
     } catch (error) {
