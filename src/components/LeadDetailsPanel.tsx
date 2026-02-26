@@ -311,7 +311,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
     return (
         // OVERLAY
         <div
-            className="fixed inset-0 z-50 bg-black/70 backdrop-blur-[2px] flex justify-end"
+            className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-[2px] flex justify-end"
             onClick={onClose}
         >
             {/* DRAWER — stops propagation so clicks inside don't close */}
