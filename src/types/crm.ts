@@ -45,6 +45,7 @@ export interface User {
   role: 'admin' | 'worker' | 'superadmin' | 'manager' | 'viewer';
   permissions?: UserPermissions;
   tenant_id: string;
+  display_name?: string | null;
   created_at?: string;
 }
 

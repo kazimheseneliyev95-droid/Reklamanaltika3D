@@ -371,11 +371,21 @@ app.post('/api/auth/login', asyncHandler(async (req, res) => {
     username: user.username,
     tenantId: user.tenant_id,
     role: user.role,
-    permissions: user.permissions || {}
+    permissions: user.permissions || {},
+    displayName: user.display_name || null
   };
   const token = signAuthToken(tokenPayload);
 
-  res.json({ success: true, token, tenantId: user.tenant_id, role: user.role, id: user.id, username: user.username, permissions: user.permissions || {} });
+  res.json({
+    success: true,
+    token,
+    tenantId: user.tenant_id,
+    role: user.role,
+    id: user.id,
+    username: user.username,
+    permissions: user.permissions || {},
+    displayName: user.display_name || null
+  });
 }));
 
 app.post('/api/auth/verify', (req, res) => {
@@ -383,7 +393,16 @@ app.post('/api/auth/verify', (req, res) => {
   try {
     const data = verifyAnyToken(token);
     if (data.tenantId) {
-      res.json({ success: true, valid: true, tenantId: data.tenantId, id: data.id, role: data.role, username: data.username, permissions: data.permissions || {} });
+      res.json({
+        success: true,
+        valid: true,
+        tenantId: data.tenantId,
+        id: data.id,
+        role: data.role,
+        username: data.username,
+        permissions: data.permissions || {},
+        displayName: data.displayName || null
+      });
     } else {
       throw new Error();
     }
@@ -416,6 +435,16 @@ const requireAdmin = (req, res, next) => {
   }
   next();
 };
+
+// Tenant profile (display name, etc.)
+app.get('/api/tenant/profile', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  const adminUser = await db.getTenantAdmin(req.tenantId);
+  res.json({
+    tenantId: req.tenantId,
+    displayName: adminUser?.display_name || null
+  });
+}));
 
 // 👥 USER MANAGEMENT API (Phase 2)
 app.get('/api/users', requireTenantAuth, asyncHandler(async (req, res) => {
@@ -607,7 +636,9 @@ app.post('/api/admin/impersonate/:tenantId', requireTenantAuth, requireAdmin, as
     id: adminUser.id,
     role: adminUser.role,
     tenantId: adminUser.tenant_id,
-    username: adminUser.username
+    username: adminUser.username,
+    permissions: adminUser.permissions || {},
+    displayName: adminUser.display_name || null
   };
   const token = signAuthToken(tokenPayload);
 
@@ -617,7 +648,9 @@ app.post('/api/admin/impersonate/:tenantId', requireTenantAuth, requireAdmin, as
     tenantId: adminUser.tenant_id,
     id: adminUser.id,
     username: adminUser.username,
-    role: adminUser.role
+    role: adminUser.role,
+    permissions: adminUser.permissions || {},
+    displayName: adminUser.display_name || null
   });
 }));
 

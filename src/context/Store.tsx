@@ -87,16 +87,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
           body: JSON.stringify({ token })
         });
         const data = await res.json();
-        if (data.valid) {
-          localStorage.setItem('crm_tenant_id', data.tenantId);
-          setCurrentUser({
-            id: data.id,
-            username: data.username,
-            role: data.role,
-            permissions: data.permissions || {},
-            tenant_id: data.tenantId
-          });
-          setIsAuthenticated(true);
+          if (data.valid) {
+            localStorage.setItem('crm_tenant_id', data.tenantId);
+            setCurrentUser({
+              id: data.id,
+              username: data.username,
+              role: data.role,
+              permissions: data.permissions || {},
+              tenant_id: data.tenantId,
+              display_name: data.displayName || null
+            });
+            setIsAuthenticated(true);
           // 🆕 Automatically restore WhatsApp Socket if there is a saved server URL
           CrmService.autoConnect();
 
@@ -105,6 +106,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
             await syncCRMSettingsFromServer();
           } catch (e) {
             console.error('Failed to sync settings on load', e);
+          }
+
+          // If token didn't include display name (older tokens), fetch tenant profile
+          try {
+            if (!data.displayName) {
+              const profileRes = await fetch(`${CrmService.getServerUrl()}/api/tenant/profile`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+              });
+              if (profileRes.ok) {
+                const profile = await profileRes.json();
+                if (profile?.displayName) {
+                  setCurrentUser(prev => prev ? { ...prev, display_name: profile.displayName } : prev);
+                }
+              }
+            }
+          } catch (e) {
+            console.warn('Tenant profile fetch failed', e);
           }
         } else {
           localStorage.removeItem('crm_auth_token');
@@ -502,7 +520,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
           username: data.username,
           role: data.role,
           permissions: data.permissions || {},
-          tenant_id: data.tenantId
+          tenant_id: data.tenantId,
+          display_name: data.displayName || null
         });
         setIsAuthenticated(true);
       } else {
@@ -535,7 +554,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
           username: data.username,
           role: data.role,
           permissions: data.permissions || {},
-          tenant_id: data.tenantId
+          tenant_id: data.tenantId,
+          display_name: data.displayName || null
         });
         setIsAuthenticated(true);
       } else {

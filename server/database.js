@@ -865,7 +865,7 @@ async function createUser(username, passwordHash, role, permissions, tenantId, d
  */
 async function getUsers(tenantId = null) {
     try {
-        let query = 'SELECT id, username, role, permissions, tenant_id, created_at FROM users';
+        let query = 'SELECT id, username, role, permissions, tenant_id, display_name, created_at FROM users';
         let values = [];
 
         if (tenantId) {
@@ -966,7 +966,7 @@ async function getSuperAdminTenants() {
 async function findUserByUsername(username) {
     try {
         const result = await pool.query(
-            'SELECT id, username, password_hash, role, permissions, tenant_id FROM users WHERE username = $1',
+            'SELECT id, username, password_hash, role, permissions, tenant_id, display_name FROM users WHERE username = $1',
             [username]
         );
         return result.rows[0] || null;
@@ -995,7 +995,7 @@ async function updateUserPasswordHash(userId, passwordHash) {
 async function getTenantAdmin(tenantId) {
     try {
         const result = await pool.query(
-            "SELECT id, username, role, permissions, tenant_id FROM users WHERE tenant_id = $1 AND role = 'admin' ORDER BY created_at ASC LIMIT 1",
+            "SELECT id, username, role, permissions, tenant_id, display_name FROM users WHERE tenant_id = $1 AND role = 'admin' ORDER BY created_at ASC LIMIT 1",
             [tenantId]
         );
         return result.rows[0] || null;
