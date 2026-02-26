@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react';
 import { Lead, LeadStatus, DateRange, User } from '../types/crm';
 import { CrmService } from '../services/CrmService';
-import { loadCRMSettings, applyAutoRules } from '../lib/crmSettings';
+import { loadCRMSettings, applyAutoRules, syncCRMSettingsFromServer } from '../lib/crmSettings';
 
 interface AppContextType {
   leads: Lead[];
@@ -99,6 +99,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
           setIsAuthenticated(true);
           // 🆕 Automatically restore WhatsApp Socket if there is a saved server URL
           CrmService.autoConnect();
+
+          // Sync settings from server
+          try {
+            await syncCRMSettingsFromServer();
+          } catch (e) {
+            console.error('Failed to sync settings on load', e);
+          }
         } else {
           localStorage.removeItem('crm_auth_token');
           localStorage.removeItem('crm_tenant_id');
@@ -249,6 +256,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setLeads([]);
     });
     cleanupFunctions.push(cleanupLeadsReset);
+
+    // Listen for settings updates from other clients
+    const cleanupSettingsUpdated = CrmService.onSettingsUpdated(async () => {
+      console.log('⚙️ SETTINGS UPDATED: Syncing from server and reloading...');
+      await syncCRMSettingsFromServer();
+      window.location.reload();
+    });
+    cleanupFunctions.push(cleanupSettingsUpdated);
 
     // 🧪 TEST MODE LISTENER
     const cleanupTestMessage = CrmService.onTestMessage((data: any) => {

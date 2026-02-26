@@ -155,10 +155,13 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
         return () => window.removeEventListener('keydown', fn);
     }, [onClose]);
 
-    const handleSave = () => {
-        saveCRMSettings(settings);
+    const handleSave = async () => {
+        await saveCRMSettings(settings);
         setSaved(true);
-        setTimeout(() => setSaved(false), 1800);
+        setTimeout(() => {
+            setSaved(false);
+            window.location.reload();
+        }, 1000);
     };
 
     // ─── Auto-Rules CRUD ───────────────────────────────────────────────────────

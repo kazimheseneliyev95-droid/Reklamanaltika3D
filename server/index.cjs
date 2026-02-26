@@ -920,7 +920,29 @@ app.get('/chats/recent', requireTenantAuth, asyncHandler(async (req, res) => {
   res.json(chatsArray.slice(0, 30));
 }));
 
+// ═══════════════════════════════════════════════════════════════
+// ⚙️ CRM SETTINGS API (Phase 4)
+// ═══════════════════════════════════════════════════════════════
 
+app.get('/api/settings', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  const settings = await db.getCRMSettings(req.tenantId);
+  res.json({ settings }); // Returns null if no settings found, frontend will use defaults
+}));
+
+app.post('/api/settings', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+
+  const { settings } = req.body;
+  if (!settings) return res.status(400).json({ error: 'Settings object is required' });
+
+  const updatedSettings = await db.updateCRMSettings(req.tenantId, settings);
+
+  // Optionally, let all UI clients in the tenant know settings updated so they can reload
+  io.to(req.tenantId).emit('settings_updated', updatedSettings);
+
+  res.json({ success: true, settings: updatedSettings });
+}));
 
 app.get(['/api/debug', '/api/debug/:tenantId'], (req, res) => {
   const mem = process.memoryUsage();

@@ -162,8 +162,15 @@ async function processMessage(tenantId, msg, isFromMe) {
         processedMessages.set(whatsappId, Date.now());
 
         var prefix = isFromMe ? '📤 [OUT]' : '📥 [IN]';
-        var rawJid = msg.key.remoteJid.split('@')[0];
-        var rawNumber = rawJid.split(':')[0];
+
+        // CRITICAL FIX: The thread ID is ALWAYS the remoteJid (the customer's JID)
+        // whether the message is incoming (from customer) or outgoing (to customer).
+        // If we use 'from' on an outgoing message, it would be our own business number,
+        // which splits the thread and creates a fake lead of ourselves.
+        var rawJid = msg.key.remoteJid;
+        if (!rawJid) return;
+
+        var rawNumber = rawJid.split('@')[0].split(':')[0];
 
         if (!rawNumber || rawNumber.length < 5 || rawNumber.includes('g.us')) return;
 
@@ -213,8 +220,10 @@ async function processMessage(tenantId, msg, isFromMe) {
         }
 
         // Tell the UI to refresh via webhook
+        var canonicalPhoneEmit = (typeof savedLead !== 'undefined' && savedLead && savedLead.phone) ? savedLead.phone : rawNumber;
+
         notifyApiServer(tenantId, 'new_message', {
-            phone: rawNumber,
+            phone: canonicalPhoneEmit,
             name: contactName,
             message: messageContent,
             whatsapp_id: whatsappId,

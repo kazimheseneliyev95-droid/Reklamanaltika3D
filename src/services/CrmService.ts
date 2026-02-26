@@ -16,6 +16,7 @@ class CrmServiceImpl {
   private leadUpdateListeners: Map<string, (lead: Lead) => void> = new Map();
   private testMessageListeners: Map<string, (data: any) => void> = new Map();
   private healthListeners: Map<string, (health: any) => void> = new Map();
+  private settingsListeners: Map<string, (settings: any) => void> = new Map();
 
   // Demo Mode State
   private isDemoMode: boolean = false;
@@ -213,6 +214,7 @@ class CrmServiceImpl {
     this.socket.off('connect_error');
     this.socket.off('disconnect');
     this.socket.off('reconnect');
+    this.socket.off('settings_updated');
 
     console.log('🧹 Socket listeners cleaned up');
   }
@@ -273,6 +275,11 @@ class CrmServiceImpl {
 
     this.socket.on('crm:health_check', (health: any) => {
       this.notifyHealthListeners(health);
+    });
+
+    this.socket.on('settings_updated', (settings: any) => {
+      console.log('⚙️ SOCKET: settings_updated received');
+      this.settingsListeners.forEach(cb => cb(settings));
     });
 
     this.socket.on('new_message', async (data: any) => {
@@ -480,6 +487,12 @@ class CrmServiceImpl {
     return () => {
       this.healthListeners.delete(id);
     };
+  }
+
+  onSettingsUpdated(cb: (settings: any) => void): () => void {
+    const id = `settings-${this.listenerIdCounter++}`;
+    this.settingsListeners.set(id, cb);
+    return () => this.settingsListeners.delete(id);
   }
 
   // 🆕 Called when socket reconnects — Store.tsx uses this to refresh leads from DB

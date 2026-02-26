@@ -92,8 +92,44 @@ export function loadCRMSettings(): CRMSettings {
     return { customFields: DEFAULT_FIELDS, pipelineStages: DEFAULT_STAGES, autoRules: DEFAULT_RULES };
 }
 
-export function saveCRMSettings(settings: CRMSettings): void {
+export async function saveCRMSettings(settings: CRMSettings): Promise<void> {
     localStorage.setItem(getStorageKey(), JSON.stringify(settings));
+    try {
+        const token = localStorage.getItem('crm_auth_token');
+        if (!token) return;
+        const serverUrl = localStorage.getItem('crm_server_url') || '';
+        await fetch(`${serverUrl}/api/settings`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({ settings })
+        });
+    } catch (err) {
+        console.error('Failed to sync settings to server', err);
+    }
+}
+
+export async function syncCRMSettingsFromServer(): Promise<CRMSettings | null> {
+    try {
+        const token = localStorage.getItem('crm_auth_token');
+        if (!token) return null;
+        const serverUrl = localStorage.getItem('crm_server_url') || '';
+        const res = await fetch(`${serverUrl}/api/settings`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.ok) {
+            const data = await res.json();
+            if (data.settings) {
+                localStorage.setItem(getStorageKey(), JSON.stringify(data.settings));
+                return data.settings;
+            }
+        }
+    } catch (err) {
+        console.error('Failed to fetch settings from server', err);
+    }
+    return null;
 }
 
 export function generateFieldId(): string {

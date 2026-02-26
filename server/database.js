@@ -139,6 +139,13 @@ async function initDb() {
                 ALTER TABLE users ADD COLUMN IF NOT EXISTS permissions JSONB DEFAULT '{}';
                 ALTER TABLE users ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(50) DEFAULT 'admin';
                 ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(255);
+
+                -- Add crm_settings table
+                CREATE TABLE IF NOT EXISTS crm_settings (
+                    tenant_id VARCHAR(50) PRIMARY KEY,
+                    settings JSONB NOT NULL DEFAULT '{}',
+                    updated_at TIMESTAMP DEFAULT NOW()
+                );
             `);
         } catch (e) {
             console.error("Migration warning (can be ignored on fresh install):", e.message);
@@ -235,7 +242,7 @@ function validateValue(value) {
 // ═══════════════════════════════════════════════════════════════
 
 /**
- * Create or update a lead (Upsert operation with transaction)
+ * Create or update a lead (Fuzzy match + Upsert operation)
  */
 async function createLead(data, tenantId = 'admin') {
     const client = await pool.connect();
@@ -258,7 +265,45 @@ async function createLead(data, tenantId = 'admin') {
             product_name
         } = data;
 
-        // Upsert with full UPDATE (not DO NOTHING)
+        // 1. Check for fuzzy match first before inserting
+        // This prevents duplicate leads when the phone format differs slightly (e.g. +994 vs 055...)
+        const existingLead = await findLeadByPhone(cleanedPhone, tenantId);
+
+        if (existingLead) {
+            // Update the canonical lead
+            const query = `
+                UPDATE leads
+                SET
+                    name = COALESCE($1, name),
+                    last_message = COALESCE($2, last_message),
+                    source_message = COALESCE($3, source_message),
+                    source_contact_name = COALESCE($4, source_contact_name),
+                    whatsapp_id = COALESCE($5, whatsapp_id),
+                    value = COALESCE(NULLIF($6, 0), value),
+                    product_name = COALESCE($7, product_name),
+                    updated_at = NOW()
+                WHERE id = $8 AND tenant_id = $9
+                RETURNING *;
+            `;
+            const values = [
+                name || null,
+                last_message || null,
+                source_message || null,
+                source_contact_name || null,
+                whatsapp_id || null,
+                value,
+                product_name || null,
+                existingLead.id,
+                tenantId
+            ];
+
+            const result = await client.query(query, values);
+            await client.query('COMMIT');
+            console.log(`✅ Lead updated (fuzzy merged): ${existingLead.phone} (${result.rows[0].status})`);
+            return result.rows[0];
+        }
+
+        // 2. Insert new lead since no fuzzy match was found
         const query = `
         INSERT INTO leads (
           phone, name, last_message, source_message, source_contact_name,
@@ -1039,6 +1084,49 @@ async function getAuditLogs(tenantId, limit = 100) {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════
+// CRM SETTINGS (Phase 4)
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Get CRM Settings for a tenant
+ */
+async function getCRMSettings(tenantId) {
+    try {
+        const result = await pool.query(
+            'SELECT settings FROM crm_settings WHERE tenant_id = $1',
+            [tenantId]
+        );
+        if (result.rows.length > 0) {
+            return result.rows[0].settings;
+        }
+        return null; // Signals the frontend to use its default structure
+    } catch (error) {
+        console.error('❌ getCRMSettings error:', error.message);
+        throw error;
+    }
+}
+
+/**
+ * Update CRM Settings for a tenant
+ */
+async function updateCRMSettings(tenantId, settings) {
+    try {
+        const query = `
+            INSERT INTO crm_settings (tenant_id, settings, updated_at)
+            VALUES ($1, $2, NOW())
+            ON CONFLICT (tenant_id)
+            DO UPDATE SET settings = EXCLUDED.settings, updated_at = NOW()
+            RETURNING settings;
+        `;
+        const result = await pool.query(query, [tenantId, settings]);
+        return result.rows[0].settings;
+    } catch (error) {
+        console.error('❌ updateCRMSettings error:', error.message);
+        throw error;
+    }
+}
+
 // NOTE: SIGINT/SIGTERM handlers are NOT registered here.
 // The main entry point (index.cjs) owns the graceful shutdown sequence
 // and calls db.closePool() itself. Having duplicate handlers caused
@@ -1075,5 +1163,7 @@ module.exports = {
     deleteTenant,
     logAuditAction,
     getAuditLogs,
+    getCRMSettings,
+    updateCRMSettings,
     closePool
 };
