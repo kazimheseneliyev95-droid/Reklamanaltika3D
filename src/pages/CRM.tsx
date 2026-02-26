@@ -46,9 +46,13 @@ export default function CRMPage() {
 
   // Health listener
   useEffect(() => {
-    CrmService.onHealthCheck((health) => {
+    const cleanup = CrmService.onHealthCheck((health) => {
       setSystemHealth(health);
     });
+
+    return () => {
+      cleanup();
+    };
   }, []);
 
 

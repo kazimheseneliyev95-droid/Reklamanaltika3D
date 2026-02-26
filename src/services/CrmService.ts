@@ -23,6 +23,7 @@ class CrmServiceImpl {
 
   // 🆕 In-memory cache for better performance and deduplication
   private leadsCache: Lead[] = [];
+  private cacheTimestamp: number = 0;
 
   // 🆕 De-duplication cache
   private readonly PROCESSED_MESSAGES_TTL = 30000; // 30 seconds
@@ -211,6 +212,7 @@ class CrmServiceImpl {
     this.socket.off('connect');
     this.socket.off('connect_error');
     this.socket.off('disconnect');
+    this.socket.off('reconnect');
 
     console.log('🧹 Socket listeners cleaned up');
   }

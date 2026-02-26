@@ -497,13 +497,14 @@ async function getLeads(filters = {}, tenantId = 'admin') {
         }
 
         if (filters.startDate) {
-            query += ` AND created_at >= $${paramCount}`;
+            query += ` AND created_at >= $${paramCount}::timestamptz`;
             values.push(filters.startDate);
             paramCount++;
         }
 
         if (filters.endDate) {
-            query += ` AND created_at <= $${paramCount}`;
+            // Inclusive end-of-day for YYYY-MM-DD filters from UI
+            query += ` AND created_at < ($${paramCount}::date + INTERVAL '1 day')`;
             values.push(filters.endDate);
             paramCount++;
         }
@@ -845,6 +846,19 @@ async function findUserByUsername(username) {
     }
 }
 
+async function updateUserPasswordHash(userId, passwordHash) {
+    try {
+        const result = await pool.query(
+            'UPDATE users SET password_hash = $1 WHERE id = $2 RETURNING id',
+            [passwordHash, userId]
+        );
+        return result.rowCount > 0;
+    } catch (error) {
+        console.error('❌ updateUserPasswordHash error:', error.message);
+        throw error;
+    }
+}
+
 /**
  * Authenticate User by username
  * Note: Password validation will happen in the API layer.
@@ -938,6 +952,7 @@ module.exports = {
     deleteUser,
     getSuperAdminTenants,
     findUserByUsername,
+    updateUserPasswordHash,
     getTenantAdmin,
     deleteTenant,
     closePool

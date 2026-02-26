@@ -1,16 +1,18 @@
 require('dotenv').config();
-
-// Auto-inject Supabase Database URL to prevent Render Free data loss
-if (!process.env.DATABASE_URL) {
-  process.env.DATABASE_URL = 'postgresql://postgres.ntrmqtbyfvfyixomwphp:Kazimks123%21@aws-1-us-east-1.pooler.supabase.com:5432/postgres';
-  console.log('✅ Injected Permanent Supabase DATABASE_URL successfully.');
-}
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
+const {
+  signAuthToken,
+  verifyAuthToken,
+  isBcryptHash,
+  hashPassword,
+  verifyPassword
+} = require('./auth.cjs');
 
 const app = express();
 const server = http.createServer(app);
@@ -19,9 +21,89 @@ const server = http.createServer(app);
 const PORT = process.env.PORT || 4000;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 const NODE_ENV = process.env.NODE_ENV || 'development';
+const INTERNAL_WEBHOOK_SECRET = process.env.INTERNAL_WEBHOOK_SECRET || '';
+const ALLOW_LEGACY_TOKEN = process.env.ALLOW_LEGACY_TOKEN !== 'false';
+
+if (!process.env.DATABASE_URL) {
+  console.warn('⚠️ DATABASE_URL is missing. The app will run in file-based fallback mode.');
+}
+
+if (!process.env.JWT_SECRET) {
+  console.warn('⚠️ JWT_SECRET is missing. Compatibility fallback will be used. Set JWT_SECRET in production.');
+}
+
+async function fetchJsonWithRetry(url, options = {}, retryOptions = {}) {
+  const retries = retryOptions.retries ?? 2;
+  const timeoutMs = retryOptions.timeoutMs ?? 5000;
+  const baseDelayMs = retryOptions.baseDelayMs ?? 300;
+
+  let lastError = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, { ...options, signal: controller.signal });
+      clearTimeout(timeoutId);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      return await response.json();
+    } catch (err) {
+      clearTimeout(timeoutId);
+      lastError = err;
+      if (attempt < retries) {
+        const jitter = Math.floor(Math.random() * 120);
+        const backoff = baseDelayMs * (2 ** attempt) + jitter;
+        await new Promise((resolve) => setTimeout(resolve, backoff));
+      }
+    }
+  }
+  throw lastError;
+}
+
+function safeEqual(a, b) {
+  const left = Buffer.from(String(a || ''), 'utf8');
+  const right = Buffer.from(String(b || ''), 'utf8');
+  if (left.length !== right.length) return false;
+  return crypto.timingSafeEqual(left, right);
+}
+
+function decodeLegacyToken(token) {
+  try {
+    const raw = Buffer.from(String(token), 'base64').toString('utf-8');
+    const data = JSON.parse(raw);
+    if (!data || !data.tenantId) return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+function verifyAnyToken(token) {
+  try {
+    return verifyAuthToken(token);
+  } catch (err) {
+    if (!ALLOW_LEGACY_TOKEN) throw err;
+    const legacy = decodeLegacyToken(token);
+    if (!legacy) throw err;
+    return legacy;
+  }
+}
 // Middleware
+const allowedOrigins = [
+  FRONTEND_URL,
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'http://localhost:5174'
+].filter(Boolean);
+
 app.use(cors({
-  origin: [FRONTEND_URL, 'http://localhost:5173', 'http://localhost:3000', '*'],
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    if (NODE_ENV === 'production' && origin.endsWith('.onrender.com')) return callback(null, true);
+    return callback(new Error('CORS blocked'));
+  },
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   credentials: true
 }));
@@ -30,7 +112,7 @@ app.use(express.json({ limit: '10mb' }));
 // Socket.IO Setup
 const io = new Server(server, {
   cors: {
-    origin: '*',
+    origin: NODE_ENV === 'production' ? FRONTEND_URL : ['http://localhost:5173', 'http://localhost:5174'],
     methods: ["GET", "POST"],
     credentials: true
   },
@@ -121,13 +203,12 @@ io.use((socket, next) => {
     return next(new Error('Authentication error: Token required'));
   }
   try {
-    const raw = Buffer.from(token, 'base64').toString('utf-8');
-    const data = JSON.parse(raw);
+    const data = verifyAnyToken(token);
     if (!data.tenantId) throw new Error();
     socket.tenantId = data.tenantId;
     next();
   } catch (err) {
-    next(new Error('Authentication error: Invalid format'));
+    next(new Error('Authentication error: Invalid token'));
   }
 });
 
@@ -137,8 +218,9 @@ io.on('connection', (socket) => {
   console.log(`👤 NEW UI CLIENT CONNECTED [${tenantId}]: ${socket.id} (Total: ${io.engine.clientsCount})`);
 
   // Async fetch health from worker
-  fetch(`http://localhost:4001/api/internal/status/${tenantId}`)
-    .then(res => res.json())
+  fetchJsonWithRetry(`http://localhost:4001/api/internal/status/${tenantId}`, {
+    headers: { 'x-internal-secret': INTERNAL_WEBHOOK_SECRET }
+  }, { retries: 1, timeoutMs: 4000 })
     .then(data => {
       let status = 'OFFLINE';
       if (data.isReady) status = 'CONNECTED';
@@ -161,6 +243,7 @@ io.on('connection', (socket) => {
       }
     })
     .catch(err => {
+      console.warn(`⚠️ Worker status fetch failed [${tenantId}]:`, err.message);
       socket.emit('crm:health_check', { whatsapp: 'OFFLINE', socket_clients: io.engine.clientsCount });
     });
 
@@ -173,6 +256,15 @@ io.on('connection', (socket) => {
 // 🪝 INTERNAL WEBHOOK (From WhatsApp Worker to UI)
 // ═══════════════════════════════════════════════════════════════
 app.post('/api/internal/webhook', (req, res) => {
+  if (INTERNAL_WEBHOOK_SECRET) {
+    const incomingSecret = req.headers['x-internal-secret'];
+    if (!safeEqual(incomingSecret, INTERNAL_WEBHOOK_SECRET)) {
+      return res.status(401).json({ error: 'Unauthorized internal webhook' });
+    }
+  } else {
+    console.warn('⚠️ INTERNAL_WEBHOOK_SECRET is not set; internal webhook is running in compatibility mode');
+  }
+
   const { tenantId, event, payload } = req.body;
   if (!tenantId || !event) return res.status(400).json({ error: 'Invalid payload' });
 
@@ -187,7 +279,8 @@ app.post('/api/internal/webhook', (req, res) => {
 // ═══════════════════════════════════════════════════════════════
 
 // 🔐 AUTHENTICATION API
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'kazimks12';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
+const ALLOW_LEGACY_MASTER_PASSWORD = process.env.ALLOW_LEGACY_MASTER_PASSWORD === 'true';
 
 const asyncHandler = (fn) => (req, res, next) => {
   Promise.resolve(fn(req, res, next)).catch(next);
@@ -202,9 +295,8 @@ app.post('/api/auth/login', asyncHandler(async (req, res) => {
 
   const normalizedUsername = username.toLowerCase().trim();
 
-  // Accept the global master password
-  if (password !== ADMIN_PASSWORD) {
-    return res.status(401).json({ success: false, error: 'Şifrə yalnışdır' });
+  if (!password || password.trim() === '') {
+    return res.status(400).json({ success: false, error: 'Şifrə daxil edilməlidir' });
   }
 
   // Find user in database to determine role and tenant mapping
@@ -214,8 +306,35 @@ app.post('/api/auth/login', asyncHandler(async (req, res) => {
     return res.status(401).json({ success: false, error: 'İstifadəçi tapılmadı' });
   }
 
+  let validPassword = await verifyPassword(password, user.password_hash);
+
+  if (!validPassword && ALLOW_LEGACY_MASTER_PASSWORD && ADMIN_PASSWORD && password === ADMIN_PASSWORD) {
+    validPassword = true;
+  }
+
+  if (!validPassword) {
+    return res.status(401).json({ success: false, error: 'Şifrə yalnışdır' });
+  }
+
+  // One-time migration: if plaintext was used previously, upgrade to bcrypt hash after successful login
+  if (!isBcryptHash(user.password_hash)) {
+    try {
+      const upgradedHash = await hashPassword(password);
+      await db.updateUserPasswordHash(user.id, upgradedHash);
+      user.password_hash = upgradedHash;
+    } catch (err) {
+      console.warn('⚠️ Password hash upgrade failed:', err.message);
+    }
+  }
+
   // Ensure WhatsApp session is pre-initialized for their tenant cleanly via worker
-  fetch(`http://localhost:4001/api/internal/start/${user.tenant_id}`).catch(() => { });
+  fetchJsonWithRetry(`http://localhost:4001/api/internal/start/${user.tenant_id}`, {
+    method: 'POST',
+    headers: { 'x-internal-secret': INTERNAL_WEBHOOK_SECRET }
+  }, { retries: 1, timeoutMs: 4000 })
+    .catch((err) => {
+      console.warn(`⚠️ Worker start request failed [${user.tenant_id}]:`, err.message);
+    });
 
   // Generate simple token (In production, use true JWT with signing secret)
   const tokenPayload = {
@@ -224,7 +343,7 @@ app.post('/api/auth/login', asyncHandler(async (req, res) => {
     tenantId: user.tenant_id,
     role: user.role
   };
-  const token = Buffer.from(JSON.stringify(tokenPayload)).toString('base64');
+  const token = signAuthToken(tokenPayload);
 
   res.json({ success: true, token, tenantId: user.tenant_id, role: user.role, id: user.id, username: user.username });
 }));
@@ -232,8 +351,7 @@ app.post('/api/auth/login', asyncHandler(async (req, res) => {
 app.post('/api/auth/verify', (req, res) => {
   const { token } = req.body;
   try {
-    const raw = Buffer.from(token, 'base64').toString('utf-8');
-    const data = JSON.parse(raw);
+    const data = verifyAnyToken(token);
     if (data.tenantId) {
       res.json({ success: true, valid: true, tenantId: data.tenantId, id: data.id, role: data.role, username: data.username });
     } else {
@@ -246,12 +364,11 @@ app.post('/api/auth/verify', (req, res) => {
 
 // Middleware for API routes
 const requireTenantAuth = (req, res, next) => {
-  const token = req.headers['authorization']?.replace('Bearer ', '') || req.headers['x-tenant-id'];
+  const token = req.headers['authorization']?.replace('Bearer ', '');
   if (!token) return res.status(401).json({ error: 'Unauthorized: No token provided' });
 
   try {
-    const raw = Buffer.from(token, 'base64').toString('utf-8');
-    const data = JSON.parse(raw);
+    const data = verifyAnyToken(token);
     if (!data.tenantId) throw new Error();
     req.tenantId = data.tenantId;
     req.userRole = data.role; // Extract role from token
@@ -291,7 +408,8 @@ app.post('/api/users', requireTenantAuth, requireAdmin, asyncHandler(async (req,
   const tenantId = req.tenantId;
 
   try {
-    const newUser = await db.createUser(username.toLowerCase(), password, role, tenantId);
+    const passwordHash = await hashPassword(password);
+    const newUser = await db.createUser(username.toLowerCase(), passwordHash, role, tenantId);
     res.status(201).json(newUser);
   } catch (err) {
     if (err.message === 'Username already exists') {
@@ -347,10 +465,17 @@ app.post('/api/admin/tenants', requireTenantAuth, requireAdmin, asyncHandler(asy
   const cleanTenantId = tenantId.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
 
   try {
-    const newAdmin = await db.createUser(adminUsername.toLowerCase(), adminPassword, 'admin', cleanTenantId);
+    const adminPasswordHash = await hashPassword(adminPassword);
+    const newAdmin = await db.createUser(adminUsername.toLowerCase(), adminPasswordHash, 'admin', cleanTenantId);
 
     // Auto-init WhatsApp session for the new tenant via worker
-    fetch(`http://localhost:4001/api/internal/start/${cleanTenantId}`).catch(() => { });
+    fetchJsonWithRetry(`http://localhost:4001/api/internal/start/${cleanTenantId}`, {
+      method: 'POST',
+      headers: { 'x-internal-secret': INTERNAL_WEBHOOK_SECRET }
+    }, { retries: 1, timeoutMs: 4000 })
+      .catch((err) => {
+        console.warn(`⚠️ Worker start request failed [${cleanTenantId}]:`, err.message);
+      });
 
     res.status(201).json({ success: true, tenant: newAdmin });
   } catch (err) {
@@ -429,7 +554,7 @@ app.post('/api/admin/impersonate/:tenantId', requireTenantAuth, requireAdmin, as
     tenantId: adminUser.tenant_id,
     username: adminUser.username
   };
-  const token = Buffer.from(JSON.stringify(tokenPayload)).toString('base64');
+  const token = signAuthToken(tokenPayload);
 
   res.json({
     success: true,
@@ -445,8 +570,10 @@ app.post('/api/admin/impersonate/:tenantId', requireTenantAuth, requireAdmin, as
 app.post('/api/whatsapp/start', requireTenantAuth, asyncHandler(async (req, res) => {
   console.log(`🚀 Manual WhatsApp Start Requested via CRM UI [${req.tenantId}]`);
   try {
-    const workerRes = await fetch(`http://localhost:4001/api/internal/start/${req.tenantId}`, { method: 'POST' });
-    const data = await workerRes.json();
+    const data = await fetchJsonWithRetry(`http://localhost:4001/api/internal/start/${req.tenantId}`, {
+      method: 'POST',
+      headers: { 'x-internal-secret': INTERNAL_WEBHOOK_SECRET }
+    }, { retries: 1, timeoutMs: 5000 });
     res.json(data);
   } catch (err) {
     res.status(502).json({ success: false, message: 'Worker is unavailable' });
@@ -498,7 +625,7 @@ app.delete('/api/leads/:id', requireTenantAuth, asyncHandler(async (req, res) =>
 app.post('/api/leads/cleanup-duplicates', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
 
-  const result = await db.pool.query('SELECT * FROM leads ORDER BY created_at ASC');
+  const result = await db.pool.query('SELECT * FROM leads WHERE tenant_id = $1 ORDER BY created_at ASC', [req.tenantId]);
   const leads = result.rows;
   const merged = [];
   const seenSuffixes = new Map(); // suffix -> lead_id
@@ -517,10 +644,10 @@ app.post('/api/leads/cleanup-duplicates', requireTenantAuth, asyncHandler(async 
           last_message = COALESCE(leads.last_message, $1),
           name = COALESCE(leads.name, $2),
           updated_at = NOW()
-        WHERE id = $3
-      `, [lead.last_message, lead.name, canonicalId]);
+        WHERE id = $3 AND tenant_id = $4
+      `, [lead.last_message, lead.name, canonicalId, req.tenantId]);
 
-      await db.pool.query('DELETE FROM leads WHERE id = $1', [lead.id]);
+      await db.pool.query('DELETE FROM leads WHERE id = $1 AND tenant_id = $2', [lead.id, req.tenantId]);
       merged.push({ deleted: lead.id, mergedInto: canonicalId, phone: lead.phone });
       console.log(`🧹 Merged duplicate: ${lead.phone} → ${canonicalId}`);
     } else {
@@ -594,8 +721,9 @@ app.get('/api/stats', requireTenantAuth, asyncHandler(async (req, res) => {
 
 app.get('/health', requireTenantAuth, asyncHandler(async (req, res) => {
   try {
-    const workerRes = await fetch(`http://localhost:4001/api/internal/status/${req.tenantId}`);
-    const data = await workerRes.json();
+    const data = await fetchJsonWithRetry(`http://localhost:4001/api/internal/status/${req.tenantId}`, {
+      headers: { 'x-internal-secret': INTERNAL_WEBHOOK_SECRET }
+    }, { retries: 1, timeoutMs: 5000 });
     const status = data.isReady ? 'CONNECTED' : (data.qr ? 'SYNCING' : 'OFFLINE');
 
     let dbStatus = undefined;
@@ -614,6 +742,34 @@ app.get('/health', requireTenantAuth, asyncHandler(async (req, res) => {
     res.json({ whatsapp: 'OFFLINE', socket_clients: io.engine.clientsCount, timestamp: new Date().toISOString() });
   }
 }));
+
+// Public liveness probe (for Render health checks / keepalive)
+app.get('/healthz', (req, res) => {
+  res.status(200).json({ status: 'ok', uptime_seconds: Math.round(process.uptime()) });
+});
+
+// Public readiness probe (checks DB + worker endpoint reachability)
+app.get('/readyz', async (req, res) => {
+  try {
+    const checks = { db: 'unknown', worker: 'unknown' };
+    if (db.healthCheck) {
+      const dbHealth = await db.healthCheck().catch(() => ({ status: 'error' }));
+      checks.db = dbHealth.status === 'healthy' ? 'ok' : 'error';
+    } else {
+      checks.db = 'ok';
+    }
+
+    await fetchJsonWithRetry('http://localhost:4001/api/internal/status/admin', {
+      headers: { 'x-internal-secret': INTERNAL_WEBHOOK_SECRET }
+    }, { retries: 0, timeoutMs: 2500 });
+    checks.worker = 'ok';
+
+    const ready = checks.db === 'ok' && checks.worker === 'ok';
+    return res.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'not_ready', checks });
+  } catch (err) {
+    return res.status(503).json({ status: 'not_ready', checks: { db: 'unknown', worker: 'error' } });
+  }
+});
 
 app.get('/chats/recent', requireTenantAuth, asyncHandler(async (req, res) => {
   console.log(`📂 RECENT CHATS REQUESTED [${req.tenantId}]`);

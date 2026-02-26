@@ -1,8 +1,7 @@
 require('dotenv').config();
 
-// Auto-inject Supabase Database URL to prevent Render Free data loss
 if (!process.env.DATABASE_URL) {
-    process.env.DATABASE_URL = 'postgresql://postgres.ntrmqtbyfvfyixomwphp:Kazimks123%21@aws-1-us-east-1.pooler.supabase.com:5432/postgres';
+    console.warn('⚠️ DATABASE_URL is missing in worker process. Database operations may fail.');
 }
 
 const express = require('express');
@@ -14,9 +13,46 @@ const { usePostgresAuthState, getAllAuthenticatedTenants } = require('./postgres
 const workerApp = express();
 workerApp.use(express.json());
 
+workerApp.use('/api/internal', (req, res, next) => {
+    if (!INTERNAL_WEBHOOK_SECRET) {
+        return next();
+    }
+    const incoming = req.headers['x-internal-secret'];
+    if (incoming === INTERNAL_WEBHOOK_SECRET) return next();
+    return res.status(401).json({ error: 'Unauthorized internal request' });
+});
+
 const WORKER_PORT = process.env.WORKER_PORT || 4001;
 var apiPort = process.env.PORT || 4000;
 var API_URL = process.env.API_URL || ('http://localhost:' + apiPort);
+const INTERNAL_WEBHOOK_SECRET = process.env.INTERNAL_WEBHOOK_SECRET || '';
+
+async function fetchWithRetry(url, options = {}, retryOptions = {}) {
+    const retries = retryOptions.retries ?? 2;
+    const timeoutMs = retryOptions.timeoutMs ?? 5000;
+    const baseDelayMs = retryOptions.baseDelayMs ?? 300;
+    let lastError = null;
+
+    for (let attempt = 0; attempt <= retries; attempt++) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            const response = await fetch(url, { ...options, signal: controller.signal });
+            clearTimeout(timeout);
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+            return response;
+        } catch (err) {
+            clearTimeout(timeout);
+            lastError = err;
+            if (attempt < retries) {
+                const jitter = Math.floor(Math.random() * 120);
+                const backoff = baseDelayMs * (2 ** attempt) + jitter;
+                await new Promise((resolve) => setTimeout(resolve, backoff));
+            }
+        }
+    }
+    throw lastError;
+}
 
 // State Variables (Multi-Tenant)
 const sessions = new Map();
@@ -58,11 +94,14 @@ console.log('━━━━━━━━━━━━━━━━━━━━━━�
 // Notify Main API Server via Webhook
 async function notifyApiServer(tenantId, event, payload) {
     try {
-        await fetch(API_URL + '/api/internal/webhook', {
+        await fetchWithRetry(API_URL + '/api/internal/webhook', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                'x-internal-secret': INTERNAL_WEBHOOK_SECRET
+            },
             body: JSON.stringify({ tenantId: tenantId, event: event, payload: payload })
-        });
+        }, { retries: 1, timeoutMs: 4000 });
     } catch (err) {
         console.error('⚠️ Webhook to API failed for ' + event + ': ' + err.message);
     }
@@ -272,7 +311,7 @@ async function pollOutgoingMessages() {
             }
         }
     } catch (err) {
-        // Silently ignore poller errors when DB isn't ready yet
+        console.error('⚠️ pollOutgoingMessages error:', err.message);
     }
 }
 

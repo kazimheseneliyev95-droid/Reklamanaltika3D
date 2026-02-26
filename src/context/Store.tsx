@@ -266,12 +266,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // 🏥 HEALTH CHECK LISTENER
     const cleanupHealthCheck = CrmService.onHealthCheck((health: any) => {
       console.log('🏥 SYSTEM HEALTH:', health);
-      // Update connection state based on health
-      if (health.whatsapp === 'CONNECTED' && !isWhatsAppConnected) {
-        setIsWhatsAppConnected(true);
-      } else if (health.whatsapp === 'OFFLINE' && isWhatsAppConnected) {
-        setIsWhatsAppConnected(false);
-      }
+      // Update connection state based on health without stale closure coupling
+      setIsWhatsAppConnected((prev) => {
+        if (health.whatsapp === 'CONNECTED') return true;
+        if (health.whatsapp === 'OFFLINE') return false;
+        return prev;
+      });
     });
     cleanupFunctions.push(cleanupHealthCheck);
 
@@ -290,7 +290,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       console.log('🔌 Unregistering all message listeners');
       cleanupFunctions.forEach(cleanup => cleanup());
     };
-  }, [isWhatsAppConnected]);
+  }, [loadLeads]);
 
   const loadLeads = useCallback(async () => {
     setIsLoading(true);

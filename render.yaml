@@ -9,6 +9,14 @@ services:
       - key: PORT
         value: 4000
       - key: DATABASE_URL
-        value: postgresql://postgres.ntrmqtbyfvfyixomwphp:Kazimks123!@aws-1-us-east-1.pooler.supabase.com:5432/postgres
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: INTERNAL_WEBHOOK_SECRET
+        sync: false
       - key: NODE_ENV
         value: production
+      - key: ALLOW_LEGACY_MASTER_PASSWORD
+        value: "true"
+      - key: ALLOW_LEGACY_TOKEN
+        value: "true"
