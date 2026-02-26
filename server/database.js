@@ -87,8 +87,7 @@ async function initDb() {
           assignee_id UUID REFERENCES users(id) ON DELETE SET NULL,
           created_at TIMESTAMP DEFAULT NOW(),
           updated_at TIMESTAMP DEFAULT NOW(),
-          CONSTRAINT leads_phone_tenant_unique UNIQUE (phone, tenant_id),
-          CONSTRAINT leads_wa_tenant_unique UNIQUE (whatsapp_id, tenant_id)
+          CONSTRAINT leads_phone_tenant_unique UNIQUE (phone, tenant_id)
         );
 
         CREATE TABLE IF NOT EXISTS messages (
@@ -940,18 +939,10 @@ async function closePool() {
     }
 }
 
-// Handle process termination
-process.on('SIGINT', async () => {
-    console.log('\n🛑 Received SIGINT, closing database connection...');
-    await closePool();
-    process.exit(0);
-});
-
-process.on('SIGTERM', async () => {
-    console.log('\n🛑 Received SIGTERM, closing database connection...');
-    await closePool();
-    process.exit(0);
-});
+// NOTE: SIGINT/SIGTERM handlers are NOT registered here.
+// The main entry point (index.cjs) owns the graceful shutdown sequence
+// and calls db.closePool() itself. Having duplicate handlers caused
+// "Called end on pool more than once" errors on Render.
 
 module.exports = {
     pool,

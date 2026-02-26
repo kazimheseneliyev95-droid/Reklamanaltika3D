@@ -301,7 +301,7 @@ export default function CRMPage() {
                 : "text-slate-500 hover:text-slate-300"
             )}
           >
-            <span>{leads.filter(l => l.status === col.id).length}</span>
+            <span>{filteredLeads.filter(l => l.status === col.id).length}</span>
             <span>{col.title.split(' ')[0]}</span>
           </button>
         ))}
@@ -330,11 +330,11 @@ export default function CRMPage() {
                   {col.title}
                 </div>
                 <Badge variant="secondary" className="bg-slate-800 text-slate-300">
-                  {leads.filter(l => l.status === col.id).length}
+                  {filteredLeads.filter(l => l.status === col.id).length}
                 </Badge>
               </div>
               <div className="p-3 space-y-3 overflow-y-auto flex-1 custom-scrollbar">
-                {leads.filter(l => l.status === col.id).map((lead) => (
+                {filteredLeads.filter(l => l.status === col.id).map((lead) => (
                   <LeadCard
                     key={lead.id}
                     lead={lead}
@@ -344,7 +344,7 @@ export default function CRMPage() {
                     onViewMessage={() => setSelectedLead(lead)}
                   />
                 ))}
-                {leads.filter(l => l.status === col.id).length === 0 && (
+                {filteredLeads.filter(l => l.status === col.id).length === 0 && (
                   <div className="text-center py-10 flex flex-col items-center gap-2 text-slate-600 text-xs border-2 border-dashed border-slate-800/50 rounded-lg">
                     No leads
                   </div>
@@ -367,7 +367,7 @@ export default function CRMPage() {
                 if (leadId) updateLeadStatus(leadId, col.id);
               }}
             >
-              {leads.filter(l => l.status === col.id).map((lead) => (
+              {filteredLeads.filter(l => l.status === col.id).map((lead) => (
                 <LeadCard
                   key={lead.id}
                   lead={lead}
@@ -377,7 +377,7 @@ export default function CRMPage() {
                   onViewMessage={() => setSelectedLead(lead)}
                 />
               ))}
-              {leads.filter(l => l.status === col.id).length === 0 && (
+              {filteredLeads.filter(l => l.status === col.id).length === 0 && (
                 <div className="text-center py-16 flex flex-col items-center gap-2 text-slate-600 text-sm border-2 border-dashed border-slate-800/50 rounded-lg">
                   <span>0</span>
                   No leads here

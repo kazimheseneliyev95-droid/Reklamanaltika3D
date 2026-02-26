@@ -15,6 +15,12 @@ const { usePostgresAuthState, getAllAuthenticatedTenants } = require('./postgres
 const workerApp = express();
 workerApp.use(express.json());
 
+
+const WORKER_PORT = process.env.WORKER_PORT || 4001;
+var apiPort = process.env.PORT || 4000;
+var API_URL = process.env.API_URL || ('http://localhost:' + apiPort);
+const INTERNAL_WEBHOOK_SECRET = process.env.INTERNAL_WEBHOOK_SECRET || '';
+
 workerApp.use('/api/internal', (req, res, next) => {
     if (!INTERNAL_WEBHOOK_SECRET) {
         return next();
@@ -23,11 +29,6 @@ workerApp.use('/api/internal', (req, res, next) => {
     if (incoming === INTERNAL_WEBHOOK_SECRET) return next();
     return res.status(401).json({ error: 'Unauthorized internal request' });
 });
-
-const WORKER_PORT = process.env.WORKER_PORT || 4001;
-var apiPort = process.env.PORT || 4000;
-var API_URL = process.env.API_URL || ('http://localhost:' + apiPort);
-const INTERNAL_WEBHOOK_SECRET = process.env.INTERNAL_WEBHOOK_SECRET || '';
 
 async function fetchWithRetry(url, options = {}, retryOptions = {}) {
     const retries = retryOptions.retries ?? 2;

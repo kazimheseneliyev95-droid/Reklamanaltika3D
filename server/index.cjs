@@ -647,6 +647,15 @@ app.put('/api/leads/:id', requireTenantAuth, asyncHandler(async (req, res) => {
   res.json(lead);
 }));
 
+// 🗑️ FACTORY RESET — delete ALL leads and messages FOR TENANT
+// NOTE: This route MUST appear before /api/leads/:id to avoid being shadowed.
+app.delete('/api/leads/all', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  await db.deleteAllLeads(req.tenantId);
+  io.to(req.tenantId).emit('leads_reset', {});
+  res.json({ success: true, message: 'All leads and messages deleted for tenant' });
+}));
+
 app.delete('/api/leads/:id', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   const lead = await db.deleteLead(req.params.id, req.tenantId);
@@ -740,14 +749,6 @@ app.post('/api/leads/:id/messages', requireTenantAuth, asyncHandler(async (req, 
   io.to(req.tenantId).emit('new_message', payload);
 
   res.status(201).json(newMsg);
-}));
-
-// 🗑️ FACTORY RESET — delete ALL leads and messages FOR TENANT
-app.delete('/api/leads/all', requireTenantAuth, asyncHandler(async (req, res) => {
-  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
-  await db.deleteAllLeads(req.tenantId);
-  io.to(req.tenantId).emit('leads_reset', {});
-  res.json({ success: true, message: 'All leads and messages deleted for tenant' });
 }));
 
 app.get('/api/stats', requireTenantAuth, asyncHandler(async (req, res) => {

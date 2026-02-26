@@ -381,9 +381,7 @@ class CrmServiceImpl {
       console.log('🌀 SOCKET: leads_reset received');
       this.leadsCache = [];
       localStorage.removeItem(getStorageKey());
-      if ((this as any).resetListeners) {
-        (this as any).resetListeners.forEach((cb: () => void) => cb());
-      }
+      this.resetListeners.forEach((cb) => cb());
     });
   }
 
@@ -399,6 +397,7 @@ class CrmServiceImpl {
 
   // 🆕 Helper methods to notify listeners
   private leadDeletedListeners: Map<string, (id: string) => void> = new Map();
+  private resetListeners: Map<string, () => void> = new Map();
   private reconnectListeners: Map<string, () => void> = new Map();
 
   private notifyMessageListeners(lead: Lead) {
@@ -460,10 +459,8 @@ class CrmServiceImpl {
 
   onLeadsReset(cb: () => void): () => void {
     const id = `reset-${this.listenerIdCounter++}`;
-    // Using a new map for reset listeners
-    if (!(this as any).resetListeners) (this as any).resetListeners = new Map();
-    (this as any).resetListeners.set(id, cb);
-    return () => (this as any).resetListeners.delete(id);
+    this.resetListeners.set(id, cb);
+    return () => this.resetListeners.delete(id);
   }
 
 
@@ -740,11 +737,12 @@ class CrmServiceImpl {
    */
   async clearAllLeads(): Promise<void> {
     // Try database first
-    if (this.serverUrl) {
+    const url = this.getServerUrl();
+    if (url) {
       try {
         const leads = await this.getLeads();
         for (const lead of leads) {
-          await fetch(`${this.serverUrl}/api/leads/${lead.id}`, {
+          await fetch(`${url}/api/leads/${lead.id}`, {
             method: 'DELETE',
             headers: this.getAuthHeaders()
           });
