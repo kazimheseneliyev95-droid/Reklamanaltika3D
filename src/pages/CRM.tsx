@@ -1,17 +1,15 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { useAppStore } from '../context/Store';
 import { Lead, LeadStatus } from '../types/crm';
 import { Badge } from '../components/ui/Badge';
 import { Input } from '../components/ui/Input';
-import { Trash2, Calendar, Filter, RefreshCcw, Pencil, ShoppingBag, DollarSign, TrendingUp, Users, MessageSquare, UserPlus, CheckCircle, XCircle, Phone, Settings, BarChart3 } from 'lucide-react';
+import { Trash2, Calendar, Filter, RefreshCcw, Pencil, ShoppingBag, DollarSign, TrendingUp, Users, MessageSquare, UserPlus, CheckCircle, XCircle, Phone, Settings } from 'lucide-react';
 import { cn, formatCurrency } from '../lib/utils';
 import { LeadDetailsPanel } from '../components/LeadDetailsPanel';
 import { CRMSettingsPanel } from '../components/CRMSettingsPanel';
 import { loadCRMSettings } from '../lib/crmSettings';
 
 export default function CRMPage() {
-  const navigate = useNavigate();
   const [activeMobileTab, setActiveMobileTab] = useState<string>('new');
   const {
     leads,
@@ -21,7 +19,6 @@ export default function CRMPage() {
     updateLeadStatus,
     removeLead,
     syncLeadsFromWhatsApp,
-    toggleWhatsAppConnection,
     dateRange,
     setDateRange,
     teamMembers,
@@ -147,15 +144,6 @@ export default function CRMPage() {
               <span className="hidden sm:inline">Ayarlar</span>
             </button>
 
-            {/* Analytics */}
-            <button
-              onClick={() => navigate('/analytics')}
-              className="flex items-center gap-1.5 p-1.5 sm:px-3 sm:py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs sm:text-sm transition-all border border-slate-700"
-              title="Analitika"
-            >
-              <BarChart3 className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-              <span className="hidden sm:inline">Analitika</span>
-            </button>
           </div>
         </div>
 

@@ -192,11 +192,17 @@ function TableList({ data, total, mode, isMoney }: { data: Datum[]; total: numbe
 
 export default function AnalyticsPage() {
   const { leads, currentUser, teamMembers } = useAppStore();
-  const { pipelineStages, customFields } = loadCRMSettings();
+
+  const tenantId = currentUser?.tenant_id || localStorage.getItem('crm_tenant_id') || 'admin';
+  const crmSettings = useMemo(() => loadCRMSettings(), [tenantId]);
+  const pipelineStages = crmSettings.pipelineStages;
+  const customFields = crmSettings.customFields;
   const selectFields = useMemo(() => customFields.filter(f => f.type === 'select' && f.id !== 'product_name'), [customFields]);
 
+  const firstSelectFieldId = selectFields[0]?.id || '';
+
   const defaultLayout = useMemo<Layout>(() => {
-    const firstField = selectFields[0]?.id || '';
+    const firstField = firstSelectFieldId;
     return {
       version: 1,
       schema: 'grid-2x2',
@@ -210,7 +216,7 @@ export default function AnalyticsPage() {
         { id: makeId(), kind: 'assignee', title: 'Operatorlar', chart: 'table', display: 'both', includeUnassigned: true },
       ]
     };
-  }, [selectFields]);
+  }, [firstSelectFieldId]);
 
   const [layout, setLayout] = useState<Layout>(defaultLayout);
   const [loading, setLoading] = useState(true);
@@ -237,7 +243,7 @@ export default function AnalyticsPage() {
       }
     })();
     return () => { mounted = false; };
-  }, [defaultLayout]);
+  }, [tenantId, currentUser?.id, defaultLayout]);
 
   const scopedLeads = useMemo(() => {
     if (layout.scope !== 'mine' || !currentUser?.id) return leads;
