@@ -333,7 +333,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                             <span className="hidden sm:inline text-slate-500 text-[10px] uppercase font-bold tracking-wider">Kod:</span>
                             <span className="text-[10px] sm:text-sm font-mono text-slate-300 font-semibold">{leadIdShort}</span>
                         </div>
-                        <span className="hidden sm:block text-slate-300 text-sm font-semibold truncate max-w-[180px]">
+                        <span className="text-slate-300 text-xs sm:text-sm font-semibold truncate max-w-[140px] sm:max-w-[180px]">
                             {lead.name || lead.phone}
                         </span>
                     </div>
@@ -382,30 +382,29 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                     </button>
                 </div>
 
-                {/* ════════════════════ MOBILE TAB NAV (Visible only < md) ════════════════════ */}
-                <div className="flex md:hidden border-b border-white/5 bg-[#111827]">
-                    <button
-                        onClick={() => setActiveTab('info' as any)}
-                        className={cn(
-                            'flex-1 py-3 text-xs font-semibold border-b-2 transition-all',
-                            activeTab === 'info'
-                                ? 'border-blue-500 text-blue-400'
-                                : 'border-transparent text-slate-500 hover:text-slate-300'
-                        )}
-                    >
-                        Məlumatlar
-                    </button>
-                    <button
-                        onClick={() => setActiveTab('chat')}
-                        className={cn(
-                            'flex-1 py-3 text-xs font-semibold border-b-2 transition-all',
-                            ['feed', 'chat', 'stats'].includes(activeTab)
-                                ? 'border-blue-500 text-blue-400'
-                                : 'border-transparent text-slate-500 hover:text-slate-300'
-                        )}
-                    >
-                        Fəaliyyət (Yazışma)
-                    </button>
+                {/* Mobile: single tab bar (app-like) */}
+                <div className="md:hidden px-2 py-2 border-b border-white/5 bg-[#0d1117]">
+                    <div className="flex gap-1 bg-[#1c2436] p-1 rounded-xl w-full mx-auto shadow-md overflow-x-auto no-scrollbar">
+                        {([
+                            { id: 'info', label: 'Məlumat' },
+                            { id: 'feed', label: 'Gedişat' },
+                            { id: 'chat', label: 'Yazışma' },
+                            { id: 'stats', label: 'Statistika' },
+                        ] as const).map((t) => (
+                            <button
+                                key={t.id}
+                                onClick={() => setActiveTab(t.id as any)}
+                                className={cn(
+                                    'flex-1 min-w-[78px] py-2 px-2 rounded-lg text-[11px] font-semibold transition-all whitespace-nowrap',
+                                    activeTab === t.id
+                                        ? 'bg-blue-600 text-white shadow-sm'
+                                        : 'text-slate-400 hover:text-slate-200'
+                                )}
+                            >
+                                {t.label}
+                            </button>
+                        ))}
+                    </div>
                 </div>
 
                 {/* ════════════════════ BODY (2-column on md+) ════════════════════ */}
@@ -594,8 +593,8 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                         ['feed', 'chat', 'stats'].includes(activeTab) ? "flex" : "hidden md:flex"
                     )}>
 
-                        {/* Tab Bar */}
-                        <div className="flex items-end px-2 sm:px-5 gap-1 border-b border-white/5 bg-[#111827]/40 shrink-0 overflow-x-auto no-scrollbar">
+                        {/* Tab Bar (Desktop only) */}
+                        <div className="hidden md:flex items-end px-2 sm:px-5 gap-1 border-b border-white/5 bg-[#111827]/40 shrink-0 overflow-x-auto no-scrollbar">
                             {[
                                 { id: 'feed', label: 'Gedişat', icon: <MessageSquare className="w-3.5 h-3.5" /> },
                                 { id: 'chat', label: 'Yazışmalar', icon: <Edit3 className="w-3.5 h-3.5" /> },
