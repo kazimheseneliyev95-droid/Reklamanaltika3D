@@ -44,15 +44,17 @@ export function WhatsAppConnect({ isConnected, connectedNumber, onConnect, onDis
           await CrmService.startWhatsApp();
         }
         // Start listening for QR
-        CrmService.onQrCode((qr) => {
+        const cleanupQr = CrmService.onQrCode((qr) => {
           console.log('📱 QR Code received!');
           setQrCode(qr);
         });
-        CrmService.onAuthenticated(() => {
+        const cleanupAuth = CrmService.onAuthenticated(() => {
           console.log('✅ WhatsApp authenticated!');
           onConnect();
           setIsOpen(false);
           setQrCode('');
+          cleanupQr();
+          cleanupAuth();
         });
       } else {
         console.error('❌ Server connection failed');

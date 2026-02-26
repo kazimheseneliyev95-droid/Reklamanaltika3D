@@ -176,6 +176,49 @@ class CrmServiceImpl {
     }
   }
 
+  // Lightweight connection info for settings UI
+  getConnectionInfo() {
+    return {
+      serverUrl: this.getServerUrl(),
+      socketConnected: Boolean(this.socket && this.socket.connected),
+      isDemoMode: this.isDemoMode
+    };
+  }
+
+  async fetchHealth(): Promise<any | null> {
+    try {
+      if (this.isDemoMode) {
+        return {
+          whatsapp: 'CONNECTED',
+          connectedNumber: '+demo',
+          socket_clients: 1,
+          timestamp: new Date().toISOString(),
+          database: { status: 'healthy' }
+        };
+      }
+
+      const url = this.getServerUrl();
+      const token = localStorage.getItem('crm_auth_token');
+      if (!url || !token) return null;
+      const res = await fetch(`${url}/health`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      if (!res.ok) return null;
+      return await res.json();
+    } catch {
+      return null;
+    }
+  }
+
+  async reconnect(): Promise<boolean> {
+    const url = this.getServerUrl();
+    this.disconnect();
+    if (!url) return false;
+    return await this.connectToServer(url);
+  }
+
   disconnect() {
     if (this.isDemoMode) {
       this.isDemoMode = false;
@@ -428,12 +471,18 @@ class CrmServiceImpl {
   }
 
   // --- EVENT LISTENERS ---
-  onQrCode(cb: (qr: string) => void) {
+  onQrCode(cb: (qr: string) => void): () => void {
     this.qrCallback = cb;
+    return () => {
+      if (this.qrCallback === cb) this.qrCallback = null;
+    };
   }
 
-  onAuthenticated(cb: () => void) {
+  onAuthenticated(cb: () => void): () => void {
     this.authCallback = cb;
+    return () => {
+      if (this.authCallback === cb) this.authCallback = null;
+    };
   }
 
   onNewMessage(cb: (lead: Lead) => void): () => void {

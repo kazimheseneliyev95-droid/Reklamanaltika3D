@@ -17,6 +17,7 @@ export interface Lead {
   source_message?: string;
   is_fast_emit?: boolean; // For tracking initial vs enriched updates
   assignee_id?: string | null; // Worker assignment
+  extra_data?: any; // JSON for custom fields
 }
 
 export interface UserPermissions {

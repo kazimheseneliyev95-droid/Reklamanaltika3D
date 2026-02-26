@@ -297,8 +297,8 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
             last_message: formData.note,
             status: localStatus,
             assignee_id: formData.assignee_id || null,
-            // Persist custom field values as extra_data JSON string
-            ...(Object.keys(customValues).length > 0 ? { extra_data: JSON.stringify(customValues) } as any : {}),
+            // Persist custom field values as extra_data JSON string (send '{}' to allow clearing)
+            extra_data: JSON.stringify(customValues || {}),
         });
         setIsSaving(false);
         setSavedOk(true);

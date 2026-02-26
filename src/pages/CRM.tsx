@@ -3,13 +3,12 @@ import { useAppStore } from '../context/Store';
 import { Lead, LeadStatus } from '../types/crm';
 import { Badge } from '../components/ui/Badge';
 import { Input } from '../components/ui/Input';
-import { WhatsAppConnect } from '../components/WhatsAppConnect';
-import { Trash2, Calendar, Filter, RefreshCcw, Pencil, ShoppingBag, DollarSign, TrendingUp, Users, MessageSquare, UserPlus, CheckCircle, XCircle, Phone, Settings } from 'lucide-react';
+import { Trash2, Calendar, Filter, RefreshCcw, Pencil, ShoppingBag, DollarSign, TrendingUp, Users, MessageSquare, UserPlus, CheckCircle, XCircle, Phone, Settings, BarChart3 } from 'lucide-react';
 import { cn, formatCurrency } from '../lib/utils';
-import { CrmService } from '../services/CrmService';
 import { LeadDetailsPanel } from '../components/LeadDetailsPanel';
 import { CRMSettingsPanel } from '../components/CRMSettingsPanel';
 import { loadCRMSettings } from '../lib/crmSettings';
+import { CRMAnalyticsPanel } from '../components/CRMAnalyticsPanel';
 
 export default function CRMPage() {
   const [activeMobileTab, setActiveMobileTab] = useState<string>('new');
@@ -30,8 +29,8 @@ export default function CRMPage() {
 
   const [assigneeFilter, setAssigneeFilter] = useState<string>('');
   const [showSettings, setShowSettings] = useState(false);
+  const [showAnalytics, setShowAnalytics] = useState(false);
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
-  const [systemHealth, setSystemHealth] = useState<{ whatsapp: string, socket_clients: number, timestamp: string, connectedNumber?: string } | null>(null);
 
   const filteredLeads = useMemo(() => {
     return leads.filter(l => !assigneeFilter || l.assignee_id === assigneeFilter);
@@ -43,18 +42,6 @@ export default function CRMPage() {
     const fresh = leads.find(l => l.id === selectedLead.id);
     if (fresh) setSelectedLead(fresh);
   }, [leads]);
-
-  // Health listener
-  useEffect(() => {
-    const cleanup = CrmService.onHealthCheck((health) => {
-      setSystemHealth(health);
-    });
-
-    return () => {
-      cleanup();
-    };
-  }, []);
-
 
   // --- METRICS CALCULATION ---
   const metrics = useMemo(() => {
@@ -137,38 +124,9 @@ export default function CRMPage() {
               <span className="hidden sm:inline">{isWhatsAppConnected ? "Live Connection Active" : "Offline Mode (Manual)"}</span>
               <span className="sm:hidden">{isWhatsAppConnected ? "Online" : "Offline"}</span>
             </p>
-
-            <div className="mt-1.5 flex flex-wrap items-center gap-1">
-              <div className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-[9px] sm:text-[10px]">
-                <span className="text-slate-400 font-medium">WA:</span>
-                <span className={cn(
-                  "font-bold uppercase",
-                  systemHealth?.whatsapp === 'CONNECTED' ? "text-green-400" : "text-yellow-400 animate-pulse"
-                )}>
-                  {systemHealth?.whatsapp || '...'}
-                </span>
-              </div>
-
-              <div className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-[9px] sm:text-[10px]">
-                <span className="text-slate-400 font-medium hidden sm:inline">Socket:</span>
-                <span className={cn(
-                  "font-bold uppercase",
-                  systemHealth ? "text-blue-400" : "text-slate-500"
-                )}>
-                  {systemHealth ? `${systemHealth.socket_clients}` : '0'} 🔌
-                </span>
-              </div>
-            </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-1 sm:gap-2 justify-end">
-            <WhatsAppConnect
-              isConnected={isWhatsAppConnected}
-              connectedNumber={systemHealth?.connectedNumber}
-              onConnect={toggleWhatsAppConnection}
-              onDisconnect={toggleWhatsAppConnection}
-            />
-
             <button
               onClick={syncLeadsFromWhatsApp}
               disabled={isLoading}
@@ -187,6 +145,16 @@ export default function CRMPage() {
             >
               <Settings className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
               <span className="hidden sm:inline">Ayarlar</span>
+            </button>
+
+            {/* Analytics */}
+            <button
+              onClick={() => setShowAnalytics(true)}
+              className="flex items-center gap-1.5 p-1.5 sm:px-3 sm:py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs sm:text-sm transition-all border border-slate-700"
+              title="Analitika"
+            >
+              <BarChart3 className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+              <span className="hidden sm:inline">Analitika</span>
             </button>
           </div>
         </div>
@@ -278,6 +246,11 @@ export default function CRMPage() {
       {/* CRM SETTINGS PANEL */}
       {showSettings && (
         <CRMSettingsPanel onClose={() => setShowSettings(false)} />
+      )}
+
+      {/* ANALYTICS PANEL */}
+      {showAnalytics && (
+        <CRMAnalyticsPanel onClose={() => setShowAnalytics(false)} />
       )}
 
       {/* AMOCRM STYLE LEAD DETAILS PANEL */}

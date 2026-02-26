@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
+import QRCode from 'react-qr-code';
 import {
     Settings, X, Plus, Trash2, GripVertical,
     Type, Hash, List, ChevronDown, ChevronUp, Save, Check,
-    Zap, ToggleLeft, ToggleRight, AlertTriangle, Users, Activity
+    Zap, ToggleLeft, ToggleRight, AlertTriangle, Users, Activity, Smartphone, Wifi, WifiOff, RefreshCcw
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import {
@@ -124,9 +125,10 @@ const TYPE_LABELS: Record<FieldType, { label: string; icon: React.ReactNode }> =
 };
 
 // ─── Tabs ─────────────────────────────────────────────────────────────────────
-type Tab = 'rules' | 'stages' | 'fields' | 'users' | 'audit';
+type Tab = 'connection' | 'rules' | 'stages' | 'fields' | 'users' | 'audit';
 
 const TABS: { id: Tab; label: string; icon: React.ReactNode; reqRole?: string[] }[] = [
+    { id: 'connection', label: 'Bağlantı', icon: <Smartphone className="w-3.5 h-3.5" /> },
     { id: 'rules', label: 'Avtomatik Qaydalar', icon: <Zap className="w-3.5 h-3.5" /> },
     { id: 'stages', label: 'Kanban Sütunları', icon: <List className="w-3.5 h-3.5" /> },
     { id: 'fields', label: 'Xüsusi Sahələr', icon: <Type className="w-3.5 h-3.5" /> },
@@ -134,11 +136,143 @@ const TABS: { id: Tab; label: string; icon: React.ReactNode; reqRole?: string[] 
     { id: 'audit', label: 'Audit Log', icon: <Activity className="w-3.5 h-3.5" />, reqRole: ['admin'] },
 ];
 
+function ConnectionSettings() {
+    const { isWhatsAppConnected } = useAppStore();
+    const [health, setHealth] = useState<any | null>(null);
+    const [qr, setQr] = useState<string>('');
+    const [busy, setBusy] = useState(false);
+
+    const refreshHealth = async () => {
+        const h = await CrmService.fetchHealth();
+        if (h) setHealth(h);
+    };
+
+    useEffect(() => {
+        const cleanupHealth = CrmService.onHealthCheck((h: any) => setHealth(h));
+        const cleanupQr = CrmService.onQrCode((q: string) => setQr(q));
+        const cleanupAuth = CrmService.onAuthenticated(() => {
+            setQr('');
+            refreshHealth();
+        });
+        refreshHealth();
+
+        return () => {
+            cleanupHealth();
+            cleanupQr();
+            cleanupAuth();
+        };
+    }, []);
+
+    const handleQrRefresh = async () => {
+        setBusy(true);
+        setQr('');
+        try {
+            await CrmService.startWhatsApp();
+            await refreshHealth();
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const handleReconnect = async () => {
+        setBusy(true);
+        setQr('');
+        try {
+            await CrmService.reconnect();
+            await CrmService.startWhatsApp();
+            await refreshHealth();
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const info = CrmService.getConnectionInfo();
+    const waStatus = health?.whatsapp || (isWhatsAppConnected ? 'CONNECTED' : 'OFFLINE');
+
+    return (
+        <section className="space-y-4">
+            <div>
+                <h2 className="text-sm font-bold text-white">WhatsApp Bağlantısı</h2>
+                <p className="text-xs text-slate-500 mt-0.5">QR, Socket və sistem statusunu buradan idarə edin</p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-3">
+                    <p className="text-[10px] uppercase tracking-wide font-semibold text-slate-500">WhatsApp</p>
+                    <div className="mt-1 flex items-center gap-2">
+                        <span className={cn('w-2 h-2 rounded-full', waStatus === 'CONNECTED' ? 'bg-green-500' : waStatus === 'SYNCING' ? 'bg-yellow-500' : 'bg-rose-500')} />
+                        <p className={cn('text-xs font-bold', waStatus === 'CONNECTED' ? 'text-green-400' : waStatus === 'SYNCING' ? 'text-yellow-400' : 'text-rose-400')}>{waStatus}</p>
+                    </div>
+                    {health?.connectedNumber && (
+                        <p className="mt-1 text-[10px] text-slate-400 truncate">{health.connectedNumber}</p>
+                    )}
+                    {health?.timestamp && (
+                        <p className="mt-1 text-[10px] text-slate-600 truncate">Son yoxlama: {new Date(health.timestamp).toLocaleString()}</p>
+                    )}
+                </div>
+
+                <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-3">
+                    <p className="text-[10px] uppercase tracking-wide font-semibold text-slate-500">Socket</p>
+                    <div className="mt-1 flex items-center gap-2">
+                        {info.socketConnected ? <Wifi className="w-4 h-4 text-blue-400" /> : <WifiOff className="w-4 h-4 text-slate-500" />}
+                        <p className={cn('text-xs font-bold', info.socketConnected ? 'text-blue-300' : 'text-slate-400')}>{info.socketConnected ? 'CONNECTED' : 'DISCONNECTED'}</p>
+                    </div>
+                    <p className="mt-1 text-[10px] text-slate-500 truncate">{info.serverUrl}</p>
+                    {typeof health?.socket_clients === 'number' && (
+                        <p className="mt-1 text-[10px] text-slate-600">UI client sayi: {health.socket_clients}</p>
+                    )}
+                </div>
+            </div>
+
+            <div className="flex gap-2">
+                <button
+                    onClick={handleQrRefresh}
+                    disabled={busy}
+                    className="flex-1 py-2 rounded-lg text-xs font-semibold bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                    <RefreshCcw className={cn('w-4 h-4', busy && 'animate-spin')} />
+                    QR Yenilə
+                </button>
+                <button
+                    onClick={handleReconnect}
+                    disabled={busy}
+                    className="flex-1 py-2 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-500 border border-blue-500/30 text-white transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                    <RefreshCcw className={cn('w-4 h-4', busy && 'animate-spin')} />
+                    Socket Yenilə
+                </button>
+            </div>
+
+                    {waStatus !== 'CONNECTED' && (
+                        <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3">
+                    <div className="flex items-center justify-between">
+                        <p className="text-xs font-semibold text-slate-200">QR Kod</p>
+                        <p className="text-[10px] text-slate-500">WhatsApp → Linked devices</p>
+                    </div>
+                            <div className="mt-3 flex items-center justify-center min-h-[220px] rounded-lg bg-slate-900 border border-slate-800">
+                                {qr ? (
+                                    <div className="bg-white rounded-lg p-3 shadow-sm">
+                                        <QRCode value={qr} size={180} />
+                                    </div>
+                                ) : (
+                                    <div className="text-center text-slate-500">
+                                        <div className={cn('mx-auto w-6 h-6 border-2 border-slate-600 border-t-transparent rounded-full', busy && 'animate-spin')} />
+                                        <p className="mt-2 text-xs">QR gözlənilir...</p>
+                                        <p className="mt-1 text-[10px]">QR Yenilə düyməsini basın</p>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+        </section>
+    );
+}
+
 export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
-    const { currentUser } = useAppStore();
+    const { currentUser, isWhatsAppConnected } = useAppStore();
     const [settings, setSettings] = useState<CRMSettings>(loadCRMSettings());
     const [saved, setSaved] = useState(false);
-    const [activeTab, setActiveTab] = useState<Tab>('rules');
+    const [activeTab, setActiveTab] = useState<Tab>(() => (isWhatsAppConnected ? 'rules' : 'connection'));
     const serverUrl = CrmService.getServerUrl();
 
 
@@ -314,6 +448,11 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
 
                 {/* Content */}
                 <div className="flex-1 overflow-y-auto p-5 space-y-4">
+
+                    {/* ─── TAB: Connection ─────────────────────────────────────── */}
+                    {activeTab === 'connection' && (
+                        <ConnectionSettings />
+                    )}
 
                     {/* ─── TAB: Auto Rules ──────────────────────────────────────── */}
                     {activeTab === 'rules' && (

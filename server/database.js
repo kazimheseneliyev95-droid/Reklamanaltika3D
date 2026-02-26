@@ -95,6 +95,7 @@ async function initDb() {
           source VARCHAR(50) DEFAULT 'whatsapp' CHECK (source IN ('whatsapp', 'manual')),
           value DECIMAL(10, 2) DEFAULT 0 CHECK (value >= 0),
           product_name VARCHAR(255),
+          extra_data JSONB DEFAULT '{}'::jsonb,
           tenant_id VARCHAR(50) DEFAULT 'admin',
           assignee_id UUID REFERENCES users(id) ON DELETE SET NULL,
           created_at TIMESTAMP DEFAULT NOW(),
@@ -132,6 +133,7 @@ async function initDb() {
                 ALTER TABLE leads ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(50) DEFAULT 'admin';
                 ALTER TABLE messages ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(50) DEFAULT 'admin';
                 ALTER TABLE leads ADD COLUMN IF NOT EXISTS assignee_id UUID REFERENCES users(id) ON DELETE SET NULL;
+                ALTER TABLE leads ADD COLUMN IF NOT EXISTS extra_data JSONB DEFAULT '{}'::jsonb;
                 ALTER TABLE messages ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'delivered';
                 
                 -- Add missing columns to users table
@@ -507,6 +509,24 @@ async function updateLeadFields(id, updates, tenantId = 'admin') {
         if (updates.assignee_id !== undefined) {
             fields.push(`assignee_id = $${paramCount++}`);
             values.push(updates.assignee_id || null); // null means unassigned
+        }
+
+        if (updates.extra_data !== undefined) {
+            let extra = updates.extra_data;
+            if (typeof extra === 'string') {
+                try {
+                    extra = JSON.parse(extra);
+                } catch {
+                    // ignore parse errors; store empty object instead of breaking update
+                    extra = {};
+                }
+            }
+            // Only allow objects; anything else becomes empty object
+            if (!extra || typeof extra !== 'object' || Array.isArray(extra)) {
+                extra = {};
+            }
+            fields.push(`extra_data = $${paramCount++}`);
+            values.push(extra);
         }
 
         if (fields.length === 0) {
