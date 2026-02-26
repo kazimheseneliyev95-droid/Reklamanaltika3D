@@ -156,8 +156,7 @@ async function initDb() {
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_phone_tenant_unique
                     ON leads(phone, tenant_id);
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_wa_tenant_unique
-                    ON messages(whatsapp_id, tenant_id)
-                    WHERE whatsapp_id IS NOT NULL;
+                    ON messages(whatsapp_id, tenant_id);
             `);
         } catch (e) {
             console.warn('⚠️ Constraint migration warning:', e.message);
@@ -679,7 +678,7 @@ async function appendMessage({ leadId, phone, body, direction, whatsappId, creat
         await pool.query(`
             INSERT INTO messages (lead_id, phone, body, direction, whatsapp_id, created_at, tenant_id)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
-            ON CONFLICT (whatsapp_id, tenant_id) WHERE whatsapp_id IS NOT NULL DO NOTHING
+            ON CONFLICT (whatsapp_id, tenant_id) DO NOTHING
         `, [leadId, phone, body || '', direction, whatsappId || null, ts, tenantId]);
     } catch (error) {
         // Non-fatal - log and continue

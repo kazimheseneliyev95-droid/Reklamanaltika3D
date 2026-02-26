@@ -167,6 +167,9 @@ async function processMessage(tenantId, msg, isFromMe) {
 
         if (!rawNumber || rawNumber.length < 5 || rawNumber.includes('g.us')) return;
 
+        // Normalize: strip all non-digit characters
+        rawNumber = rawNumber.replace(/\D/g, '');
+
         var contactName = msg.pushName || ('+' + rawNumber);
         console.log('[' + tenantId + '] ' + prefix + ' ' + rawNumber + ' | ' + messageContent.substring(0, 50));
 
@@ -177,7 +180,9 @@ async function processMessage(tenantId, msg, isFromMe) {
 
                 var savedLead;
                 if (existingLead) {
-                    await db.updateLeadMessage(rawNumber, messageContent, whatsappId, contactName, tenantId);
+                    // Use the canonical phone from the DB to avoid mismatch
+                    var canonicalPhone = existingLead.phone;
+                    await db.updateLeadMessage(canonicalPhone, messageContent, whatsappId, contactName, tenantId);
                     savedLead = existingLead;
                 } else {
                     savedLead = await db.createLead({
@@ -194,7 +199,7 @@ async function processMessage(tenantId, msg, isFromMe) {
                 if (savedLead && savedLead.id) {
                     await db.appendMessage({
                         leadId: savedLead.id,
-                        phone: rawNumber,
+                        phone: existingLead ? existingLead.phone : rawNumber,
                         body: messageContent,
                         direction: isFromMe ? 'out' : 'in',
                         whatsappId: whatsappId,
