@@ -99,10 +99,131 @@ function getSession(tenantId) {
             isInitializing: false,
             lastInitError: null,
             sock: null,
-            connectedNumber: null
+            connectedNumber: null,
+            keys: null
         });
     }
     return sessions.get(tenantId);
+}
+
+const REPAIR_SCAN_COOLDOWN_MS = 30000;
+const lastRepairScanAt = new Map(); // tenantId -> ms
+const repairedOldPhones = new Map(); // tenantId:oldPhone -> ms
+
+async function getPNForLidUser(tenantId, lidUser) {
+    try {
+        if (!lidUser) return null;
+        var session = sessions.get(tenantId);
+        var keys = session && session.keys;
+        if (!keys || !keys.get) return null;
+        var reverseKey = String(lidUser) + '_reverse';
+        var stored = await keys.get('lid-mapping', [reverseKey]);
+        var pnUser = stored && stored[reverseKey];
+        if (!pnUser) return null;
+        var digits = String(pnUser).replace(/\D/g, '');
+        if (!digits || digits.length < 7 || digits.length > 15) return null;
+        return digits;
+    } catch {
+        return null;
+    }
+}
+
+async function repairLeadPhoneMapping(tenantId, oldPhone, newPhone) {
+    if (!HAS_DATABASE || !db || !db.pool) return;
+    if (!oldPhone || !newPhone || oldPhone === newPhone) return;
+
+    const now = Date.now();
+    const k = String(tenantId) + ':' + String(oldPhone);
+    const last = repairedOldPhones.get(k) || 0;
+    if (now - last < 10 * 60 * 1000) return; // 10 min
+    repairedOldPhones.set(k, now);
+
+    const client = await db.pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        const oldRes = await client.query(
+            'SELECT id, phone, name, last_message FROM leads WHERE phone = $1 AND tenant_id = $2 LIMIT 1',
+            [oldPhone, tenantId]
+        );
+        if (oldRes.rowCount === 0) {
+            await client.query('COMMIT');
+            return;
+        }
+        const oldLead = oldRes.rows[0];
+
+        const newRes = await client.query(
+            'SELECT id, phone, name, last_message FROM leads WHERE phone = $1 AND tenant_id = $2 LIMIT 1',
+            [newPhone, tenantId]
+        );
+
+        if (newRes.rowCount > 0) {
+            const newLead = newRes.rows[0];
+
+            await client.query(
+                'UPDATE messages SET lead_id = $1, phone = $2 WHERE lead_id = $3 AND tenant_id = $4',
+                [newLead.id, newPhone, oldLead.id, tenantId]
+            );
+
+            await client.query(
+                `UPDATE leads
+                 SET
+                   name = COALESCE(leads.name, $1),
+                   last_message = COALESCE(leads.last_message, $2),
+                   updated_at = NOW()
+                 WHERE id = $3 AND tenant_id = $4`,
+                [oldLead.name, oldLead.last_message, newLead.id, tenantId]
+            );
+
+            await client.query('DELETE FROM leads WHERE id = $1 AND tenant_id = $2', [oldLead.id, tenantId]);
+        } else {
+            await client.query(
+                'UPDATE leads SET phone = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3',
+                [newPhone, oldLead.id, tenantId]
+            );
+            await client.query(
+                'UPDATE messages SET phone = $1 WHERE lead_id = $2 AND tenant_id = $3',
+                [newPhone, oldLead.id, tenantId]
+            );
+        }
+
+        await client.query('COMMIT');
+        console.log('🧩 [' + tenantId + '] Repaired phone mapping: ' + oldPhone + ' -> ' + newPhone);
+    } catch (e) {
+        try { await client.query('ROLLBACK'); } catch { }
+        console.error('⚠️ Phone mapping repair failed:', e.message);
+    } finally {
+        client.release();
+    }
+}
+
+async function maybeRepairMappedLeads(tenantId) {
+    if (!HAS_DATABASE || !db || !db.pool) return;
+    const session = sessions.get(tenantId);
+    if (!session || !session.keys) return;
+
+    const now = Date.now();
+    const last = lastRepairScanAt.get(tenantId) || 0;
+    if (now - last < REPAIR_SCAN_COOLDOWN_MS) return;
+    lastRepairScanAt.set(tenantId, now);
+
+    // Light-touch scan: check recent leads and fix if a reverse mapping exists
+    try {
+        const res = await db.pool.query(
+            'SELECT phone FROM leads WHERE tenant_id = $1 ORDER BY updated_at DESC LIMIT 120',
+            [tenantId]
+        );
+        for (let i = 0; i < res.rows.length; i++) {
+            const phone = String(res.rows[i].phone || '');
+            if (!phone) continue;
+            const mapped = await getPNForLidUser(tenantId, phone);
+            if (mapped && mapped !== phone) {
+                await repairLeadPhoneMapping(tenantId, phone, mapped);
+            }
+        }
+    } catch (e) {
+        console.error('⚠️ maybeRepairMappedLeads error:', e.message);
+    }
 }
 
 // Message Deduplication Cache
@@ -241,7 +362,22 @@ async function processMessage(tenantId, msg, isFromMe) {
         var prefix = isFromMe ? '📤 [OUT]' : '📥 [IN]';
 
         var peerJid = getPeerJid();
-        var rawNumber = phoneFromJid(peerJid);
+        if (!peerJid) return;
+
+        // If this is a LID conversation, try to resolve the real phone number via reverse mapping.
+        // This fixes the "random long code" issue in UI for click-to-WhatsApp/modern identity threads.
+        var peerDecoded = jidDecode(peerJid);
+        var lidUser = null;
+        if (peerDecoded && (peerDecoded.server === 'lid' || peerDecoded.server === 'hosted.lid') && peerDecoded.user) {
+            lidUser = peerDecoded.user;
+        }
+
+        var mappedPn = lidUser ? await getPNForLidUser(tenantId, lidUser) : null;
+        if (mappedPn && lidUser && mappedPn !== String(lidUser)) {
+            await repairLeadPhoneMapping(tenantId, String(lidUser).replace(/\D/g, ''), mappedPn);
+        }
+
+        var rawNumber = mappedPn || phoneFromJid(peerJid);
         if (!rawNumber) return;
 
         // Avoid overwriting the lead name with our own display name on outgoing messages
@@ -324,6 +460,12 @@ async function startWhatsAppClient(tenantId) {
             console.log('📦 File Auth State [' + tenantId + ']...');
         }
         var auth = await getAuthState(tenantId);
+        // Keep a reference to keys for LID ↔ PN mapping repairs
+        try {
+            session.keys = auth && auth.state ? auth.state.keys : null;
+        } catch {
+            session.keys = null;
+        }
 
         var versionInfo = await fetchLatestBaileysVersion();
         console.log('[' + tenantId + '] WA v' + versionInfo.version.join('.'));
@@ -383,6 +525,9 @@ async function startWhatsAppClient(tenantId) {
 
                 notifyApiServer(tenantId, 'ready', { status: 'connected' });
                 notifyApiServer(tenantId, 'authenticated', { status: 'authenticated' });
+
+                // Opportunistic repair: if we previously stored LID codes as phones, convert them now.
+                maybeRepairMappedLeads(tenantId);
             }
         });
 
@@ -405,6 +550,9 @@ async function startWhatsAppClient(tenantId) {
                     if (msg.message && msg.message.protocolMessage) continue;
                     processMessage(tenantId, msg, msg.key.fromMe);
                 }
+
+                // Run repair after history import (mappings often arrive around this time)
+                maybeRepairMappedLeads(tenantId);
             } catch (e) {
                 console.error('⚠️ messaging-history.set handler error:', e.message);
             }
