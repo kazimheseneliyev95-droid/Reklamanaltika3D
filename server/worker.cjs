@@ -311,7 +311,7 @@ async function pollOutgoingMessages() {
             }
         }
     } catch (err) {
-        console.error('⚠️ pollOutgoingMessages error:', err.message);
+        console.error('⚠️ pollOutgoingMessages error:', (err && (err.stack || err.message)) || err);
     }
 }
 

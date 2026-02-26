@@ -97,12 +97,26 @@ const allowedOrigins = [
   'http://localhost:5174'
 ].filter(Boolean);
 
+function normalizeOrigin(value) {
+  return String(value || '').replace(/\/$/, '');
+}
+
+function isOriginAllowed(origin) {
+  if (!origin) return true;
+  const normalizedOrigin = normalizeOrigin(origin);
+  const normalizedAllowed = allowedOrigins.map(normalizeOrigin);
+  if (normalizedAllowed.includes(normalizedOrigin)) return true;
+  // Allow all Render-hosted origins regardless of NODE_ENV to avoid production misconfig lockouts
+  if (normalizedOrigin.includes('.onrender.com')) return true;
+  return false;
+}
+
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) return callback(null, true);
-    if (NODE_ENV === 'production' && origin.endsWith('.onrender.com')) return callback(null, true);
-    return callback(new Error('CORS blocked'));
+    if (isOriginAllowed(origin)) return callback(null, true);
+    // Do not throw (which causes 500 + HTML fallback for JS/CSS requests).
+    // Simply disable CORS headers for unknown origins.
+    return callback(null, false);
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   credentials: true
@@ -112,7 +126,10 @@ app.use(express.json({ limit: '10mb' }));
 // Socket.IO Setup
 const io = new Server(server, {
   cors: {
-    origin: NODE_ENV === 'production' ? FRONTEND_URL : ['http://localhost:5173', 'http://localhost:5174'],
+    origin: (origin, callback) => {
+      if (isOriginAllowed(origin)) return callback(null, true);
+      return callback(null, false);
+    },
     methods: ["GET", "POST"],
     credentials: true
   },
