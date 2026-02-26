@@ -3,6 +3,10 @@
 @tailwind utilities;
 
 @layer base {
+  html {
+    color-scheme: dark;
+  }
+
   body {
     @apply antialiased text-slate-50 bg-slate-950;
     overscroll-behavior-y: none;
