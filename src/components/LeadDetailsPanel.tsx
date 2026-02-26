@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Lead, LeadStatus } from '../types/crm';
 import {
-    X, User, Phone, Package, MessageSquare, Clock, Hash,
+    User, Phone, Package, MessageSquare, Clock, Hash,
     Save, CheckCircle2, TrendingUp, BarChart2, Edit3, Check
 } from 'lucide-react';
 import { cn } from '../lib/utils';
@@ -142,7 +142,7 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
             </div>
 
             {/* Reply Input Area */}
-            <div className="p-3 border-t border-slate-800 bg-[#111827] shrink-0">
+            <div className="p-3 pb-[max(env(safe-area-inset-bottom),0.75rem)] border-t border-slate-800 bg-[#111827] shrink-0 z-10 w-full" style={{ position: 'sticky', bottom: 0 }}>
                 <form onSubmit={handleSend} className="flex gap-2">
                     <input
                         type="text"
@@ -298,19 +298,22 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
         >
             {/* DRAWER — stops propagation so clicks inside don't close */}
             <div
-                className="relative h-full w-full sm:w-[96%] md:w-[88%] lg:w-[78%] xl:w-[72%] max-w-5xl bg-[#0d1117] border-l border-white/5 shadow-2xl flex flex-col overflow-hidden"
+                className="relative h-[100dvh] w-full sm:w-[96%] md:w-[88%] lg:w-[78%] xl:w-[72%] max-w-5xl bg-[#0d1117] border-l border-white/5 shadow-2xl flex flex-col overflow-hidden"
                 style={{ animation: 'slideInRight 0.22s cubic-bezier(0.22,1,0.36,1)' }}
                 onClick={e => e.stopPropagation()}
             >
 
                 {/* ════════════════════ TOP PIPELINE BAR ════════════════════ */}
-                <div className="h-14 flex items-center justify-between px-4 border-b border-white/5 bg-[#111827] shrink-0 gap-3">
+                <div className="h-14 flex items-center justify-between px-2 sm:px-4 border-b border-white/5 bg-[#111827] shrink-0 gap-2 sm:gap-3">
 
-                    {/* Lead ID badge */}
-                    <div className="flex items-center gap-2 shrink-0">
-                        <div className="flex items-center gap-1.5 bg-slate-800/80 px-2.5 py-1 rounded-md border border-slate-700/50" title="Sistem Tərəfindən Verilmiş Müştəri Kodu">
-                            <span className="text-slate-500 text-[10px] uppercase font-bold tracking-wider">Kod:</span>
-                            <span className="text-xs sm:text-sm font-mono text-slate-300 font-semibold">{leadIdShort}</span>
+                    {/* Back Button (Mobile) & Lead ID badge */}
+                    <div className="flex items-center gap-1 sm:gap-2 shrink-0">
+                        <button onClick={onClose} className="md:hidden p-1.5 text-slate-400 hover:text-white transition-colors">
+                            <span className="text-xl leading-none">&larr;</span>
+                        </button>
+                        <div className="flex items-center gap-1.5 bg-slate-800/80 px-2 sm:px-2.5 py-1 rounded-md border border-slate-700/50" title="Sistem Tərəfindən Verilmiş Müştəri Kodu">
+                            <span className="hidden sm:inline text-slate-500 text-[10px] uppercase font-bold tracking-wider">Kod:</span>
+                            <span className="text-[10px] sm:text-sm font-mono text-slate-300 font-semibold">{leadIdShort}</span>
                         </div>
                         <span className="hidden sm:block text-slate-300 text-sm font-semibold truncate max-w-[180px]">
                             {lead.name || lead.phone}
@@ -343,12 +346,12 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                         })}
                     </div>
 
-                    {/* Close */}
+                    {/* Close (Desktop) */}
                     <button
                         onClick={onClose}
-                        className="shrink-0 p-2 rounded-lg text-slate-500 hover:text-white hover:bg-slate-800 transition-colors"
+                        className="hidden md:flex shrink-0 p-2 rounded-lg text-slate-500 hover:text-white hover:bg-slate-800 transition-colors"
                     >
-                        <X className="w-5 h-5" />
+                        <span className="text-xl leading-none">&times;</span>
                     </button>
                 </div>
 

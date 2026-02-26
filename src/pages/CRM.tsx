@@ -445,17 +445,20 @@ function LeadCard({ lead, onUpdateStatus, onRemove, onEdit, onViewMessage }: { l
       )}
 
       {lead.last_message && (
-        <div
-          onClick={onViewMessage}
-          className="bg-slate-900/50 p-2 rounded mb-3 border border-slate-800/50 hover:bg-slate-800/50 cursor-pointer active:scale-[0.98] transition-all group/msg relative"
-          title="Click to view full message"
-        >
+        <div className="bg-slate-900/50 p-2 rounded mb-2 border border-slate-800/50">
           <p className="text-xs text-slate-300 line-clamp-2 italic">
             "{lead.last_message}"
           </p>
-          <span className="absolute bottom-1 right-2 text-[8px] text-blue-400 opacity-0 group-hover/msg:opacity-100 uppercase tracking-widest font-bold">Read More</span>
         </div>
       )}
+
+      {/* Button to open lead details explicitly */}
+      <button
+        onClick={onViewMessage}
+        className="w-full mb-2 py-1.5 text-[10px] font-bold tracking-widest uppercase bg-blue-950/30 hover:bg-blue-900/50 text-blue-400 rounded border border-blue-900/50 transition-colors"
+      >
+        ƏTRAFLI
+      </button>
 
       {lead.value && lead.value > 0 ? (
         <div className="mb-2 text-xs font-mono text-green-400 flex items-center gap-1">
