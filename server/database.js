@@ -147,6 +147,22 @@ async function initDb() {
             CREATE INDEX IF NOT EXISTS idx_messages_polling ON messages(direction, status);
         `);
 
+        // Ensure multi-tenant UNIQUE constraints exist for ON CONFLICT clauses.
+        // CREATE TABLE IF NOT EXISTS is skipped for existing tables, so the constraints
+        // defined there never get created on pre-existing tables. Using UNIQUE INDEXes
+        // instead of ALTER TABLE ADD CONSTRAINT to leverage IF NOT EXISTS.
+        try {
+            await client.query(`
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_phone_tenant_unique
+                    ON leads(phone, tenant_id);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_wa_tenant_unique
+                    ON messages(whatsapp_id, tenant_id)
+                    WHERE whatsapp_id IS NOT NULL;
+            `);
+        } catch (e) {
+            console.warn('⚠️ Constraint migration warning:', e.message);
+        }
+
         await client.query('COMMIT');
         console.log('✅ Database tables initialized successfully');
     } catch (error) {
