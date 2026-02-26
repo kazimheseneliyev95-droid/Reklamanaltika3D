@@ -67,17 +67,26 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
 
     const handleSend = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!replyText.trim() || isSending) return;
+        const outgoing = replyText.trim();
+        if (!outgoing || isSending) return;
         setIsSending(true);
+
+        // Optimistic: show immediately (important on mobile)
+        const optimisticId = `tmp-${Date.now()}`;
+        setMessages(prev => ([
+            ...prev,
+            { id: optimisticId, body: outgoing, direction: 'out', created_at: new Date().toISOString() }
+        ]));
+        setReplyText('');
+        requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }));
         try {
             const token = localStorage.getItem('crm_auth_token') || '';
             const res = await fetch(`${serverUrl}/api/leads/${lead.id}/messages`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                body: JSON.stringify({ body: replyText.trim() })
+                body: JSON.stringify({ body: outgoing })
             });
             if (res.ok) {
-                setReplyText('');
                 loadMessages();
             }
         } catch (err) {
@@ -94,7 +103,7 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
     );
 
     return (
-        <div className="flex flex-col h-full bg-[#0d1117] relative">
+        <div className="flex flex-col h-full min-h-0 bg-[#0d1117]">
             {/* Sticky header */}
             <div className="px-4 py-2 border-b border-slate-800 flex items-center justify-between shrink-0 bg-[#111827] sticky top-0 z-10">
                 <span className="text-xs font-semibold text-slate-400">
@@ -106,7 +115,7 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
             </div>
 
             {/* Message list */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-2 pb-20 overscroll-contain">
+            <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-2 overscroll-contain touch-pan-y">
                 {messages.length === 0 ? (
                     <div className="flex flex-col items-center justify-center py-16 text-slate-600 gap-3">
                         <MessageSquare className="w-10 h-10" />
@@ -142,7 +151,7 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
             </div>
 
             {/* Reply Input Area */}
-            <div className="absolute bottom-0 left-0 right-0 p-2 sm:p-3 border-t border-slate-800 bg-[#111827] z-20" style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 0.75rem)' }}>
+            <div className="shrink-0 p-2 sm:p-3 border-t border-slate-800 bg-[#111827]" style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 0.75rem)' }}>
                 <form onSubmit={handleSend} className="flex gap-2">
                     <input
                         type="text"
@@ -150,6 +159,8 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                         onChange={(e) => setReplyText(e.target.value)}
                         placeholder="Mesaj yazın..."
                         disabled={isSending}
+                        enterKeyHint="send"
+                        autoComplete="off"
                         className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-50"
                     />
                     <button
@@ -196,6 +207,13 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
     const [savedOk, setSavedOk] = useState(false);
     const feedRef = useRef<HTMLDivElement>(null);
     const serverUrl = CrmService.getServerUrl();
+
+    // App-like modal behavior: prevent background page scroll
+    useEffect(() => {
+        const prev = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
+        return () => { document.body.style.overflow = prev; };
+    }, []);
 
 
     // ─── Custom fields from CRM settings ─────────────────────────────────────
@@ -299,12 +317,12 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
             {/* DRAWER — stops propagation so clicks inside don't close */}
             <div
                 className="relative h-[100dvh] w-full sm:w-[96%] md:w-[88%] lg:w-[78%] xl:w-[72%] max-w-5xl bg-[#0d1117] border-l border-white/5 shadow-2xl flex flex-col overflow-hidden"
-                style={{ animation: 'slideInRight 0.22s cubic-bezier(0.22,1,0.36,1)' }}
+                style={{ paddingTop: 'env(safe-area-inset-top)', animation: 'slideInRight 0.22s cubic-bezier(0.22,1,0.36,1)' }}
                 onClick={e => e.stopPropagation()}
             >
 
                 {/* ════════════════════ TOP PIPELINE BAR ════════════════════ */}
-                <div className="h-14 flex items-center justify-between px-2 sm:px-4 border-b border-white/5 bg-[#111827] shrink-0 gap-2 sm:gap-3">
+                <div className="min-h-14 flex items-center justify-between px-2 sm:px-4 border-b border-white/5 bg-[#111827] shrink-0 gap-2 sm:gap-3">
 
                     {/* Back Button (Mobile) & Lead ID badge */}
                     <div className="flex items-center gap-1 sm:gap-2 shrink-0">
@@ -333,7 +351,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                     className={cn(
                                         'flex items-center gap-1 px-2 sm:px-3 py-1.5 rounded-md text-[10px] sm:text-xs font-bold uppercase tracking-wide border transition-all whitespace-nowrap shrink-0',
                                         isActive
-                                            ? `${s.bg} text - white border - transparent shadow - lg`
+                                            ? `${s.bg} text-white border-transparent shadow-lg`
                                             : isPast
                                                 ? 'bg-slate-800/70 text-slate-400 border-slate-700 hover:bg-slate-700'
                                                 : 'bg-transparent text-slate-500 border-slate-800 hover:border-slate-600 hover:text-slate-300'
@@ -345,6 +363,15 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                             );
                         })}
                     </div>
+
+                    {/* Close (Mobile) */}
+                    <button
+                        onClick={onClose}
+                        className="md:hidden shrink-0 p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+                        aria-label="Close"
+                    >
+                        <span className="text-xl leading-none">&times;</span>
+                    </button>
 
                     {/* Close (Desktop) */}
                     <button
@@ -590,11 +617,12 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                         </div>
 
                         {/* Tab Content */}
-                        <div className="flex-1 overflow-y-auto" ref={feedRef}>
+                        <div className="flex-1 min-h-0 overflow-hidden" ref={feedRef}>
 
                             {/* ── TAB: FEED ── */}
                             {activeTab === 'feed' && (
-                                <div className="p-4 sm:p-6 space-y-4 max-w-2xl mx-auto w-full">
+                                <div className="h-full overflow-y-auto overscroll-contain">
+                                    <div className="p-4 sm:p-6 space-y-4 max-w-2xl mx-auto w-full">
 
                                     {/* Date separator */}
                                     <div className="flex items-center gap-3">
@@ -663,6 +691,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                             <p className="text-sm">Hələ mesaj yoxdur</p>
                                         </div>
                                     )}
+                                    </div>
                                 </div>
                             )}
 
@@ -674,7 +703,8 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
 
                             {/* ── TAB: STATS ── */}
                             {activeTab === 'stats' && (
-                                <div className="p-4 sm:p-6 max-w-2xl mx-auto w-full space-y-4">
+                                <div className="h-full overflow-y-auto overscroll-contain">
+                                    <div className="p-4 sm:p-6 max-w-2xl mx-auto w-full space-y-4">
                                     <h3 className="text-sm font-semibold text-slate-300 mb-4">Statistika</h3>
 
                                     <div className="grid grid-cols-2 gap-3">
@@ -714,6 +744,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                             })}
                                         </div>
                                     </div>
+                                    </div>
                                 </div>
                             )}
                         </div>
@@ -721,16 +752,6 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                     </main>
                 </div>
             </div>
-
-            {/* Slide-in keyframe */}
-            <style>{`
-@keyframes slideInRight {
-          from { transform: translateX(40px); opacity: 0; }
-          to   { transform: translateX(0); opacity: 1; }
-}
-        .no - scrollbar:: -webkit - scrollbar { display: none; }
-        .no - scrollbar { -ms - overflow - style: none; scrollbar - width: none; }
-`}</style>
         </div>
     );
 }
