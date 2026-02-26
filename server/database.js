@@ -670,15 +670,25 @@ async function healthCheck() {
 }
 
 /**
- * Append a single message to the messages table (idempotent via whatsapp_id)
+ * Append a single message to the messages table (idempotent via whatsapp_id without relying on constraints)
  */
 async function appendMessage({ leadId, phone, body, direction, whatsappId, createdAt, tenantId = 'admin' }) {
     try {
         const ts = createdAt ? new Date(createdAt * 1000) : new Date();
+
+        // 1. Check if message already exists (safer than ON CONFLICT due to partial index migrations)
+        if (whatsappId) {
+            const existing = await pool.query(
+                'SELECT id FROM messages WHERE whatsapp_id = $1 AND tenant_id = $2',
+                [whatsappId, tenantId]
+            );
+            if (existing.rows.length > 0) return; // already exists
+        }
+
+        // 2. Insert message
         await pool.query(`
             INSERT INTO messages (lead_id, phone, body, direction, whatsapp_id, created_at, tenant_id)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
-            ON CONFLICT (whatsapp_id, tenant_id) DO NOTHING
         `, [leadId, phone, body || '', direction, whatsappId || null, ts, tenantId]);
     } catch (error) {
         // Non-fatal - log and continue

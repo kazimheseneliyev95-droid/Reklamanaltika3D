@@ -21,12 +21,17 @@ interface ChatMessage {
 function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) {
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [loading, setLoading] = useState(true);
+    const [replyText, setReplyText] = useState('');
+    const [isSending, setIsSending] = useState(false);
     const bottomRef = useRef<HTMLDivElement>(null);
 
     const loadMessages = useCallback(async () => {
         if (!serverUrl || !lead.id) { setLoading(false); return; }
         try {
-            const res = await fetch(`${serverUrl}/api/leads/${lead.id}/messages`);
+            const token = localStorage.getItem('crm_auth_token') || '';
+            const res = await fetch(`${serverUrl}/api/leads/${lead.id}/messages`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
             if (res.ok) {
                 const data = await res.json();
                 setMessages(data);
@@ -60,6 +65,28 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
         };
     }, [lead.id, lead.phone, loadMessages]);
 
+    const handleSend = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!replyText.trim() || isSending) return;
+        setIsSending(true);
+        try {
+            const token = localStorage.getItem('crm_auth_token') || '';
+            const res = await fetch(`${serverUrl}/api/leads/${lead.id}/messages`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ body: replyText.trim() })
+            });
+            if (res.ok) {
+                setReplyText('');
+                loadMessages();
+            }
+        } catch (err) {
+            console.error('Failed to send message', err);
+        } finally {
+            setIsSending(false);
+        }
+    };
+
     if (loading) return (
         <div className="flex items-center justify-center h-40 text-slate-500 text-sm">
             <span className="animate-pulse">Yüklənir...</span>
@@ -67,9 +94,9 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
     );
 
     return (
-        <div className="flex flex-col h-full">
+        <div className="flex flex-col h-full bg-[#0d1117]">
             {/* Sticky header */}
-            <div className="px-4 py-2 border-b border-slate-800 flex items-center justify-between shrink-0">
+            <div className="px-4 py-2 border-b border-slate-800 flex items-center justify-between shrink-0 bg-[#111827]">
                 <span className="text-xs font-semibold text-slate-400">
                     {messages.length} mesaj
                 </span>
@@ -96,13 +123,13 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                                 <div className={cn(
                                     'max-w-[78%] px-3 py-2 rounded-2xl text-sm leading-relaxed',
                                     isOut
-                                        ? 'bg-emerald-700/80 text-white rounded-br-sm'
+                                        ? 'bg-blue-600/90 text-white rounded-br-sm'
                                         : 'bg-slate-800 text-slate-200 rounded-bl-sm'
                                 )}>
                                     <p className="whitespace-pre-wrap break-words">{msg.body}</p>
                                     <p className={cn(
                                         'text-[10px] mt-1 text-right',
-                                        isOut ? 'text-emerald-300/70' : 'text-slate-500'
+                                        isOut ? 'text-blue-200/70' : 'text-slate-500'
                                     )}>
                                         {dateStr2} · {timeStr} · {isOut ? '📤' : '📥'}
                                     </p>
@@ -111,7 +138,28 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                         );
                     })
                 )}
-                <div ref={bottomRef} />
+                <div ref={bottomRef} className="h-10" />
+            </div>
+
+            {/* Reply Input Area */}
+            <div className="p-3 border-t border-slate-800 bg-[#111827] shrink-0">
+                <form onSubmit={handleSend} className="flex gap-2">
+                    <input
+                        type="text"
+                        value={replyText}
+                        onChange={(e) => setReplyText(e.target.value)}
+                        placeholder="Mesaj yazın..."
+                        disabled={isSending}
+                        className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-50"
+                    />
+                    <button
+                        type="submit"
+                        disabled={!replyText.trim() || isSending}
+                        className="bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 disabled:text-slate-500 text-white rounded-lg px-4 py-2 text-sm font-semibold transition-colors flex items-center justify-center min-w-[80px]"
+                    >
+                        {isSending ? <span className="animate-spin">⌛</span> : 'Göndər'}
+                    </button>
+                </form>
             </div>
         </div>
     );
