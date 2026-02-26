@@ -94,9 +94,9 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
     );
 
     return (
-        <div className="flex flex-col h-full bg-[#0d1117]">
+        <div className="flex flex-col h-full bg-[#0d1117] relative">
             {/* Sticky header */}
-            <div className="px-4 py-2 border-b border-slate-800 flex items-center justify-between shrink-0 bg-[#111827]">
+            <div className="px-4 py-2 border-b border-slate-800 flex items-center justify-between shrink-0 bg-[#111827] sticky top-0 z-10">
                 <span className="text-xs font-semibold text-slate-400">
                     {messages.length} mesaj
                 </span>
@@ -106,7 +106,7 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
             </div>
 
             {/* Message list */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-2">
+            <div className="flex-1 overflow-y-auto p-4 space-y-2 pb-20 overscroll-contain">
                 {messages.length === 0 ? (
                     <div className="flex flex-col items-center justify-center py-16 text-slate-600 gap-3">
                         <MessageSquare className="w-10 h-10" />
@@ -121,7 +121,7 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                         return (
                             <div key={msg.id} className={cn('flex', isOut ? 'justify-end' : 'justify-start')}>
                                 <div className={cn(
-                                    'max-w-[78%] px-3 py-2 rounded-2xl text-sm leading-relaxed',
+                                    'max-w-[85%] px-3 py-2 rounded-2xl text-sm leading-relaxed',
                                     isOut
                                         ? 'bg-blue-600/90 text-white rounded-br-sm'
                                         : 'bg-slate-800 text-slate-200 rounded-bl-sm'
@@ -138,11 +138,11 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                         );
                     })
                 )}
-                <div ref={bottomRef} className="h-10" />
+                <div ref={bottomRef} className="h-4" />
             </div>
 
             {/* Reply Input Area */}
-            <div className="p-3 pb-[max(env(safe-area-inset-bottom),0.75rem)] border-t border-slate-800 bg-[#111827] shrink-0 z-10 w-full" style={{ position: 'sticky', bottom: 0 }}>
+            <div className="absolute bottom-0 left-0 right-0 p-2 sm:p-3 border-t border-slate-800 bg-[#111827] z-20" style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 0.75rem)' }}>
                 <form onSubmit={handleSend} className="flex gap-2">
                     <input
                         type="text"
@@ -155,7 +155,7 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                     <button
                         type="submit"
                         disabled={!replyText.trim() || isSending}
-                        className="bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 disabled:text-slate-500 text-white rounded-lg px-4 py-2 text-sm font-semibold transition-colors flex items-center justify-center min-w-[80px]"
+                        className="bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 disabled:text-slate-500 text-white rounded-lg px-3 sm:px-4 py-2 text-sm font-semibold transition-colors flex items-center justify-center min-w-[70px] sm:min-w-[80px]"
                     >
                         {isSending ? <span className="animate-spin">⌛</span> : 'Göndər'}
                     </button>
@@ -191,7 +191,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
         note: lead.last_message || '',
         assignee_id: lead.assignee_id || '',
     });
-    const [activeTab, setActiveTab] = useState<'info' | 'feed' | 'chat' | 'stats'>('info');
+    const [activeTab, setActiveTab] = useState<'info' | 'feed' | 'chat' | 'stats'>('chat');
     const [isSaving, setIsSaving] = useState(false);
     const [savedOk, setSavedOk] = useState(false);
     const feedRef = useRef<HTMLDivElement>(null);
@@ -361,7 +361,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                         onClick={() => setActiveTab('info' as any)}
                         className={cn(
                             'flex-1 py-3 text-xs font-semibold border-b-2 transition-all',
-                            activeTab === 'info' || !['feed', 'chat', 'stats'].includes(activeTab)
+                            activeTab === 'info'
                                 ? 'border-blue-500 text-blue-400'
                                 : 'border-transparent text-slate-500 hover:text-slate-300'
                         )}
@@ -382,11 +382,11 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                 </div>
 
                 {/* ════════════════════ BODY (2-column on md+) ════════════════════ */}
-                <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
+                <div className="flex-1 flex flex-col md:flex-row overflow-hidden relative">
 
                     {/* ───── LEFT SIDEBAR ───── */}
                     <aside className={cn(
-                        "w-full md:w-72 lg:w-80 shrink-0 border-r border-white/5 bg-[#111827]/60 flex flex-col overflow-y-auto",
+                        "w-full md:w-72 lg:w-80 shrink-0 border-r border-white/5 bg-[#111827]/60 flex-col overflow-y-auto overscroll-contain h-full relative",
                         ['feed', 'chat', 'stats'].includes(activeTab) ? "hidden md:flex" : "flex"
                     )}>
 
@@ -563,7 +563,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
 
                     {/* ───── RIGHT MAIN AREA ───── */}
                     <main className={cn(
-                        "flex-1 flex flex-col overflow-hidden bg-[#0d1117]",
+                        "flex-1 flex flex-col min-w-0 bg-[#0d1117] h-full",
                         ['feed', 'chat', 'stats'].includes(activeTab) ? "flex" : "hidden md:flex"
                     )}>
 
