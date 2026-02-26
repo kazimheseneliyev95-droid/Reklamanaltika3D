@@ -19,7 +19,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-50 flex flex-col md:flex-row">
       {/* Mobile Top Bar (Minimal) */}
-      <div className="md:hidden flex items-center justify-between p-3 bg-slate-900 border-b border-slate-800 sticky top-0 z-40">
+      <div className="mobile-topbar md:hidden flex items-center justify-between p-3 bg-slate-900 border-b border-slate-800 sticky top-0 z-40">
         <h1 className="text-lg font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
           ReklamAnalitika
         </h1>
@@ -35,7 +35,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       </div>
 
       {/* Mobile Bottom Navigation (PWA style) */}
-      <nav className="md:hidden fixed bottom-0 w-full bg-slate-900 border-t border-slate-800 z-50 flex items-center justify-around pb-safe">
+      <nav className="mobile-bottom-nav md:hidden fixed bottom-0 w-full bg-slate-900 border-t border-slate-800 z-50 flex items-center justify-around pb-safe">
         {navItems.map((item) => {
           const isActive = location.pathname === item.path;
           return (

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { Lead, LeadStatus } from '../types/crm';
 import {
     User, Phone, Package, MessageSquare, Clock, Hash,
@@ -103,7 +104,7 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
     );
 
     return (
-        <div className="flex flex-col h-full min-h-0 bg-[#0d1117]">
+        <div className="flex flex-col flex-1 min-h-0 bg-[#0d1117]">
             {/* Sticky header */}
             <div className="px-4 py-2 border-b border-slate-800 flex items-center justify-between shrink-0 bg-[#111827] sticky top-0 z-10">
                 <span className="text-xs font-semibold text-slate-400">
@@ -151,7 +152,7 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
             </div>
 
             {/* Reply Input Area */}
-            <div className="shrink-0 p-2 sm:p-3 border-t border-slate-800 bg-[#111827]" style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 0.75rem)' }}>
+            <div className="sticky bottom-0 shrink-0 p-2 sm:p-3 border-t border-slate-800 bg-[#111827] z-20" style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 0.75rem)' }}>
                 <form onSubmit={handleSend} className="flex gap-2">
                     <input
                         type="text"
@@ -208,11 +209,15 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
     const feedRef = useRef<HTMLDivElement>(null);
     const serverUrl = CrmService.getServerUrl();
 
-    // App-like modal behavior: prevent background page scroll
+    // App-like modal behavior: prevent background page scroll and hide mobile nav bars
     useEffect(() => {
-        const prev = document.body.style.overflow;
+        const prevOverflow = document.body.style.overflow;
+        document.body.classList.add('lead-panel-open');
         document.body.style.overflow = 'hidden';
-        return () => { document.body.style.overflow = prev; };
+        return () => {
+            document.body.classList.remove('lead-panel-open');
+            document.body.style.overflow = prevOverflow;
+        };
     }, []);
 
 
@@ -308,7 +313,9 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
     });
     const leadIdShort = lead.id.split('-')[0].toUpperCase();
 
-    return (
+    if (typeof document === 'undefined') return null;
+
+    return createPortal(
         // OVERLAY
         <div
             className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-[2px] flex justify-end"
@@ -752,7 +759,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                 </div>
             </div>
         </div>
-    );
+    , document.body);
 }
 
 // ─── Sub-components ───────────────────────────────────────────────────────────

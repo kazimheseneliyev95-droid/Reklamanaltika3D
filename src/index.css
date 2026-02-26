@@ -8,6 +8,11 @@
     overscroll-behavior-y: none;
     -webkit-overflow-scrolling: touch;
   }
+
+  body.lead-panel-open .mobile-topbar,
+  body.lead-panel-open .mobile-bottom-nav {
+    display: none;
+  }
 }
 
 @keyframes slideInRight {
