@@ -317,6 +317,13 @@ app.post('/api/auth/login', asyncHandler(async (req, res) => {
     return res.status(400).json({ success: false, error: 'Şifrə daxil edilməlidir' });
   }
 
+  if (!process.env.DATABASE_URL || typeof db.findUserByUsername !== 'function') {
+    return res.status(503).json({
+      success: false,
+      error: 'Database not configured. Render Environment-da DATABASE_URL əlavə edin.'
+    });
+  }
+
   // Find user in database to determine role and tenant mapping
   let user = await db.findUserByUsername(normalizedUsername);
 
@@ -335,7 +342,7 @@ app.post('/api/auth/login', asyncHandler(async (req, res) => {
   }
 
   // One-time migration: if plaintext was used previously, upgrade to bcrypt hash after successful login
-  if (!isBcryptHash(user.password_hash)) {
+  if (!isBcryptHash(user.password_hash) && typeof db.updateUserPasswordHash === 'function') {
     try {
       const upgradedHash = await hashPassword(password);
       await db.updateUserPasswordHash(user.id, upgradedHash);
@@ -854,6 +861,18 @@ setInterval(() => {
   const mem = process.memoryUsage();
   console.log(`📊 API Memory: ${Math.round(mem.rss / 1024 / 1024)}MB RSS`);
 }, 60000);
+
+// Central API error responder (prevents opaque HTML 500s on API routes)
+app.use((err, req, res, next) => {
+  console.error(`❌ ${req.method} ${req.originalUrl}:`, (err && (err.stack || err.message)) || err);
+  if (res.headersSent) return next(err);
+
+  if (req.originalUrl.startsWith('/api/')) {
+    return res.status(500).json({ success: false, error: 'Server xətası' });
+  }
+
+  return res.status(500).send('Server error');
+});
 
 // SERVE FRONTEND (Monolith Mode)
 const DIST_PATH = path.join(__dirname, '../dist');
