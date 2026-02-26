@@ -21,8 +21,8 @@ COPY . .
 # Build Frontend (needs vite from devDeps)
 RUN npm run build
 
-# Expose port
-EXPOSE 4000
+# Expose port (Render sets PORT env var, default 10000)
+EXPOSE ${PORT:-10000}
 
 # Use dumb-init to handle signals properly
 ENTRYPOINT ["dumb-init", "--"]

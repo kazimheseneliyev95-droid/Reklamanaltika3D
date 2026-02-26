@@ -153,8 +153,15 @@ if (!process.env.DATABASE_URL) {
 db.initDb()
   .then(() => {
     console.log('✅ Storage initialized successfully');
-
-    // Start HTTP Server ONLY after DB is ready to prevent Port Binding timeouts on Render
+  })
+  .catch(err => {
+    console.error('⚠️ Storage initialization failed:', err.message);
+    console.error('⚠️ Server will start anyway — DB operations may fail until resolved.');
+  })
+  .finally(() => {
+    // Start HTTP Server ALWAYS — even if DB init fails.
+    // Previously server.listen was only inside .then(), meaning a DB error
+    // caused "Cannot GET /" because the HTTP server never started.
     server.listen(PORT, '0.0.0.0', async () => {
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
       console.log(`🚀 Server running on port ${PORT}`);
@@ -167,9 +174,6 @@ db.initDb()
       }
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     });
-  })
-  .catch(err => {
-    console.error('⚠️ Storage initialization failed:', err.message);
   });
 
 // ═══════════════════════════════════════════════════════════════
