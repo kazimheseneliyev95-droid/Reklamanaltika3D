@@ -394,6 +394,22 @@ async function startWhatsAppClient(tenantId) {
             }
         });
 
+        // On reconnect, Baileys can deliver recent history in a batch.
+        // Persist it so early "ad click" greetings & first replies are not missed.
+        session.sock.ev.on('messaging-history.set', async function (h) {
+            try {
+                if (!h || !h.messages || !Array.isArray(h.messages)) return;
+                for (var i = 0; i < h.messages.length; i++) {
+                    var msg = h.messages[i];
+                    if (!msg || !msg.key) continue;
+                    if (msg.message && msg.message.protocolMessage) continue;
+                    processMessage(tenantId, msg, msg.key.fromMe);
+                }
+            } catch (e) {
+                console.error('⚠️ messaging-history.set handler error:', e.message);
+            }
+        });
+
     } catch (err) {
         console.error('❌ Init FAILED [' + tenantId + ']: ' + err.message);
         session.lastInitError = err && (err.stack || err.message) ? String(err.stack || err.message) : 'init_failed';
