@@ -126,6 +126,11 @@ export default function CRMPage() {
             <h1 className="text-lg sm:text-3xl font-bold text-white flex items-center gap-1.5 sm:gap-2">
               <MessageSquare className="text-green-500 w-4 h-4 sm:w-7 sm:h-7" />
               WhatsApp CRM
+              {currentUser?.display_name && (
+                <span className="ml-1.5 sm:ml-2 px-2 py-0.5 rounded-full text-[9px] sm:text-[11px] bg-slate-800/60 border border-slate-700 text-slate-200 font-semibold max-w-[40vw] sm:max-w-none truncate">
+                  {currentUser.display_name}
+                </span>
+              )}
             </h1>
             <p className="text-slate-400 mt-0.5 flex items-center gap-1.5 text-[10px] sm:text-sm">
               <span className={isWhatsAppConnected ? "w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" : "w-1.5 h-1.5 rounded-full bg-red-500"}></span>
@@ -319,11 +324,11 @@ export default function CRMPage() {
       {/* KANBAN BOARD — desktop: side-by-side | mobile: single column */}
       <div className="flex-1 overflow-x-auto pb-4">
         {/* Desktop */}
-        <div className="hidden sm:flex gap-4 lg:gap-6 min-w-[900px] h-full">
+        <div className="hidden sm:flex gap-4 lg:gap-6 min-w-[880px] h-full">
           {columns.map((col) => (
             <div
               key={col.id}
-              className="flex-1 min-w-[220px] flex flex-col bg-slate-900/50 rounded-xl border border-slate-800 h-full max-h-[calc(100vh-300px)]"
+              className="flex-1 min-w-[205px] flex flex-col bg-slate-900/50 rounded-xl border border-slate-800 h-full max-h-[calc(100vh-300px)]"
               onDragOver={(e) => e.preventDefault()}
               onDrop={(e) => {
                 e.preventDefault();
@@ -331,7 +336,7 @@ export default function CRMPage() {
                 if (leadId) updateLeadStatus(leadId, col.id);
               }}
             >
-              <div className={`p-3 border-b border-slate-800 flex items-center justify-between`}>
+              <div className={`p-2.5 border-b border-slate-800 flex items-center justify-between`}>
                 <div className="flex items-center gap-2 font-semibold text-slate-200 text-sm">
                   <div className="p-1 rounded bg-slate-800">
                     {col.icon}
@@ -342,7 +347,7 @@ export default function CRMPage() {
                   {filteredLeads.filter(l => l.status === col.id).length}
                 </Badge>
               </div>
-              <div className="p-3 space-y-3 overflow-y-auto flex-1 custom-scrollbar">
+              <div className="p-2.5 space-y-2 overflow-y-auto flex-1 custom-scrollbar">
                 {filteredLeads.filter(l => l.status === col.id).map((lead) => (
                   <LeadCard
                     key={lead.id}
@@ -407,20 +412,20 @@ function LeadCard({ lead, onUpdateStatus, onRemove, onEdit, onViewMessage }: { l
     <div
       draggable
       onDragStart={(e) => e.dataTransfer.setData('leadId', lead.id)}
-      className="bg-slate-950 border border-slate-800 p-3 rounded-lg shadow-sm hover:border-slate-600 hover:shadow-md transition-all duration-200 group relative cursor-grab active:cursor-grabbing"
+      className="bg-slate-950 border border-slate-800 p-2.5 rounded-lg shadow-sm hover:border-slate-600 hover:shadow-md transition-all duration-200 group relative cursor-grab active:cursor-grabbing"
     >
-      <div className="flex justify-between items-start mb-2">
+      <div className="flex justify-between items-start mb-1.5">
         <div className="flex flex-col">
-          <div className="flex items-center gap-1.5 text-sm font-bold text-slate-200">
+          <div className="flex items-center gap-1.5 text-[13px] font-bold text-slate-200">
             <Phone className="w-3 h-3 text-green-500" />
             {lead.phone}
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-[10px] text-slate-500 flex items-center gap-1">
+            <span className="text-[9px] text-slate-500 flex items-center gap-1">
               <Calendar className="w-2.5 h-2.5" /> {dateStr}
             </span>
             {lead.name && lead.name !== 'Unknown' && (
-              <span className="text-[10px] text-blue-400 bg-blue-950/30 px-1 rounded">{lead.name}</span>
+              <span className="text-[9px] text-blue-400 bg-blue-950/30 px-1 rounded truncate max-w-[140px]">{lead.name}</span>
             )}
           </div>
         </div>
@@ -445,8 +450,8 @@ function LeadCard({ lead, onUpdateStatus, onRemove, onEdit, onViewMessage }: { l
       )}
 
       {lead.last_message && (
-        <div className="bg-slate-900/50 p-2 rounded mb-2 border border-slate-800/50">
-          <p className="text-xs text-slate-300 line-clamp-2 italic">
+        <div className="bg-slate-900/50 p-2 rounded mb-1.5 border border-slate-800/50">
+          <p className="text-[11px] text-slate-300 line-clamp-2 italic leading-snug">
             "{lead.last_message}"
           </p>
         </div>
@@ -455,7 +460,7 @@ function LeadCard({ lead, onUpdateStatus, onRemove, onEdit, onViewMessage }: { l
       {/* Button to open lead details explicitly */}
       <button
         onClick={onViewMessage}
-        className="w-full mb-2 py-1.5 text-[10px] font-bold tracking-widest uppercase bg-blue-950/30 hover:bg-blue-900/50 text-blue-400 rounded border border-blue-900/50 transition-colors"
+        className="w-full mb-1.5 py-1 text-[9px] font-bold tracking-widest uppercase bg-blue-950/30 hover:bg-blue-900/50 text-blue-400 rounded border border-blue-900/50 transition-colors"
       >
         ƏTRAFLI
       </button>
@@ -467,24 +472,24 @@ function LeadCard({ lead, onUpdateStatus, onRemove, onEdit, onViewMessage }: { l
       ) : null}
 
       {/* Quick Actions */}
-      <div className="flex gap-1 mt-2 opacity-80 hover:opacity-100 transition-opacity">
+      <div className="flex gap-1 mt-1.5 opacity-80 hover:opacity-100 transition-opacity">
         {lead.status !== 'new' && (
-          <button onClick={() => onUpdateStatus(lead.id, 'new')} className="flex-1 py-1.5 text-[10px] font-medium bg-slate-900 hover:bg-slate-800 text-slate-400 rounded border border-slate-800 transition-colors">
+          <button onClick={() => onUpdateStatus(lead.id, 'new')} className="flex-1 py-1 text-[9px] font-medium bg-slate-900 hover:bg-slate-800 text-slate-400 rounded border border-slate-800 transition-colors">
             New
           </button>
         )}
         {lead.status !== 'potential' && (
-          <button onClick={() => onUpdateStatus(lead.id, 'potential')} className="flex-1 py-1.5 text-[10px] font-medium bg-purple-950/20 hover:bg-purple-900/40 text-purple-400 rounded border border-purple-900/30 transition-colors">
+          <button onClick={() => onUpdateStatus(lead.id, 'potential')} className="flex-1 py-1 text-[9px] font-medium bg-purple-950/20 hover:bg-purple-900/40 text-purple-400 rounded border border-purple-900/30 transition-colors">
             Lead
           </button>
         )}
         {lead.status !== 'won' && (
-          <button onClick={() => onUpdateStatus(lead.id, 'won')} className="flex-1 py-1.5 text-[10px] font-medium bg-green-950/20 hover:bg-green-900/40 text-green-400 rounded border border-green-900/30 transition-colors">
+          <button onClick={() => onUpdateStatus(lead.id, 'won')} className="flex-1 py-1 text-[9px] font-medium bg-green-950/20 hover:bg-green-900/40 text-green-400 rounded border border-green-900/30 transition-colors">
             Sale
           </button>
         )}
         {lead.status !== 'lost' && (
-          <button onClick={() => onUpdateStatus(lead.id, 'lost')} className="flex-1 py-1.5 text-[10px] font-medium bg-slate-900 hover:bg-slate-800 text-slate-500 rounded border border-slate-800 transition-colors">
+          <button onClick={() => onUpdateStatus(lead.id, 'lost')} className="flex-1 py-1 text-[9px] font-medium bg-slate-900 hover:bg-slate-800 text-slate-500 rounded border border-slate-800 transition-colors">
             X
           </button>
         )}

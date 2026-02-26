@@ -20,9 +20,14 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen bg-slate-950 text-slate-50 flex flex-col md:flex-row">
       {/* Mobile Top Bar (Minimal) */}
       <div className="mobile-topbar md:hidden flex items-center justify-between p-3 bg-slate-900 border-b border-slate-800 sticky top-0 z-40">
-        <h1 className="text-lg font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
-          ReklamAnalitika
-        </h1>
+        <div className="min-w-0">
+          <h1 className="text-lg font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent leading-tight">
+            ReklamAnalitika
+          </h1>
+          {currentUser?.display_name && (
+            <p className="text-[10px] text-slate-500 truncate max-w-[70vw]">{currentUser.display_name}</p>
+          )}
+        </div>
         {currentUser?.role !== 'superadmin' && (
           <button
             onClick={logout}
@@ -73,7 +78,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           <h1 className="text-xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
             ReklamAnalitika
           </h1>
-          <p className="text-xs text-slate-500 mt-1">Ads & CRM Suite</p>
+          <p className="text-xs text-slate-500 mt-1">{currentUser?.display_name || 'Ads & CRM Suite'}</p>
         </div>
 
         <nav className="p-4 space-y-2 flex-1">
