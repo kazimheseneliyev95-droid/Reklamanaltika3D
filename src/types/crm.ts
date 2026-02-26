@@ -19,10 +19,31 @@ export interface Lead {
   assignee_id?: string | null; // Worker assignment
 }
 
+export interface UserPermissions {
+  view_all_leads?: boolean;
+  create_lead?: boolean;
+  delete_lead?: boolean;
+  change_status?: boolean;
+  view_budget?: boolean;
+  edit_budget?: boolean;
+  send_messages?: boolean;
+  use_templates?: boolean;
+  delete_message_history?: boolean;
+  send_media?: boolean;
+  view_stats?: boolean;
+  view_roi?: boolean;
+  view_other_operator_stats?: boolean;
+  manage_users?: boolean;
+  manage_kanban_columns?: boolean;
+  create_custom_fields?: boolean;
+  factory_reset?: boolean;
+}
+
 export interface User {
   id: string;
   username: string;
-  role: 'admin' | 'worker' | 'superadmin';
+  role: 'admin' | 'worker' | 'superadmin' | 'manager' | 'viewer';
+  permissions?: UserPermissions;
   tenant_id: string;
   created_at?: string;
 }

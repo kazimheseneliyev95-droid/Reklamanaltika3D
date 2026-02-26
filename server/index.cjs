@@ -370,11 +370,12 @@ app.post('/api/auth/login', asyncHandler(async (req, res) => {
     id: user.id,
     username: user.username,
     tenantId: user.tenant_id,
-    role: user.role
+    role: user.role,
+    permissions: user.permissions || {}
   };
   const token = signAuthToken(tokenPayload);
 
-  res.json({ success: true, token, tenantId: user.tenant_id, role: user.role, id: user.id, username: user.username });
+  res.json({ success: true, token, tenantId: user.tenant_id, role: user.role, id: user.id, username: user.username, permissions: user.permissions || {} });
 }));
 
 app.post('/api/auth/verify', (req, res) => {
@@ -382,7 +383,7 @@ app.post('/api/auth/verify', (req, res) => {
   try {
     const data = verifyAnyToken(token);
     if (data.tenantId) {
-      res.json({ success: true, valid: true, tenantId: data.tenantId, id: data.id, role: data.role, username: data.username });
+      res.json({ success: true, valid: true, tenantId: data.tenantId, id: data.id, role: data.role, username: data.username, permissions: data.permissions || {} });
     } else {
       throw new Error();
     }
@@ -402,6 +403,7 @@ const requireTenantAuth = (req, res, next) => {
     req.tenantId = data.tenantId;
     req.userRole = data.role; // Extract role from token
     req.userId = data.id;     // Extract ID from token
+    req.userPermissions = data.permissions || {}; // Extract permissions
     next();
   } catch (err) {
     res.status(401).json({ error: 'Unauthorized: Invalid token' });
@@ -430,7 +432,7 @@ app.post('/api/users', requireTenantAuth, requireAdmin, asyncHandler(async (req,
   if (!process.env.DATABASE_URL) {
     return res.status(503).json({ error: 'Database not configured' });
   }
-  const { username, password, role } = req.body;
+  const { username, password, role, permissions } = req.body;
   if (!username || !password || !role) {
     return res.status(400).json({ error: 'Username, password, and role are required' });
   }
@@ -444,7 +446,8 @@ app.post('/api/users', requireTenantAuth, requireAdmin, asyncHandler(async (req,
 
   try {
     const passwordHash = await hashPassword(password);
-    const newUser = await db.createUser(username.toLowerCase(), passwordHash, role, tenantId);
+    // Note: User creation receives permissions via arguments
+    const newUser = await db.createUser(username.toLowerCase(), passwordHash, role, permissions, tenantId);
     res.status(201).json(newUser);
   } catch (err) {
     if (err.message === 'Username already exists') {
@@ -456,9 +459,7 @@ app.post('/api/users', requireTenantAuth, requireAdmin, asyncHandler(async (req,
 }));
 
 app.put('/api/users/:id/role', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
-  if (!process.env.DATABASE_URL) {
-    return res.status(503).json({ error: 'Database not configured' });
-  }
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   const { role } = req.body;
 
   if (role !== 'admin' && role !== 'worker') {
@@ -469,12 +470,25 @@ app.put('/api/users/:id/role', requireTenantAuth, requireAdmin, asyncHandler(asy
   res.json(updatedUser);
 }));
 
+app.put('/api/users/:id/permissions', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  const { permissions } = req.body;
+
+  const updatedUser = await db.updateUserPermissions(req.params.id, permissions, req.tenantId);
+  res.json(updatedUser);
+}));
+
 app.delete('/api/users/:id', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
-  if (!process.env.DATABASE_URL) {
-    return res.status(503).json({ error: 'Database not configured' });
-  }
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   await db.deleteUser(req.params.id, req.tenantId);
   res.json({ success: true });
+}));
+
+// 📋 AUDIT LOGS API (Phase 3)
+app.get('/api/audit-logs', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  const logs = await db.getAuditLogs(req.tenantId, 100);
+  res.json(logs);
 }));
 
 // � SUPER ADMIN API (Phase 3)
@@ -640,23 +654,72 @@ app.put('/api/leads/:id/status', requireTenantAuth, asyncHandler(async (req, res
   const lead = await db.updateLeadStatus(req.params.id, req.body.status, req.tenantId);
   if (!lead) return res.status(404).json({ error: 'Lead not found' });
   io.to(req.tenantId).emit('lead_updated', lead);
+
+  // Audit Log
+  await db.logAuditAction({
+    tenantId: req.tenantId,
+    userId: req.userId,
+    action: 'UPDATE_STATUS',
+    entityType: 'lead',
+    entityId: req.params.id,
+    details: { newStatus: req.body.status }
+  });
+
   res.json(lead);
 }));
 
 app.put('/api/leads/:id', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+
+  // Field-Level Security: Prevent budget edits if permission is missing (default true for backwards compatibility if not explicitly false)
+  if (req.body.value !== undefined && req.userPermissions.view_budget === false) {
+    return res.status(403).json({ error: 'Büdcəni dəyişmək üçün icazəniz yoxdur' });
+  }
+
   const lead = await db.updateLeadFields(req.params.id, req.body, req.tenantId);
   if (!lead) return res.status(404).json({ error: 'Lead not found' });
   io.to(req.tenantId).emit('lead_updated', lead);
+
+  // Audit Log
+  await db.logAuditAction({
+    tenantId: req.tenantId,
+    userId: req.userId,
+    action: 'UPDATE_FIELDS',
+    entityType: 'lead',
+    entityId: req.params.id,
+    details: { fields: Object.keys(req.body) }
+  });
+
   res.json(lead);
 }));
 
 // 🗑️ FACTORY RESET — delete ALL leads and messages FOR TENANT
 // NOTE: This route MUST appear before /api/leads/:id to avoid being shadowed.
 app.delete('/api/leads/all', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (req.userRole !== 'superadmin') {
+    return res.status(403).json({ error: 'alnız SuperAdmin məlumatları sıfırlaya bilər' });
+  }
+  const { password } = req.body;
+
+  const user = await db.pool.query('SELECT password_hash FROM users WHERE id = $1', [req.userId]);
+  if (!user.rows[0]) return res.status(404).json({ error: 'İstifadəçi tapılmadı' });
+
+  const validPass = await verifyPassword(password, user.rows[0].password_hash);
+  if (!validPass) return res.status(401).json({ error: 'Şifrə yalnışdır' });
+
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   await db.deleteAllLeads(req.tenantId);
   io.to(req.tenantId).emit('leads_reset', {});
+
+  await db.logAuditAction({
+    tenantId: req.tenantId,
+    userId: req.userId,
+    action: 'FACTORY_RESET',
+    entityType: 'tenant',
+    entityId: null,
+    details: {}
+  });
+
   res.json({ success: true, message: 'All leads and messages deleted for tenant' });
 }));
 
@@ -667,6 +730,16 @@ app.delete('/api/leads/:id', requireTenantAuth, asyncHandler(async (req, res) =>
 
   // Broadcast deletion to tenant clients
   io.to(req.tenantId).emit('lead_deleted', lead.id);
+
+  // Audit Log
+  await db.logAuditAction({
+    tenantId: req.tenantId,
+    userId: req.userId,
+    action: 'DELETE_LEAD',
+    entityType: 'lead',
+    entityId: req.params.id,
+    details: { phone: lead.phone }
+  });
 
   res.json(lead);
 }));
@@ -721,6 +794,10 @@ app.get('/api/leads/:id/messages', requireTenantAuth, asyncHandler(async (req, r
 // ADDED IN PHASE 6: Sending Messages directly to DB Queue
 app.post('/api/leads/:id/messages', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+
+  if (req.userPermissions.send_messages === false) {
+    return res.status(403).json({ error: 'Sizə mesaj göndərmək icazəsi verilməyib' });
+  }
 
   const leadId = req.params.id;
   const { body } = req.body;

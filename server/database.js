@@ -67,7 +67,19 @@ async function initDb() {
           username VARCHAR(255) UNIQUE NOT NULL,
           password_hash VARCHAR(255) NOT NULL,
           role VARCHAR(50) DEFAULT 'admin',
+          permissions JSONB DEFAULT '{}',
           tenant_id VARCHAR(50) NOT NULL,
+          created_at TIMESTAMP DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS audit_logs (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          tenant_id VARCHAR(50) NOT NULL,
+          user_id UUID,
+          action VARCHAR(50) NOT NULL,
+          entity_type VARCHAR(50) NOT NULL,
+          entity_id UUID,
+          details JSONB,
           created_at TIMESTAMP DEFAULT NOW()
         );
 
@@ -781,11 +793,11 @@ async function deleteAllLeads(tenantId = 'admin') {
 /**
  * Creates a new user
  */
-async function createUser(username, passwordHash, role, tenantId) {
+async function createUser(username, passwordHash, role, permissions, tenantId) {
     try {
         const result = await pool.query(
-            'INSERT INTO users (username, password_hash, role, tenant_id) VALUES ($1, $2, $3, $4) RETURNING id, username, role, tenant_id, created_at',
-            [username, passwordHash, role, tenantId]
+            'INSERT INTO users (username, password_hash, role, permissions, tenant_id) VALUES ($1, $2, $3, $4, $5) RETURNING id, username, role, permissions, tenant_id, created_at',
+            [username, passwordHash, role, permissions || {}, tenantId]
         );
         return result.rows[0];
     } catch (error) {
@@ -802,7 +814,7 @@ async function createUser(username, passwordHash, role, tenantId) {
  */
 async function getUsers(tenantId = null) {
     try {
-        let query = 'SELECT id, username, role, tenant_id, created_at FROM users';
+        let query = 'SELECT id, username, role, permissions, tenant_id, created_at FROM users';
         let values = [];
 
         if (tenantId) {
@@ -826,13 +838,30 @@ async function getUsers(tenantId = null) {
 async function updateUserRole(userId, newRole, tenantId) {
     try {
         const result = await pool.query(
-            'UPDATE users SET role = $1 WHERE id = $2 AND tenant_id = $3 RETURNING id, username, role',
+            'UPDATE users SET role = $1 WHERE id = $2 AND tenant_id = $3 RETURNING id, username, role, permissions',
             [newRole, userId, tenantId]
         );
         if (result.rowCount === 0) throw new Error('User not found or unauthorized');
         return result.rows[0];
     } catch (error) {
         console.error('❌ updateUserRole error:', error.message);
+        throw error;
+    }
+}
+
+/**
+ * Updates a user's permissions
+ */
+async function updateUserPermissions(userId, newPermissions, tenantId) {
+    try {
+        const result = await pool.query(
+            'UPDATE users SET permissions = $1 WHERE id = $2 AND tenant_id = $3 RETURNING id, username, role, permissions',
+            [newPermissions, userId, tenantId]
+        );
+        if (result.rowCount === 0) throw new Error('User not found or unauthorized');
+        return result.rows[0];
+    } catch (error) {
+        console.error('❌ updateUserPermissions error:', error.message);
         throw error;
     }
 }
@@ -886,7 +915,7 @@ async function getSuperAdminTenants() {
 async function findUserByUsername(username) {
     try {
         const result = await pool.query(
-            'SELECT id, username, password_hash, role, tenant_id FROM users WHERE username = $1',
+            'SELECT id, username, password_hash, role, permissions, tenant_id FROM users WHERE username = $1',
             [username]
         );
         return result.rows[0] || null;
@@ -910,13 +939,12 @@ async function updateUserPasswordHash(userId, passwordHash) {
 }
 
 /**
- * Authenticate User by username
- * Note: Password validation will happen in the API layer.
+ * Get tenant admin
  */
 async function getTenantAdmin(tenantId) {
     try {
         const result = await pool.query(
-            "SELECT id, username, role, tenant_id FROM users WHERE tenant_id = $1 AND role = 'admin' ORDER BY created_at ASC LIMIT 1",
+            "SELECT id, username, role, permissions, tenant_id FROM users WHERE tenant_id = $1 AND role = 'admin' ORDER BY created_at ASC LIMIT 1",
             [tenantId]
         );
         return result.rows[0] || null;
@@ -964,6 +992,47 @@ async function closePool() {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════
+// AUDIT LOGS (Phase 3)
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Log an action to the audit_logs table
+ */
+async function logAuditAction({ tenantId, userId, action, entityType, entityId, details }) {
+    try {
+        await pool.query(
+            `INSERT INTO audit_logs (tenant_id, user_id, action, entity_type, entity_id, details)
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [tenantId, userId, action, entityType, entityId, details || {}]
+        );
+    } catch (error) {
+        console.error('⚠️ logAuditAction error:', error.message);
+    }
+}
+
+/**
+ * Get recent audit logs for a tenant
+ */
+async function getAuditLogs(tenantId, limit = 100) {
+    try {
+        const result = await pool.query(`
+            SELECT 
+                a.*,
+                u.username 
+            FROM audit_logs a
+            LEFT JOIN users u ON a.user_id = u.id
+            WHERE a.tenant_id = $1
+            ORDER BY a.created_at DESC
+            LIMIT $2
+        `, [tenantId, limit]);
+        return result.rows;
+    } catch (error) {
+        console.error('❌ getAuditLogs error:', error.message);
+        throw error;
+    }
+}
+
 // NOTE: SIGINT/SIGTERM handlers are NOT registered here.
 // The main entry point (index.cjs) owns the graceful shutdown sequence
 // and calls db.closePool() itself. Having duplicate handlers caused
@@ -991,11 +1060,14 @@ module.exports = {
     createUser,
     getUsers,
     updateUserRole,
+    updateUserPermissions,
     deleteUser,
     getSuperAdminTenants,
     findUserByUsername,
     updateUserPasswordHash,
     getTenantAdmin,
     deleteTenant,
+    logAuditAction,
+    getAuditLogs,
     closePool
 };

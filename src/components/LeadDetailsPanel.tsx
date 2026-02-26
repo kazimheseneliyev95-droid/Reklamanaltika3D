@@ -432,18 +432,24 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                             </FieldGroup>
 
                             {/* Büdcə */}
-                            <FieldGroup label="Büdcə (₼)" icon={<TrendingUp className="w-3 h-3" />}>
-                                <div className="relative">
-                                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm">₼</span>
-                                    <input
-                                        type="number"
-                                        name="value"
-                                        value={formData.value}
-                                        onChange={handleChange}
-                                        className="w-full bg-slate-900 border border-slate-700 rounded-lg pl-8 pr-3 py-2 text-white text-sm font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                    />
-                                </div>
-                            </FieldGroup>
+                            {currentUser?.permissions?.view_budget !== false && (
+                                <FieldGroup label="Büdcə (₼)" icon={<TrendingUp className="w-3 h-3" />}>
+                                    <div className="relative">
+                                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm">₼</span>
+                                        <input
+                                            type="number"
+                                            name="value"
+                                            value={formData.value}
+                                            onChange={handleChange}
+                                            className="w-full bg-slate-900 border border-slate-700 rounded-lg pl-8 pr-3 py-2 text-white text-sm font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                            disabled={currentUser?.permissions?.edit_budget === false}
+                                        />
+                                    </div>
+                                    {currentUser?.permissions?.edit_budget === false && (
+                                        <p className="text-[10px] text-amber-500/70 mt-1">Dəyişmək icazəniz yoxdur</p>
+                                    )}
+                                </FieldGroup>
+                            )}
 
                             {/* Ad */}
                             <FieldGroup label="Ad Soyad" icon={<User className="w-3 h-3" />}>
@@ -670,7 +676,9 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
 
                                     <div className="grid grid-cols-2 gap-3">
                                         <StatCard label="Cari Status" value={activeStatus.label} accent="text-blue-400" />
-                                        <StatCard label="Büdcə" value={`₼ ${formData.value} `} accent="text-green-400" />
+                                        {currentUser?.permissions?.view_budget !== false && (
+                                            <StatCard label="Büdcə" value={`₼ ${formData.value} `} accent="text-green-400" />
+                                        )}
                                         <StatCard label="Mənbə" value={lead.source === 'whatsapp' ? 'WhatsApp' : 'Manual'} accent="text-sky-400" />
                                         <StatCard label="Yaradılma" value={new Date(lead.created_at).toLocaleDateString()} accent="text-slate-400" />
                                         {lead.product_name && (

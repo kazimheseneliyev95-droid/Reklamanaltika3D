@@ -93,6 +93,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             id: data.id,
             username: data.username,
             role: data.role,
+            permissions: data.permissions || {},
             tenant_id: data.tenantId
           });
           setIsAuthenticated(true);
@@ -485,6 +486,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           id: data.id,
           username: data.username,
           role: data.role,
+          permissions: data.permissions || {},
           tenant_id: data.tenantId
         });
         setIsAuthenticated(true);
@@ -517,6 +519,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           id: data.id,
           username: data.username,
           role: data.role,
+          permissions: data.permissions || {},
           tenant_id: data.tenantId
         });
         setIsAuthenticated(true);

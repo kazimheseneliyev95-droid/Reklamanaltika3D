@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
     Settings, X, Plus, Trash2, GripVertical,
     Type, Hash, List, ChevronDown, ChevronUp, Save, Check,
-    Zap, ToggleLeft, ToggleRight, AlertTriangle, Users
+    Zap, ToggleLeft, ToggleRight, AlertTriangle, Users, Activity
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import {
@@ -11,17 +11,42 @@ import {
 } from '../lib/crmSettings';
 import { CrmService } from '../services/CrmService';
 import { UsersSettings } from './UsersSettings';
+import { AuditLogs } from './AuditLogs';
+import { useAppStore } from '../context/Store';
 
 // ─── Format (Factory Reset) Button ────────────────────────────────────────────
 function FormatButton({ serverUrl, onClose }: { serverUrl: string; onClose: () => void }) {
+    const { currentUser } = useAppStore();
     const [confirm, setConfirm] = useState(false);
     const [busy, setBusy] = useState(false);
+    const [password, setPassword] = useState('');
+    const [error, setError] = useState('');
+
+    if (currentUser?.permissions?.factory_reset === false && currentUser?.role !== 'superadmin') {
+        return null; // Don't even show the button if no permission
+    }
 
     const handleReset = async () => {
+        if (!password) {
+            setError('Şifrə daxil edilməlidir');
+            return;
+        }
+
         setBusy(true);
+        setError('');
         try {
             if (serverUrl) {
-                await fetch(`${serverUrl}/api/leads/all`, { method: 'DELETE' });
+                const res = await fetch(`${serverUrl}/api/leads/all`, {
+                    method: 'DELETE',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...CrmService['getAuthHeaders']()
+                    },
+                    body: JSON.stringify({ password })
+                });
+
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Silinmə zamanı xəta baş verdi');
             }
             // Also wipe localStorage
             Object.keys(localStorage).forEach(k => {
@@ -29,29 +54,45 @@ function FormatButton({ serverUrl, onClose }: { serverUrl: string; onClose: () =
             });
             onClose();
             window.location.reload();
-        } catch (e) {
-            console.error('Reset failed', e);
+        } catch (e: any) {
+            setError(e.message || 'Silinmə uğursuz oldu');
         } finally {
             setBusy(false);
         }
     };
 
     if (confirm) return (
-        <div className="rounded-lg border border-red-900/50 bg-red-950/20 p-3 space-y-2">
+        <div className="rounded-lg border border-red-900/50 bg-red-950/20 p-3 space-y-3">
             <p className="text-xs text-red-400 font-semibold flex items-center gap-1.5">
-                <AlertTriangle className="w-3.5 h-3.5" />
+                <AlertTriangle className="w-4 h-4 shrink-0" />
                 Bütün leadlar və yazışmalar silinəcək! Geri qaytarıla bilməz.
             </p>
+
+            <div>
+                <input
+                    type="password"
+                    placeholder="Təsdiq üçün şifrənizi yazın"
+                    value={password}
+                    onChange={e => setPassword(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 text-slate-300 text-xs rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-red-500"
+                />
+                {error && <p className="text-[10px] text-red-400 mt-1">{error}</p>}
+            </div>
+
             <div className="flex gap-2">
                 <button
                     onClick={handleReset}
-                    disabled={busy}
-                    className="flex-1 py-1.5 bg-red-600 hover:bg-red-500 text-white text-xs font-bold rounded-lg transition-colors disabled:opacity-60"
+                    disabled={busy || !password}
+                    className="flex-1 py-1.5 bg-red-600 hover:bg-red-500 text-white text-xs font-bold rounded-lg transition-colors disabled:opacity-50"
                 >
                     {busy ? 'Silinir...' : 'Bəli, sil!'}
                 </button>
                 <button
-                    onClick={() => setConfirm(false)}
+                    onClick={() => {
+                        setConfirm(false);
+                        setPassword('');
+                        setError('');
+                    }}
                     className="flex-1 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold rounded-lg transition-colors"
                 >
                     Ləğv et
@@ -83,16 +124,18 @@ const TYPE_LABELS: Record<FieldType, { label: string; icon: React.ReactNode }> =
 };
 
 // ─── Tabs ─────────────────────────────────────────────────────────────────────
-type Tab = 'rules' | 'stages' | 'fields' | 'users';
+type Tab = 'rules' | 'stages' | 'fields' | 'users' | 'audit';
 
-const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
+const TABS: { id: Tab; label: string; icon: React.ReactNode; reqRole?: string[] }[] = [
     { id: 'rules', label: 'Avtomatik Qaydalar', icon: <Zap className="w-3.5 h-3.5" /> },
     { id: 'stages', label: 'Kanban Sütunları', icon: <List className="w-3.5 h-3.5" /> },
     { id: 'fields', label: 'Xüsusi Sahələr', icon: <Type className="w-3.5 h-3.5" /> },
-    { id: 'users', label: 'İstifadəçilər', icon: <Users className="w-3.5 h-3.5" /> },
+    { id: 'users', label: 'İstifadəçilər', icon: <Users className="w-3.5 h-3.5" />, reqRole: ['admin', 'manager'] },
+    { id: 'audit', label: 'Audit Log', icon: <Activity className="w-3.5 h-3.5" />, reqRole: ['admin'] },
 ];
 
 export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
+    const { currentUser } = useAppStore();
     const [settings, setSettings] = useState<CRMSettings>(loadCRMSettings());
     const [saved, setSaved] = useState(false);
     const [activeTab, setActiveTab] = useState<Tab>('rules');
@@ -248,13 +291,13 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
                 </div>
 
                 {/* Tabs */}
-                <div className="flex border-b border-slate-800 bg-[#0d1117] shrink-0">
-                    {TABS.map(tab => (
+                <div className="flex border-b border-slate-800 bg-[#0d1117] shrink-0 overflow-x-auto custom-scrollbar">
+                    {TABS.filter(t => !t.reqRole || t.reqRole.includes(currentUser?.role || '') || currentUser?.role === 'superadmin').map(tab => (
                         <button
                             key={tab.id}
                             onClick={() => setActiveTab(tab.id)}
                             className={cn(
-                                'flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-semibold transition-all border-b-2',
+                                'flex-1 min-w-[max-content] px-3 flex items-center justify-center gap-1.5 py-2.5 text-xs font-semibold transition-all border-b-2',
                                 activeTab === tab.id
                                     ? 'border-blue-500 text-blue-400'
                                     : 'border-transparent text-slate-500 hover:text-slate-300'
@@ -575,6 +618,11 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
                     {/* ─── TAB: Users ───────────────────────────────────────────── */}
                     {activeTab === 'users' && (
                         <UsersSettings />
+                    )}
+
+                    {/* ─── TAB: Audit Logs ──────────────────────────────────────── */}
+                    {activeTab === 'audit' && (
+                        <AuditLogs />
                     )}
 
                 </div>

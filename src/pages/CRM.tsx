@@ -201,15 +201,17 @@ export default function CRMPage() {
               </div>
             </div>
 
-            <div className="bg-slate-900 border border-slate-800 rounded-lg p-2 sm:p-3 sm:px-5 flex items-center gap-2 sm:gap-4 flex-1 sm:flex-none sm:min-w-[180px]">
-              <div className="p-1.5 sm:p-2 bg-green-500/10 rounded-full shrink-0">
-                <TrendingUp className="w-3.5 h-3.5 sm:w-5 sm:h-5 text-green-400" />
+            {currentUser?.permissions?.view_budget !== false && (
+              <div className="bg-slate-900 border border-slate-800 rounded-lg p-2 sm:p-3 sm:px-5 flex items-center gap-2 sm:gap-4 flex-1 sm:flex-none sm:min-w-[180px]">
+                <div className="p-1.5 sm:p-2 bg-green-500/10 rounded-full shrink-0">
+                  <TrendingUp className="w-3.5 h-3.5 sm:w-5 sm:h-5 text-green-400" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[9px] sm:text-xs text-slate-400 uppercase font-medium truncate">Satış</p>
+                  <p className="text-sm sm:text-xl font-bold text-green-400 truncate">{formatCurrency(metrics.totalRevenue, 'AZN')}</p>
+                </div>
               </div>
-              <div className="min-w-0">
-                <p className="text-[9px] sm:text-xs text-slate-400 uppercase font-medium truncate">Satış</p>
-                <p className="text-sm sm:text-xl font-bold text-green-400 truncate">{formatCurrency(metrics.totalRevenue, 'AZN')}</p>
-              </div>
-            </div>
+            )}
           </div>
 
           {/* Filters */}
