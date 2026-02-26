@@ -115,25 +115,26 @@ export default function CRMPage() {
   }));
 
   return (
-    <div className="p-3 sm:p-6 max-w-[1600px] mx-auto h-full flex flex-col font-sans space-y-3 sm:space-y-6">
+    <div className="p-2 sm:p-6 max-w-[1600px] mx-auto h-full flex flex-col font-sans space-y-2 sm:space-y-6">
 
       {/* HEADER & METRICS */}
-      <div className="flex flex-col gap-6 border-b border-slate-800 pb-6">
+      <div className="flex flex-col gap-3 sm:gap-6 border-b border-slate-800 pb-3 sm:pb-6">
 
         {/* Top Row: Title & Actions */}
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
-          <div>
-            <h1 className="text-xl sm:text-3xl font-bold text-white flex items-center gap-2">
-              <MessageSquare className="text-green-500 w-5 h-5 sm:w-7 sm:h-7" />
+        <div className="flex items-start sm:items-center justify-between gap-2">
+          <div className="flex-1">
+            <h1 className="text-lg sm:text-3xl font-bold text-white flex items-center gap-1.5 sm:gap-2">
+              <MessageSquare className="text-green-500 w-4 h-4 sm:w-7 sm:h-7" />
               WhatsApp CRM
             </h1>
-            <p className="text-slate-400 mt-1 flex items-center gap-2 text-sm">
-              <span className={isWhatsAppConnected ? "w-2 h-2 rounded-full bg-green-500 animate-pulse" : "w-2 h-2 rounded-full bg-red-500"}></span>
-              {isWhatsAppConnected ? "Live Connection Active" : "Offline Mode (Manual Entry)"}
+            <p className="text-slate-400 mt-0.5 flex items-center gap-1.5 text-[10px] sm:text-sm">
+              <span className={isWhatsAppConnected ? "w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" : "w-1.5 h-1.5 rounded-full bg-red-500"}></span>
+              <span className="hidden sm:inline">{isWhatsAppConnected ? "Live Connection Active" : "Offline Mode (Manual)"}</span>
+              <span className="sm:hidden">{isWhatsAppConnected ? "Online" : "Offline"}</span>
             </p>
 
-            <div className="mt-2 flex flex-wrap items-center gap-1.5">
-              <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-slate-800 border border-slate-700 text-[10px]">
+            <div className="mt-1.5 flex flex-wrap items-center gap-1">
+              <div className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-[9px] sm:text-[10px]">
                 <span className="text-slate-400 font-medium">WA:</span>
                 <span className={cn(
                   "font-bold uppercase",
@@ -143,7 +144,7 @@ export default function CRMPage() {
                 </span>
               </div>
 
-              <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-slate-800 border border-slate-700 text-[10px]">
+              <div className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-[9px] sm:text-[10px]">
                 <span className="text-slate-400 font-medium hidden sm:inline">Socket:</span>
                 <span className={cn(
                   "font-bold uppercase",
@@ -155,7 +156,7 @@ export default function CRMPage() {
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1 sm:gap-2 justify-end">
             <WhatsAppConnect
               isConnected={isWhatsAppConnected}
               connectedNumber={systemHealth?.connectedNumber}
@@ -166,66 +167,66 @@ export default function CRMPage() {
             <button
               onClick={syncLeadsFromWhatsApp}
               disabled={isLoading}
-              className="bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-2 rounded-lg flex items-center gap-1.5 text-xs sm:text-sm transition-all border border-slate-700 disabled:opacity-50"
+              className="bg-slate-800 hover:bg-slate-700 text-slate-200 p-1.5 sm:px-3 sm:py-2 rounded-lg flex items-center gap-1.5 text-xs sm:text-sm transition-all border border-slate-700 disabled:opacity-50"
               title="Manual Sync from WhatsApp"
             >
-              <RefreshCcw className={cn("w-4 h-4", isLoading && "animate-spin")} />
+              <RefreshCcw className={cn("w-3.5 h-3.5 sm:w-4 sm:h-4", isLoading && "animate-spin")} />
               <span className="hidden sm:inline">Yenilə</span>
             </button>
 
             {/* Settings */}
             <button
               onClick={() => setShowSettings(true)}
-              className="flex items-center gap-1.5 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs sm:text-sm transition-all border border-slate-700"
+              className="flex items-center gap-1.5 p-1.5 sm:px-3 sm:py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs sm:text-sm transition-all border border-slate-700"
               title="CRM Ayarları"
             >
-              <Settings className="w-4 h-4" />
+              <Settings className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
               <span className="hidden sm:inline">Ayarlar</span>
             </button>
           </div>
         </div>
 
         {/* Second Row: Metrics & Filters */}
-        <div className="flex flex-col lg:flex-row gap-4 items-stretch lg:items-center justify-between">
+        <div className="flex flex-col xl:flex-row gap-2 sm:gap-4 items-stretch xl:items-center justify-between">
 
-          {/* Summary Cards */}
-          <div className="flex gap-2 sm:gap-4">
-            <div className="bg-slate-900 border border-slate-800 rounded-lg p-2.5 sm:p-3 sm:px-5 flex items-center gap-2 sm:gap-4 flex-1 sm:flex-none sm:min-w-[180px]">
-              <div className="p-1.5 sm:p-2 bg-blue-500/10 rounded-full">
-                <Users className="w-4 h-4 sm:w-5 sm:h-5 text-blue-400" />
+          {/* Summary Cards (Compact grid on mobile) */}
+          <div className="grid grid-cols-2 gap-2 sm:flex sm:gap-4">
+            <div className="bg-slate-900 border border-slate-800 rounded-lg p-2 sm:p-3 sm:px-5 flex items-center gap-2 sm:gap-4 flex-1 sm:flex-none sm:min-w-[180px]">
+              <div className="p-1.5 sm:p-2 bg-blue-500/10 rounded-full shrink-0">
+                <Users className="w-3.5 h-3.5 sm:w-5 sm:h-5 text-blue-400" />
               </div>
-              <div>
-                <p className="text-[10px] sm:text-xs text-slate-400 uppercase font-medium">Leads</p>
-                <p className="text-lg sm:text-xl font-bold text-white">{metrics.totalLeads}</p>
+              <div className="min-w-0">
+                <p className="text-[9px] sm:text-xs text-slate-400 uppercase font-medium truncate">Leads</p>
+                <p className="text-sm sm:text-xl font-bold text-white truncate">{metrics.totalLeads}</p>
               </div>
             </div>
 
-            <div className="bg-slate-900 border border-slate-800 rounded-lg p-2.5 sm:p-3 sm:px-5 flex items-center gap-2 sm:gap-4 flex-1 sm:flex-none sm:min-w-[180px]">
-              <div className="p-1.5 sm:p-2 bg-green-500/10 rounded-full">
-                <TrendingUp className="w-4 h-4 sm:w-5 sm:h-5 text-green-400" />
+            <div className="bg-slate-900 border border-slate-800 rounded-lg p-2 sm:p-3 sm:px-5 flex items-center gap-2 sm:gap-4 flex-1 sm:flex-none sm:min-w-[180px]">
+              <div className="p-1.5 sm:p-2 bg-green-500/10 rounded-full shrink-0">
+                <TrendingUp className="w-3.5 h-3.5 sm:w-5 sm:h-5 text-green-400" />
               </div>
-              <div>
-                <p className="text-[10px] sm:text-xs text-slate-400 uppercase font-medium">Satış</p>
-                <p className="text-lg sm:text-xl font-bold text-green-400">{formatCurrency(metrics.totalRevenue, 'AZN')}</p>
+              <div className="min-w-0">
+                <p className="text-[9px] sm:text-xs text-slate-400 uppercase font-medium truncate">Satış</p>
+                <p className="text-sm sm:text-xl font-bold text-green-400 truncate">{formatCurrency(metrics.totalRevenue, 'AZN')}</p>
               </div>
             </div>
           </div>
 
           {/* Filters */}
-          <div className="flex flex-wrap items-center gap-2 bg-slate-900 p-2 rounded-lg border border-slate-800">
-            <div className="px-2 text-slate-500 flex items-center gap-2 border-r border-slate-800 pr-3 mr-1">
-              <Filter className="w-4 h-4" />
-              <span className="text-xs font-medium">Filter:</span>
+          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 bg-slate-900 p-1.5 sm:p-2 rounded-lg border border-slate-800">
+            <div className="px-1.5 sm:px-2 text-slate-500 flex items-center gap-1.5 sm:gap-2 border-r border-slate-800 pr-2 sm:pr-3 mr-0.5 sm:mr-1">
+              <Filter className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+              <span className="text-[10px] sm:text-xs font-medium hidden sm:inline">Filter:</span>
             </div>
 
             {/* Assignee Filter */}
             <select
-              className="bg-slate-950 border border-slate-800 text-slate-300 text-xs rounded px-3 py-1.5 focus:ring-1 focus:ring-blue-500 outline-none max-w-[140px]"
+              className="bg-slate-950 border border-slate-800 text-slate-300 text-[10px] sm:text-xs rounded px-2 py-1 sm:py-1.5 focus:ring-1 focus:ring-blue-500 outline-none max-w-[100px] sm:max-w-[140px]"
               value={assigneeFilter}
               onChange={(e) => setAssigneeFilter(e.target.value)}
             >
-              <option value="">Hamısı (Komanda)</option>
-              {currentUser && <option value={currentUser.id}>Mənim Leadlərim</option>}
+              <option value="">Hamısı</option>
+              {currentUser && <option value={currentUser.id}>Mənim</option>}
               {teamMembers.map(tm => (
                 <option key={tm.id} value={tm.id}>{tm.username}</option>
               ))}
@@ -233,31 +234,31 @@ export default function CRMPage() {
 
             {/* Dropdown Filter */}
             <select
-              className="bg-slate-950 border border-slate-800 text-slate-300 text-xs rounded px-3 py-1.5 focus:ring-1 focus:ring-blue-500 outline-none"
+              className="bg-slate-950 border border-slate-800 text-slate-300 text-[10px] sm:text-xs rounded px-2 py-1 sm:py-1.5 focus:ring-1 focus:ring-blue-500 outline-none"
               onChange={handleDateFilterChange}
               defaultValue="30"
             >
-              <option value="3">Last 3 Days</option>
-              <option value="7">Last 7 Days</option>
-              <option value="15">Last 15 Days</option>
-              <option value="30">Last 30 Days</option>
-              <option value="max">All Time (Max)</option>
+              <option value="3">Son 3</option>
+              <option value="7">Son 7</option>
+              <option value="15">Son 15</option>
+              <option value="30">Son 30</option>
+              <option value="max">Hamısı</option>
             </select>
 
-            <div className="h-4 w-px bg-slate-800 mx-1 hidden sm:block"></div>
+            <div className="h-3 sm:h-4 w-px bg-slate-800 mx-0.5 sm:mx-1 hidden sm:block"></div>
 
             {/* Custom Range Inputs */}
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1 sm:gap-2 w-full sm:w-auto mt-1 sm:mt-0">
               <Input
                 type="date"
-                className="w-28 h-8 text-[10px] bg-slate-950 border-slate-800 px-2"
+                className="flex-1 sm:w-28 h-7 sm:h-8 text-[9px] sm:text-[10px] bg-slate-950 border-slate-800 px-1 sm:px-2"
                 value={dateRange.start || ''}
                 onChange={(e) => setDateRange({ ...dateRange, start: e.target.value })}
               />
-              <span className="text-slate-600 text-xs">-</span>
+              <span className="text-slate-600 text-[10px] sm:text-xs">-</span>
               <Input
                 type="date"
-                className="w-28 h-8 text-[10px] bg-slate-950 border-slate-800 px-2"
+                className="flex-1 sm:w-28 h-7 sm:h-8 text-[9px] sm:text-[10px] bg-slate-950 border-slate-800 px-1 sm:px-2"
                 value={dateRange.end || ''}
                 onChange={(e) => setDateRange({ ...dateRange, end: e.target.value })}
               />
@@ -288,21 +289,27 @@ export default function CRMPage() {
         />
       )}
 
-      {/* MOBILE TABS */}
-      <div className="flex sm:hidden gap-1 bg-slate-900/50 p-1 rounded-xl border border-slate-800">
+      {/* MOBILE TABS (iOS Segmented Control Style) */}
+      <div className="flex sm:hidden gap-1 bg-[#1c2436] p-1 rounded-xl w-full sticky top-0 z-10 mx-auto shadow-md overflow-x-auto no-scrollbar mb-2">
         {columns.map((col) => (
           <button
             key={col.id}
             onClick={() => setActiveMobileTab(col.id)}
             className={cn(
-              "flex-1 py-1.5 px-1 rounded-lg text-[10px] font-semibold flex flex-col items-center gap-0.5 transition-colors",
+              "flex-1 min-w-[70px] py-1.5 px-1 rounded-lg text-[10px] font-semibold flex flex-col items-center gap-0.5 transition-all",
               activeMobileTab === col.id
-                ? "bg-slate-700 text-white shadow"
-                : "text-slate-500 hover:text-slate-300"
+                ? "bg-blue-600 text-white shadow-sm"
+                : "text-slate-400 hover:text-slate-200"
             )}
           >
-            <span>{filteredLeads.filter(l => l.status === col.id).length}</span>
-            <span>{col.title.split(' ')[0]}</span>
+            {col.icon}
+            <span className="truncate w-full text-center px-0.5">{col.title}</span>
+            <span className={cn(
+              "text-[8px] px-1.5 py-0.5 rounded-full mt-0.5",
+              activeMobileTab === col.id ? "bg-white/20 text-white" : "bg-slate-800 text-slate-400"
+            )}>
+              {filteredLeads.filter(l => l.status === col.id).length}
+            </span>
           </button>
         ))}
       </div>

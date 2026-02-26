@@ -1,12 +1,10 @@
 import { Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Calculator, ShieldCheck, Menu, X, LogOut } from 'lucide-react';
+import { LayoutDashboard, Calculator, ShieldCheck, LogOut } from 'lucide-react';
 import { useAppStore } from '../context/Store';
 import { cn } from '../lib/utils';
-import { useState } from 'react';
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   const location = useLocation();
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const { logout, currentUser } = useAppStore();
 
   const navItems = currentUser?.role === 'superadmin'
@@ -20,47 +18,54 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-50 flex flex-col md:flex-row">
-      {/* Mobile Top Bar */}
+      {/* Mobile Top Bar (Minimal) */}
       <div className="md:hidden flex items-center justify-between p-3 bg-slate-900 border-b border-slate-800 sticky top-0 z-40">
         <h1 className="text-lg font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
           ReklamAnalitika
         </h1>
-        <button
-          onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-          className="p-2 text-slate-400 hover:text-white"
-        >
-          {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
-        </button>
+        {currentUser?.role !== 'superadmin' && (
+          <button
+            onClick={logout}
+            className="p-2 text-rose-400 hover:text-rose-300"
+            title="Çıxış"
+          >
+            <LogOut className="w-5 h-5" />
+          </button>
+        )}
       </div>
 
-      {/* Mobile Menu Dropdown */}
-      {mobileMenuOpen && (
-        <div className="md:hidden bg-slate-900 border-b border-slate-800 p-2 space-y-1 z-30">
-          {navItems.map((item) => (
+      {/* Mobile Bottom Navigation (PWA style) */}
+      <nav className="md:hidden fixed bottom-0 w-full bg-slate-900 border-t border-slate-800 z-50 flex items-center justify-around pb-safe">
+        {navItems.map((item) => {
+          const isActive = location.pathname === item.path;
+          return (
             <Link
               key={item.path}
               to={item.path}
-              onClick={() => setMobileMenuOpen(false)}
               className={cn(
-                "flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors",
-                location.pathname === item.path
-                  ? "bg-blue-600 text-white shadow-lg shadow-blue-900/20"
-                  : "text-slate-400 hover:text-white hover:bg-slate-800"
+                "flex flex-col items-center justify-center w-full py-2 gap-1 transition-colors",
+                isActive ? "text-blue-400" : "text-slate-500 hover:text-slate-300"
               )}
             >
-              {item.icon}
-              {item.name}
+              <div className={cn("p-1.5 rounded-full", isActive && "bg-blue-600/20")}>
+                {item.icon}
+              </div>
+              <span className="text-[10px] font-medium">{item.name}</span>
             </Link>
-          ))}
+          );
+        })}
+        {currentUser?.role === 'superadmin' && (
           <button
             onClick={logout}
-            className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 transition-colors mt-2"
+            className="flex flex-col items-center justify-center w-full py-2 gap-1 transition-colors text-rose-500 hover:text-rose-400"
           >
-            <LogOut className="w-5 h-5" />
-            Çıxış
+            <div className="p-1.5 rounded-full">
+              <LogOut className="w-5 h-5" />
+            </div>
+            <span className="text-[10px] font-medium">Çıxış</span>
           </button>
-        </div>
-      )}
+        )}
+      </nav>
 
       {/* Desktop Sidebar */}
       <aside className="hidden md:flex md:w-64 bg-slate-900 border-r border-slate-800 flex-shrink-0 flex-col">
@@ -107,7 +112,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-auto min-h-0">
+      <main className="flex-1 overflow-auto min-h-0 pb-16 md:pb-0">
         {children}
       </main>
     </div>
