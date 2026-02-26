@@ -5,9 +5,11 @@ if (!process.env.DATABASE_URL) {
 }
 
 const express = require('express');
+const path = require('path');
 const { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers } = require('@whiskeysockets/baileys');
 const pino = require('pino');
-const db = require('./database');
+const HAS_DATABASE = Boolean(process.env.DATABASE_URL);
+const db = HAS_DATABASE ? require('./database') : null;
 const { usePostgresAuthState, getAllAuthenticatedTenants } = require('./postgresAuthState.cjs');
 
 const workerApp = express();
@@ -54,6 +56,25 @@ async function fetchWithRetry(url, options = {}, retryOptions = {}) {
     throw lastError;
 }
 
+function getTenantAuthDir(tenantId) {
+    var safeTenantId = String(tenantId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
+    return path.join(__dirname, '.baileys_auth', safeTenantId);
+}
+
+async function getAuthState(tenantId) {
+    if (HAS_DATABASE && db) {
+        if (!db.pool && db.initDb) {
+            await db.initDb();
+        }
+        if (!db.pool) {
+            throw new Error('Database pool is not initialized');
+        }
+        return usePostgresAuthState(db.pool, tenantId);
+    }
+    var authDir = getTenantAuthDir(tenantId);
+    return useMultiFileAuthState(authDir);
+}
+
 // State Variables (Multi-Tenant)
 const sessions = new Map();
 
@@ -89,6 +110,7 @@ console.log('━━━━━━━━━━━━━━━━━━━━━━�
 console.log('🤖 WHATSAPP BACKGROUND WORKER INITIALIZING...');
 console.log('📋 Worker Port: ' + WORKER_PORT);
 console.log('📋 API URL: ' + API_URL);
+console.log('📋 Storage Mode: ' + (HAS_DATABASE ? 'postgres' : 'file-auth/no-db'));
 console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
 // Notify Main API Server via Webhook
@@ -139,7 +161,7 @@ async function processMessage(tenantId, msg, isFromMe) {
         console.log('[' + tenantId + '] ' + prefix + ' ' + rawNumber + ' | ' + messageContent.substring(0, 50));
 
         // Write ALL messages (incoming AND outgoing caught by Baileys) to DB
-        if (process.env.DATABASE_URL && db) {
+        if (HAS_DATABASE && db) {
             try {
                 var existingLead = await db.findLeadByPhone(rawNumber, tenantId);
 
@@ -203,8 +225,12 @@ async function startWhatsAppClient(tenantId) {
 
     try {
         session.lastInitError = null;
-        console.log('📦 PostgreSQL Auth State [' + tenantId + ']...');
-        var auth = await usePostgresAuthState(db.pool, tenantId);
+        if (HAS_DATABASE) {
+            console.log('📦 PostgreSQL Auth State [' + tenantId + ']...');
+        } else {
+            console.log('📦 File Auth State [' + tenantId + ']...');
+        }
+        var auth = await getAuthState(tenantId);
 
         var versionInfo = await fetchLatestBaileysVersion();
         console.log('[' + tenantId + '] WA v' + versionInfo.version.join('.'));
@@ -287,7 +313,7 @@ async function startWhatsAppClient(tenantId) {
 // ═══════════════════════════════════════════════════════════════
 
 async function pollOutgoingMessages() {
-    if (!db.pool) return;
+    if (!HAS_DATABASE || !db || !db.pool) return;
     try {
         var result = await db.pool.query(
             "SELECT id, tenant_id, phone, body FROM messages WHERE direction = 'out' AND status = 'pending' ORDER BY created_at ASC"
@@ -324,7 +350,11 @@ async function pollOutgoingMessages() {
     }
 }
 
-setInterval(pollOutgoingMessages, 3000);
+if (HAS_DATABASE) {
+    setInterval(pollOutgoingMessages, 3000);
+} else {
+    console.log('ℹ️ Outgoing DB poller disabled (DATABASE_URL missing).');
+}
 
 // ═══════════════════════════════════════════════════════════════
 // 🌐 INTERNAL WORKER API (Port 4001)
@@ -365,30 +395,34 @@ async function bootWorker() {
     console.log('🤖 Worker: waiting 5s for API server to bind...');
     await new Promise(function (resolve) { setTimeout(resolve, 5000); });
 
-    // Wait for db.pool to become available (index.cjs initializes it)
-    var retries = 0;
-    while (!db.pool && retries < 10) {
-        console.log('🤖 Waiting for DB pool... (' + retries + '/10)');
-        await new Promise(function (resolve) { setTimeout(resolve, 1000); });
-        retries++;
-    }
-
-    if (!db.pool) {
-        try { await db.initDb(); } catch (e) {
-            console.error('Worker DB init failed:', e.message);
-            return;
+    if (HAS_DATABASE && db) {
+        // Wait for db.pool to become available (index.cjs initializes it)
+        var retries = 0;
+        while (!db.pool && retries < 10) {
+            console.log('🤖 Waiting for DB pool... (' + retries + '/10)');
+            await new Promise(function (resolve) { setTimeout(resolve, 1000); });
+            retries++;
         }
-    }
 
-    try {
-        var activeTenants = await getAllAuthenticatedTenants(db.pool);
-        console.log('🤖 Found ' + activeTenants.length + ' active tenants. Booting...');
-        for (var i = 0; i < activeTenants.length; i++) {
-            startWhatsAppClient(activeTenants[i]);
-            await new Promise(function (resolve) { setTimeout(resolve, 2000); });
+        if (!db.pool) {
+            try { await db.initDb(); } catch (e) {
+                console.error('Worker DB init failed:', e.message);
+                return;
+            }
         }
-    } catch (err) {
-        console.error('Boot tenants failed:', err.message);
+
+        try {
+            var activeTenants = await getAllAuthenticatedTenants(db.pool);
+            console.log('🤖 Found ' + activeTenants.length + ' active tenants. Booting...');
+            for (var i = 0; i < activeTenants.length; i++) {
+                startWhatsAppClient(activeTenants[i]);
+                await new Promise(function (resolve) { setTimeout(resolve, 2000); });
+            }
+        } catch (err) {
+            console.error('Boot tenants failed:', err.message);
+        }
+    } else {
+        console.log('ℹ️ Worker started without database. Sessions start on-demand per tenant.');
     }
 
     workerApp.listen(WORKER_PORT, '0.0.0.0', function () {
