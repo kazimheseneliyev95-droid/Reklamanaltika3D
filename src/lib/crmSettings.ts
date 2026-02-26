@@ -33,10 +33,30 @@ export interface AutoRule {
     note?: string;            // Optional human-readable description
 }
 
+// Route / categorize leads based on message content
+export interface RoutingRule {
+    id: string;
+    enabled: boolean;
+    fieldId: string;      // custom field id (typically select)
+    setValue: string;     // value to set when matched
+    keywords: string[];   // keywords to match (case-insensitive substring)
+    matchMode?: 'any' | 'all';
+    targetStage?: string; // optional: also move stage
+}
+
 export interface CRMSettings {
     customFields: CustomField[];
     pipelineStages: PipelineStage[];
     autoRules: AutoRule[];
+    routingRules?: RoutingRule[];
+}
+
+function getApiBase(): string {
+    const fromStorage = localStorage.getItem('crm_server_url') || '';
+    if (fromStorage) return fromStorage;
+    // In production the API is served from the same origin
+    if (import.meta.env.PROD) return window.location.origin;
+    return 'http://localhost:4000';
 }
 
 const getStorageKey = () => `crm_settings_${localStorage.getItem('crm_tenant_id') || 'admin'}`;
@@ -86,10 +106,13 @@ export function loadCRMSettings(): CRMSettings {
             if (!parsed.autoRules) {
                 parsed.autoRules = DEFAULT_RULES;
             }
+            if (!parsed.routingRules) {
+                parsed.routingRules = [];
+            }
             return parsed;
         }
     } catch { }
-    return { customFields: DEFAULT_FIELDS, pipelineStages: DEFAULT_STAGES, autoRules: DEFAULT_RULES };
+    return { customFields: DEFAULT_FIELDS, pipelineStages: DEFAULT_STAGES, autoRules: DEFAULT_RULES, routingRules: [] };
 }
 
 export async function saveCRMSettings(settings: CRMSettings): Promise<void> {
@@ -97,8 +120,8 @@ export async function saveCRMSettings(settings: CRMSettings): Promise<void> {
     try {
         const token = localStorage.getItem('crm_auth_token');
         if (!token) return;
-        const serverUrl = localStorage.getItem('crm_server_url') || '';
-        await fetch(`${serverUrl}/api/settings`, {
+        const serverUrl = getApiBase();
+        const res = await fetch(`${serverUrl}/api/settings`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -106,8 +129,17 @@ export async function saveCRMSettings(settings: CRMSettings): Promise<void> {
             },
             body: JSON.stringify({ settings })
         });
+        if (!res.ok) {
+            let msg = 'Failed to sync settings to server';
+            try {
+                const data = await res.json();
+                msg = data?.error || msg;
+            } catch { }
+            throw new Error(msg);
+        }
     } catch (err) {
         console.error('Failed to sync settings to server', err);
+        throw err;
     }
 }
 
@@ -115,7 +147,7 @@ export async function syncCRMSettingsFromServer(): Promise<CRMSettings | null> {
     try {
         const token = localStorage.getItem('crm_auth_token');
         if (!token) return null;
-        const serverUrl = localStorage.getItem('crm_server_url') || '';
+        const serverUrl = getApiBase();
         const res = await fetch(`${serverUrl}/api/settings`, {
             headers: { 'Authorization': `Bearer ${token}` }
         });
@@ -175,5 +207,36 @@ export function applyAutoRules(
             return { targetStage: rule.targetStage, extractedValue };
         }
     }
+    return null;
+}
+
+export function applyRoutingRules(
+    message: string,
+    rules: RoutingRule[] | undefined
+): { extra: Record<string, string>; targetStage?: string } | null {
+    if (!rules || rules.length === 0) return null;
+    const msg = (message || '').toLowerCase();
+    if (!msg.trim()) return null;
+
+    // First match wins (rules are ordered)
+    for (const rule of rules) {
+        if (!rule.enabled) continue;
+        if (!rule.fieldId || !rule.setValue) continue;
+        const kws = (rule.keywords || []).map(k => String(k || '').trim()).filter(Boolean);
+        if (kws.length === 0) continue;
+
+        const mode = rule.matchMode || 'any';
+        const matched = mode === 'all'
+            ? kws.every(k => msg.includes(k.toLowerCase()))
+            : kws.some(k => msg.includes(k.toLowerCase()));
+
+        if (!matched) continue;
+
+        return {
+            extra: { [rule.fieldId]: rule.setValue },
+            ...(rule.targetStage ? { targetStage: rule.targetStage } : {})
+        };
+    }
+
     return null;
 }

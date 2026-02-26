@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAppStore } from '../context/Store';
 import { Lead, LeadStatus } from '../types/crm';
 import { Badge } from '../components/ui/Badge';
@@ -8,9 +9,9 @@ import { cn, formatCurrency } from '../lib/utils';
 import { LeadDetailsPanel } from '../components/LeadDetailsPanel';
 import { CRMSettingsPanel } from '../components/CRMSettingsPanel';
 import { loadCRMSettings } from '../lib/crmSettings';
-import { CRMAnalyticsPanel } from '../components/CRMAnalyticsPanel';
 
 export default function CRMPage() {
+  const navigate = useNavigate();
   const [activeMobileTab, setActiveMobileTab] = useState<string>('new');
   const {
     leads,
@@ -29,7 +30,6 @@ export default function CRMPage() {
 
   const [assigneeFilter, setAssigneeFilter] = useState<string>('');
   const [showSettings, setShowSettings] = useState(false);
-  const [showAnalytics, setShowAnalytics] = useState(false);
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
 
   const filteredLeads = useMemo(() => {
@@ -149,7 +149,7 @@ export default function CRMPage() {
 
             {/* Analytics */}
             <button
-              onClick={() => setShowAnalytics(true)}
+              onClick={() => navigate('/analytics')}
               className="flex items-center gap-1.5 p-1.5 sm:px-3 sm:py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs sm:text-sm transition-all border border-slate-700"
               title="Analitika"
             >
@@ -246,11 +246,6 @@ export default function CRMPage() {
       {/* CRM SETTINGS PANEL */}
       {showSettings && (
         <CRMSettingsPanel onClose={() => setShowSettings(false)} />
-      )}
-
-      {/* ANALYTICS PANEL */}
-      {showAnalytics && (
-        <CRMAnalyticsPanel onClose={() => setShowAnalytics(false)} />
       )}
 
       {/* AMOCRM STYLE LEAD DETAILS PANEL */}

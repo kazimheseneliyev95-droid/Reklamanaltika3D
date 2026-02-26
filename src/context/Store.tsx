@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react';
 import { Lead, LeadStatus, DateRange, User } from '../types/crm';
 import { CrmService } from '../services/CrmService';
-import { loadCRMSettings, applyAutoRules, syncCRMSettingsFromServer } from '../lib/crmSettings';
+import { loadCRMSettings, applyAutoRules, applyRoutingRules, syncCRMSettingsFromServer } from '../lib/crmSettings';
 
 interface AppContextType {
   leads: Lead[];
@@ -357,7 +357,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const defaultStatus = stages.length > 0 ? stages[0].id : 'new';
 
       // Apply user-configured auto-rules
-      let status: LeadStatus = defaultStatus;
+      // Preserve incoming status (for existing leads) unless rules override
+      let status: LeadStatus = (leadData.status as any) || defaultStatus;
       let autoValue: number | null = null;
       const message = leadData.last_message || '';
 
@@ -372,11 +373,37 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
       }
 
+      // Apply routing rules (message -> custom select field)
+      const routingMatch = applyRoutingRules(message, settings.routingRules);
+      let extraData: Record<string, any> = {};
+      try {
+        const raw = (leadData as any).extra_data;
+        if (raw) {
+          extraData = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        }
+      } catch {
+        extraData = {};
+      }
+
+      if (routingMatch?.extra) {
+        extraData = { ...(extraData || {}), ...routingMatch.extra };
+      }
+
+      // Optional stage change via routing only if auto-rules didn't set a stage
+      if (!ruleMatch && routingMatch?.targetStage) {
+        const stageExists = stages.find(s => s.id === routingMatch.targetStage);
+        if (stageExists) {
+          status = routingMatch.targetStage as any;
+          console.log(`🧭 Routing matched → stage: ${status}`);
+        }
+      }
+
       // Build lead data, auto-fill value if rule says so
       const leadToCreate: typeof leadData = {
         ...leadData,
         status,
         ...(autoValue !== null ? { value: autoValue } : {}),
+        ...(extraData && Object.keys(extraData).length > 0 ? { extra_data: extraData } as any : {}),
       };
 
       // Create Lead

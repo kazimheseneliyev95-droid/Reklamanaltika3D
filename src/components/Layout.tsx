@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Calculator, ShieldCheck, LogOut } from 'lucide-react';
+import { LayoutDashboard, Calculator, ShieldCheck, LogOut, BarChart3 } from 'lucide-react';
 import { useAppStore } from '../context/Store';
 import { cn } from '../lib/utils';
 
@@ -14,6 +14,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     : [
       { name: 'Simulator', path: '/', icon: <Calculator className="w-5 h-5" /> },
       { name: 'CRM (Classic)', path: '/crm', icon: <LayoutDashboard className="w-5 h-5" /> },
+      { name: 'Analitika', path: '/analytics', icon: <BarChart3 className="w-5 h-5" /> },
     ];
 
   return (

@@ -977,6 +977,24 @@ app.post('/api/settings', requireTenantAuth, requireAdmin, asyncHandler(async (r
   res.json({ success: true, settings: updatedSettings });
 }));
 
+// ═══════════════════════════════════════════════════════════════
+// 📊 ANALYTICS LAYOUT API (per-user)
+// ═══════════════════════════════════════════════════════════════
+
+app.get('/api/analytics/layout', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  const layout = await db.getAnalyticsLayout(req.tenantId, req.userId);
+  res.json({ layout });
+}));
+
+app.post('/api/analytics/layout', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  const { layout } = req.body;
+  if (!layout || typeof layout !== 'object') return res.status(400).json({ error: 'Layout object is required' });
+  const saved = await db.upsertAnalyticsLayout(req.tenantId, req.userId, layout);
+  res.json({ success: true, layout: saved });
+}));
+
 app.get(['/api/debug', '/api/debug/:tenantId'], (req, res) => {
   const mem = process.memoryUsage();
 

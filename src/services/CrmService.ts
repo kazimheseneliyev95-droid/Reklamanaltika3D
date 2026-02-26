@@ -575,6 +575,42 @@ class CrmServiceImpl {
     }
   }
 
+  async getAnalyticsLayout(): Promise<any | null> {
+    const url = this.getServerUrl();
+    if (!url) return null;
+    try {
+      const res = await fetch(`${url}/api/analytics/layout`, {
+        headers: this.getAuthHeaders()
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data?.layout || null;
+    } catch (e) {
+      console.error('❌ Error fetching analytics layout:', e);
+      return null;
+    }
+  }
+
+  async saveAnalyticsLayout(layout: any): Promise<boolean> {
+    const url = this.getServerUrl();
+    if (!url) return false;
+    try {
+      const res = await fetch(`${url}/api/analytics/layout`, {
+        method: 'POST',
+        headers: { ...this.getAuthHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ layout })
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.error || 'Failed to save analytics layout');
+      }
+      return true;
+    } catch (e) {
+      console.error('❌ Error saving analytics layout:', e);
+      throw e;
+    }
+  }
+
   // --- DATA METHODS (DATABASE API) ---
 
   /**

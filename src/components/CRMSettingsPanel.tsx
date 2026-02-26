@@ -3,11 +3,11 @@ import QRCode from 'react-qr-code';
 import {
     Settings, X, Plus, Trash2, GripVertical,
     Type, Hash, List, ChevronDown, ChevronUp, Save, Check,
-    Zap, ToggleLeft, ToggleRight, AlertTriangle, Users, Activity, Smartphone, Wifi, WifiOff, RefreshCcw
+    Zap, ToggleLeft, ToggleRight, AlertTriangle, Users, Activity, Smartphone, Wifi, WifiOff, RefreshCcw, Route
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import {
-    CustomField, CRMSettings, FieldType, PipelineStage, AutoRule,
+    CustomField, CRMSettings, FieldType, PipelineStage, AutoRule, RoutingRule,
     loadCRMSettings, saveCRMSettings, generateFieldId
 } from '../lib/crmSettings';
 import { CrmService } from '../services/CrmService';
@@ -125,11 +125,12 @@ const TYPE_LABELS: Record<FieldType, { label: string; icon: React.ReactNode }> =
 };
 
 // ─── Tabs ─────────────────────────────────────────────────────────────────────
-type Tab = 'connection' | 'rules' | 'stages' | 'fields' | 'users' | 'audit';
+type Tab = 'connection' | 'rules' | 'routing' | 'stages' | 'fields' | 'users' | 'audit';
 
 const TABS: { id: Tab; label: string; icon: React.ReactNode; reqRole?: string[] }[] = [
     { id: 'connection', label: 'Bağlantı', icon: <Smartphone className="w-3.5 h-3.5" /> },
     { id: 'rules', label: 'Avtomatik Qaydalar', icon: <Zap className="w-3.5 h-3.5" /> },
+    { id: 'routing', label: 'Mənbə (Routing)', icon: <Route className="w-3.5 h-3.5" /> },
     { id: 'stages', label: 'Kanban Sütunları', icon: <List className="w-3.5 h-3.5" /> },
     { id: 'fields', label: 'Xüsusi Sahələr', icon: <Type className="w-3.5 h-3.5" /> },
     { id: 'users', label: 'İstifadəçilər', icon: <Users className="w-3.5 h-3.5" />, reqRole: ['admin', 'manager'] },
@@ -272,8 +273,12 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
     const { currentUser, isWhatsAppConnected } = useAppStore();
     const [settings, setSettings] = useState<CRMSettings>(loadCRMSettings());
     const [saved, setSaved] = useState(false);
+    const [saving, setSaving] = useState(false);
+    const [saveError, setSaveError] = useState('');
     const [activeTab, setActiveTab] = useState<Tab>(() => (isWhatsAppConnected ? 'rules' : 'connection'));
     const serverUrl = CrmService.getServerUrl();
+
+    const canSaveToDb = currentUser?.role === 'admin' || currentUser?.role === 'superadmin';
 
 
     // Fields UI state
@@ -290,12 +295,23 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
     }, [onClose]);
 
     const handleSave = async () => {
-        await saveCRMSettings(settings);
-        setSaved(true);
-        setTimeout(() => {
-            setSaved(false);
-            window.location.reload();
-        }, 1000);
+        setSaving(true);
+        setSaveError('');
+        try {
+            if (!canSaveToDb) {
+                throw new Error('Ayarları yadda saxlamaq üçün Admin icazəsi lazımdır');
+            }
+            await saveCRMSettings(settings);
+            setSaved(true);
+            setTimeout(() => {
+                setSaved(false);
+                window.location.reload();
+            }, 900);
+        } catch (e: any) {
+            setSaveError(e?.message || 'Saxlama zamanı xəta baş verdi');
+        } finally {
+            setSaving(false);
+        }
     };
 
     // ─── Auto-Rules CRUD ───────────────────────────────────────────────────────
@@ -323,6 +339,43 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
         setSettings(prev => ({
             ...prev,
             autoRules: prev.autoRules.filter(r => r.id !== id)
+        }));
+    };
+
+    // ─── Routing Rules (message -> custom select field) ───────────────────────
+
+    const selectFields = settings.customFields.filter(f => f.type === 'select');
+
+    const addRoutingRule = () => {
+        const firstField = selectFields[0];
+        const defaultFieldId = firstField?.id || '';
+        const defaultValue = (firstField?.options || [])[0] || '';
+        const newRule: RoutingRule = {
+            id: generateFieldId(),
+            enabled: true,
+            fieldId: defaultFieldId,
+            setValue: defaultValue,
+            keywords: [],
+            matchMode: 'any',
+            targetStage: ''
+        };
+        setSettings(prev => ({
+            ...prev,
+            routingRules: [...(prev.routingRules || []), newRule]
+        }));
+    };
+
+    const updateRoutingRule = (id: string, updates: Partial<RoutingRule>) => {
+        setSettings(prev => ({
+            ...prev,
+            routingRules: (prev.routingRules || []).map(r => r.id === id ? { ...r, ...updates } : r)
+        }));
+    };
+
+    const removeRoutingRule = (id: string) => {
+        setSettings(prev => ({
+            ...prev,
+            routingRules: (prev.routingRules || []).filter(r => r.id !== id)
         }));
     };
 
@@ -617,6 +670,153 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
                         </section>
                     )}
 
+                    {/* ─── TAB: Routing Rules ─────────────────────────────────── */}
+                    {activeTab === 'routing' && (
+                        <section className="space-y-4">
+                            <div>
+                                <h2 className="text-sm font-bold text-white">Mətnə Görə Mənbə (Routing)</h2>
+                                <p className="text-xs text-slate-500 mt-0.5">
+                                    Mesajın içində açar söz tapılsa seçilmiş <strong>select</strong> sahəyə dəyər yazılır (məs: “Maraqlandığı kurs → Mahmud Dizayn”).
+                                </p>
+                            </div>
+
+                            {selectFields.length === 0 ? (
+                                <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4 text-xs text-slate-500">
+                                    Select tipli xususi saha yoxdur. Əvvəlcə <strong>Xüsusi Sahələr</strong> bölməsində select field yaradın.
+                                </div>
+                            ) : (
+                                <>
+                                    <div className="space-y-3">
+                                        {(settings.routingRules || []).map((r, idx) => {
+                                            const field = settings.customFields.find(f => f.id === r.fieldId);
+                                            const options = (field && field.type === 'select' ? (field.options || []) : []);
+                                            const keywordsText = (r.keywords || []).join(', ');
+
+                                            return (
+                                                <div key={r.id} className={cn(
+                                                    'rounded-xl border overflow-hidden',
+                                                    r.enabled ? 'border-emerald-900/40 bg-emerald-950/10' : 'border-slate-800 bg-slate-900/40 opacity-60'
+                                                )}>
+                                                    <div className="flex items-center gap-2 px-4 py-3">
+                                                        <button
+                                                            onClick={() => updateRoutingRule(r.id, { enabled: !r.enabled })}
+                                                            className={cn('shrink-0 transition-colors', r.enabled ? 'text-emerald-400' : 'text-slate-600')}
+                                                            title={r.enabled ? 'Söndür' : 'Yandır'}
+                                                        >
+                                                            {r.enabled ? <ToggleRight className="w-6 h-6" /> : <ToggleLeft className="w-6 h-6" />}
+                                                        </button>
+                                                        <span className="text-slate-500 text-xs font-bold shrink-0">#{idx + 1}</span>
+
+                                                        <select
+                                                            value={r.fieldId}
+                                                            onChange={(e) => {
+                                                                const nextFieldId = e.target.value;
+                                                                const nextField = settings.customFields.find(f => f.id === nextFieldId);
+                                                                const nextDefault = (nextField && nextField.type === 'select' ? (nextField.options || [])[0] : '') || '';
+                                                                updateRoutingRule(r.id, { fieldId: nextFieldId, setValue: nextDefault });
+                                                            }}
+                                                            className="flex-1 bg-slate-900 border border-slate-700 text-white text-xs rounded-lg px-2 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500 appearance-none"
+                                                        >
+                                                            {selectFields.map(f => (
+                                                                <option key={f.id} value={f.id}>{f.label}</option>
+                                                            ))}
+                                                        </select>
+
+                                                        <button
+                                                            onClick={() => removeRoutingRule(r.id)}
+                                                            className="p-1 text-slate-600 hover:text-red-400 transition-colors shrink-0"
+                                                            title="Sil"
+                                                        >
+                                                            <Trash2 className="w-4 h-4" />
+                                                        </button>
+                                                    </div>
+
+                                                    <div className="border-t border-slate-800/60 px-4 py-3 space-y-3">
+                                                        <div className="grid grid-cols-2 gap-3">
+                                                            <div>
+                                                                <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">
+                                                                    Seçiləcək Dəyər
+                                                                </label>
+                                                                <select
+                                                                    value={r.setValue}
+                                                                    onChange={(e) => updateRoutingRule(r.id, { setValue: e.target.value })}
+                                                                    className="w-full bg-slate-900 border border-slate-700 text-white text-xs rounded-lg px-2 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500 appearance-none"
+                                                                >
+                                                                    <option value="">-- Seçin --</option>
+                                                                    {options.map(opt => (
+                                                                        <option key={opt} value={opt}>{opt}</option>
+                                                                    ))}
+                                                                </select>
+                                                            </div>
+
+                                                            <div>
+                                                                <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">
+                                                                    Match Mode
+                                                                </label>
+                                                                <select
+                                                                    value={r.matchMode || 'any'}
+                                                                    onChange={(e) => updateRoutingRule(r.id, { matchMode: e.target.value as any })}
+                                                                    className="w-full bg-slate-900 border border-slate-700 text-white text-xs rounded-lg px-2 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500 appearance-none"
+                                                                >
+                                                                    <option value="any">ANY (hər hansı)</option>
+                                                                    <option value="all">ALL (hamısı)</option>
+                                                                </select>
+                                                            </div>
+                                                        </div>
+
+                                                        <div>
+                                                            <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">
+                                                                Açar Sözlər (vergülle ayır)
+                                                            </label>
+                                                            <input
+                                                                value={keywordsText}
+                                                                onChange={(e) => {
+                                                                    const parts = e.target.value.split(',').map(s => s.trim()).filter(Boolean);
+                                                                    updateRoutingRule(r.id, { keywords: parts });
+                                                                }}
+                                                                placeholder="məs: mahmud, dizayn, masterclass"
+                                                                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500 placeholder:text-slate-600"
+                                                            />
+                                                            <p className="mt-1 text-[10px] text-slate-600">Qayda: mesaj mətni bu sözləri ehtiva edərsə dəyər yazılır.</p>
+                                                        </div>
+
+                                                        <div>
+                                                            <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">
+                                                                (İstəyə bağlı) Mərhələ
+                                                            </label>
+                                                            <select
+                                                                value={r.targetStage || ''}
+                                                                onChange={(e) => updateRoutingRule(r.id, { targetStage: e.target.value })}
+                                                                className="w-full bg-slate-900 border border-slate-700 text-white text-xs rounded-lg px-2 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500 appearance-none"
+                                                            >
+                                                                <option value="">-- Dəyişmə --</option>
+                                                                {settings.pipelineStages.map(s => (
+                                                                    <option key={s.id} value={s.id}>{s.label}</option>
+                                                                ))}
+                                                            </select>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+
+                                    {(settings.routingRules || []).length === 0 && (
+                                        <p className="text-center text-xs text-slate-600 py-4 italic">Heç bir routing qaydası yoxdur.</p>
+                                    )}
+
+                                    <button
+                                        onClick={addRoutingRule}
+                                        className="flex items-center gap-1.5 px-3 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-700 border-dashed text-slate-400 hover:text-white rounded-lg text-xs font-medium transition-colors w-full justify-center"
+                                    >
+                                        <Plus className="w-3.5 h-3.5" />
+                                        Yeni Routing Qaydası Əlavə Et
+                                    </button>
+                                </>
+                            )}
+                        </section>
+                    )}
+
                     {/* ─── TAB: Pipeline Stages ─────────────────────────────────── */}
                     {activeTab === 'stages' && (
                         <section className="space-y-4">
@@ -771,14 +971,34 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
 
                 {/* Footer */}
                 <div className="p-4 border-t border-white/5 bg-[#111827]/60 shrink-0 space-y-2">
+                    {saveError && (
+                        <div className="rounded-lg border border-red-900/50 bg-red-950/20 px-3 py-2 text-[11px] text-red-300">
+                            {saveError}
+                        </div>
+                    )}
+
+                    {!canSaveToDb && (
+                        <div className="rounded-lg border border-amber-900/40 bg-amber-950/10 px-3 py-2 text-[11px] text-amber-300">
+                            Qeyd: Bu ayarları database-ə yazmaq üçün Admin rol lazımdır.
+                        </div>
+                    )}
+
                     <button
                         onClick={handleSave}
+                        disabled={saving || !canSaveToDb}
                         className={cn(
                             'w-full py-2.5 rounded-lg font-semibold text-sm flex items-center justify-center gap-2 transition-all',
-                            saved ? 'bg-green-600 text-white' : 'bg-blue-600 hover:bg-blue-500 text-white'
+                            saved
+                                ? 'bg-green-600 text-white'
+                                : 'bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50 disabled:hover:bg-blue-600'
                         )}
                     >
-                        {saved ? <><Check className="w-4 h-4" /> Saxlandı!</> : <><Save className="w-4 h-4" /> Ayarları Saxla</>}
+                        {saving
+                            ? <><span className="animate-spin">↻</span> Saxlanır...</>
+                            : saved
+                                ? <><Check className="w-4 h-4" /> Saxlandı!</>
+                                : <><Save className="w-4 h-4" /> Ayarları Saxla</>
+                        }
                     </button>
 
                     {/* Factory Reset */}

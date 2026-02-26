@@ -153,6 +153,28 @@ async function initDb() {
             console.error("Migration warning (can be ignored on fresh install):", e.message);
         }
 
+        // Ensure extra_data exists even if the big migration query partially failed
+        try {
+            await client.query("ALTER TABLE leads ADD COLUMN IF NOT EXISTS extra_data JSONB DEFAULT '{}'::jsonb;");
+        } catch (e) {
+            console.error('Migration warning (extra_data):', e.message);
+        }
+
+        // Analytics layouts (per-tenant, per-user)
+        try {
+            await client.query(`
+                CREATE TABLE IF NOT EXISTS analytics_layouts (
+                    tenant_id VARCHAR(50) NOT NULL,
+                    user_id UUID NOT NULL,
+                    layout JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    updated_at TIMESTAMP DEFAULT NOW(),
+                    PRIMARY KEY (tenant_id, user_id)
+                );
+            `);
+        } catch (e) {
+            console.error('Migration warning (analytics_layouts):', e.message);
+        }
+
         // Migration: id type
         try {
             await client.query(`
@@ -264,8 +286,29 @@ async function createLead(data, tenantId = 'admin') {
             source_contact_name,
             whatsapp_id,
             source = 'whatsapp',
-            product_name
+            product_name,
+            extra_data
         } = data;
+
+        // Normalize extra_data (JSONB)
+        let extraDataObj = {};
+        if (extra_data !== undefined) {
+            if (typeof extra_data === 'string') {
+                try {
+                    extraDataObj = JSON.parse(extra_data) || {};
+                } catch {
+                    extraDataObj = {};
+                }
+            } else if (extra_data && typeof extra_data === 'object' && !Array.isArray(extra_data)) {
+                extraDataObj = extra_data;
+            } else {
+                extraDataObj = {};
+            }
+        }
+
+        if (!extraDataObj || typeof extraDataObj !== 'object' || Array.isArray(extraDataObj)) {
+            extraDataObj = {};
+        }
 
         // 1. Check for fuzzy match first before inserting
         // This prevents duplicate leads when the phone format differs slightly (e.g. +994 vs 055...)
@@ -283,8 +326,10 @@ async function createLead(data, tenantId = 'admin') {
                     whatsapp_id = COALESCE($5, whatsapp_id),
                     value = COALESCE(NULLIF($6, 0), value),
                     product_name = COALESCE($7, product_name),
+                    status = COALESCE($8, status),
+                    extra_data = COALESCE(extra_data, '{}'::jsonb) || COALESCE($9::jsonb, '{}'::jsonb),
                     updated_at = NOW()
-                WHERE id = $8 AND tenant_id = $9
+                WHERE id = $10 AND tenant_id = $11
                 RETURNING *;
             `;
             const values = [
@@ -295,6 +340,8 @@ async function createLead(data, tenantId = 'admin') {
                 whatsapp_id || null,
                 value,
                 product_name || null,
+                status,
+                extraDataObj,
                 existingLead.id,
                 tenantId
             ];
@@ -309,9 +356,9 @@ async function createLead(data, tenantId = 'admin') {
         const query = `
         INSERT INTO leads (
           phone, name, last_message, source_message, source_contact_name,
-          whatsapp_id, status, source, value, product_name, tenant_id
+          whatsapp_id, status, source, value, product_name, extra_data, tenant_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         ON CONFLICT (phone, tenant_id) 
         DO UPDATE SET
           name = COALESCE(EXCLUDED.name, leads.name),
@@ -321,6 +368,8 @@ async function createLead(data, tenantId = 'admin') {
           whatsapp_id = COALESCE(EXCLUDED.whatsapp_id, leads.whatsapp_id),
           value = COALESCE(NULLIF(EXCLUDED.value, 0), leads.value),
           product_name = COALESCE(EXCLUDED.product_name, leads.product_name),
+          status = COALESCE(EXCLUDED.status, leads.status),
+          extra_data = COALESCE(leads.extra_data, '{}'::jsonb) || COALESCE(EXCLUDED.extra_data, '{}'::jsonb),
           updated_at = NOW()
         RETURNING *;
       `;
@@ -336,6 +385,7 @@ async function createLead(data, tenantId = 'admin') {
             source,
             value,
             product_name || null,
+            extraDataObj,
             tenantId
         ];
 
@@ -509,6 +559,12 @@ async function updateLeadFields(id, updates, tenantId = 'admin') {
         if (updates.assignee_id !== undefined) {
             fields.push(`assignee_id = $${paramCount++}`);
             values.push(updates.assignee_id || null); // null means unassigned
+        }
+
+        if (updates.status !== undefined) {
+            const validStatus = validateStatus(updates.status);
+            fields.push(`status = $${paramCount++}`);
+            values.push(validStatus);
         }
 
         if (updates.extra_data !== undefined) {
@@ -1147,6 +1203,41 @@ async function updateCRMSettings(tenantId, settings) {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════
+// ANALYTICS LAYOUTS (per-user)
+// ═══════════════════════════════════════════════════════════════
+
+async function getAnalyticsLayout(tenantId, userId) {
+    try {
+        const result = await pool.query(
+            'SELECT layout FROM analytics_layouts WHERE tenant_id = $1 AND user_id = $2',
+            [tenantId, userId]
+        );
+        if (result.rows.length > 0) return result.rows[0].layout;
+        return null;
+    } catch (error) {
+        console.error('❌ getAnalyticsLayout error:', error.message);
+        throw error;
+    }
+}
+
+async function upsertAnalyticsLayout(tenantId, userId, layout) {
+    try {
+        const result = await pool.query(
+            `INSERT INTO analytics_layouts (tenant_id, user_id, layout, updated_at)
+             VALUES ($1, $2, $3, NOW())
+             ON CONFLICT (tenant_id, user_id)
+             DO UPDATE SET layout = EXCLUDED.layout, updated_at = NOW()
+             RETURNING layout`,
+            [tenantId, userId, layout]
+        );
+        return result.rows[0].layout;
+    } catch (error) {
+        console.error('❌ upsertAnalyticsLayout error:', error.message);
+        throw error;
+    }
+}
+
 // NOTE: SIGINT/SIGTERM handlers are NOT registered here.
 // The main entry point (index.cjs) owns the graceful shutdown sequence
 // and calls db.closePool() itself. Having duplicate handlers caused
@@ -1185,5 +1276,7 @@ module.exports = {
     getAuditLogs,
     getCRMSettings,
     updateCRMSettings,
+    getAnalyticsLayout,
+    upsertAnalyticsLayout,
     closePool
 };
