@@ -191,7 +191,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
         note: lead.last_message || '',
         assignee_id: lead.assignee_id || '',
     });
-    const [activeTab, setActiveTab] = useState<'feed' | 'chat' | 'stats'>('feed');
+    const [activeTab, setActiveTab] = useState<'info' | 'feed' | 'chat' | 'stats'>('info');
     const [isSaving, setIsSaving] = useState(false);
     const [savedOk, setSavedOk] = useState(false);
     const feedRef = useRef<HTMLDivElement>(null);
@@ -352,11 +352,40 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                     </button>
                 </div>
 
+                {/* ════════════════════ MOBILE TAB NAV (Visible only < md) ════════════════════ */}
+                <div className="flex md:hidden border-b border-white/5 bg-[#111827]">
+                    <button
+                        onClick={() => setActiveTab('info' as any)}
+                        className={cn(
+                            'flex-1 py-3 text-xs font-semibold border-b-2 transition-all',
+                            activeTab === 'info' || !['feed', 'chat', 'stats'].includes(activeTab)
+                                ? 'border-blue-500 text-blue-400'
+                                : 'border-transparent text-slate-500 hover:text-slate-300'
+                        )}
+                    >
+                        Məlumatlar
+                    </button>
+                    <button
+                        onClick={() => setActiveTab('chat')}
+                        className={cn(
+                            'flex-1 py-3 text-xs font-semibold border-b-2 transition-all',
+                            ['feed', 'chat', 'stats'].includes(activeTab)
+                                ? 'border-blue-500 text-blue-400'
+                                : 'border-transparent text-slate-500 hover:text-slate-300'
+                        )}
+                    >
+                        Fəaliyyət (Yazışma)
+                    </button>
+                </div>
+
                 {/* ════════════════════ BODY (2-column on md+) ════════════════════ */}
                 <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
 
                     {/* ───── LEFT SIDEBAR ───── */}
-                    <aside className="w-full md:w-72 lg:w-80 shrink-0 border-b md:border-b-0 md:border-r border-white/5 bg-[#111827]/60 flex flex-col overflow-y-auto">
+                    <aside className={cn(
+                        "w-full md:w-72 lg:w-80 shrink-0 border-r border-white/5 bg-[#111827]/60 flex flex-col overflow-y-auto",
+                        ['feed', 'chat', 'stats'].includes(activeTab) ? "hidden md:flex" : "flex"
+                    )}>
 
                         {/* Avatar / Name Block */}
                         <div className="p-4 border-b border-white/5 flex items-center gap-3">
@@ -502,7 +531,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                         </div>
 
                         {/* Save button */}
-                        <div className="p-4 border-t border-white/5 bg-[#0d1117]/80">
+                        <div className="p-4 border-t border-white/5 bg-[#0d1117]/80 shrink-0">
                             <button
                                 onClick={handleSave}
                                 disabled={isSaving}
@@ -524,12 +553,15 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                     </aside>
 
                     {/* ───── RIGHT MAIN AREA ───── */}
-                    <main className="flex-1 flex flex-col overflow-hidden bg-[#0d1117]">
+                    <main className={cn(
+                        "flex-1 flex flex-col overflow-hidden bg-[#0d1117]",
+                        ['feed', 'chat', 'stats'].includes(activeTab) ? "flex" : "hidden md:flex"
+                    )}>
 
                         {/* Tab Bar */}
-                        <div className="flex items-end px-5 gap-1 border-b border-white/5 bg-[#111827]/40 shrink-0">
+                        <div className="flex items-end px-2 sm:px-5 gap-1 border-b border-white/5 bg-[#111827]/40 shrink-0 overflow-x-auto no-scrollbar">
                             {[
-                                { id: 'feed', label: 'Ümumi Gedişat', icon: <MessageSquare className="w-3.5 h-3.5" /> },
+                                { id: 'feed', label: 'Gedişat', icon: <MessageSquare className="w-3.5 h-3.5" /> },
                                 { id: 'chat', label: 'Yazışmalar', icon: <Edit3 className="w-3.5 h-3.5" /> },
                                 { id: 'stats', label: 'Statistika', icon: <BarChart2 className="w-3.5 h-3.5" /> },
                             ].map(tab => (
@@ -649,7 +681,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                     {/* Conversion status indicator */}
                                     <div className="mt-6 bg-slate-900/60 border border-slate-800 rounded-xl p-4">
                                         <p className="text-xs text-slate-500 font-semibold uppercase mb-3">Satış Gedişatı</p>
-                                        <div className="flex items-center gap-1">
+                                        <div className="flex flex-wrap sm:flex-nowrap items-center gap-1">
                                             {STATUSES.map((s, i) => {
                                                 const currentIdx = STATUSES.findIndex(x => x.id === localStatus);
                                                 const done = currentIdx >= i;
@@ -658,13 +690,13 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                                         <div className={cn(
                                                             'flex flex-col items-center gap-1',
                                                         )}>
-                                                            <div className={cn('w-7 h-7 rounded-full flex items-center justify-center text-white transition-all', done ? s.bg : 'bg-slate-800')}>
+                                                            <div className={cn('w-7 h-7 rounded-full flex items-center justify-center text-white transition-all shrink-0', done ? s.bg : 'bg-slate-800')}>
                                                                 {s.icon}
                                                             </div>
                                                             <span className="text-[9px] text-slate-500 hidden sm:block">{s.label}</span>
                                                         </div>
                                                         {i < STATUSES.length - 1 && (
-                                                            <div className={cn('flex-1 h-0.5 mb-4 transition-all', done && currentIdx > i ? 'bg-blue-500' : 'bg-slate-800')} />
+                                                            <div className={cn('flex-1 h-0.5 mb-0 sm:mb-4 transition-all min-w-[8px]', done && currentIdx > i ? 'bg-blue-500' : 'bg-slate-800')} />
                                                         )}
                                                     </React.Fragment>
                                                 );
