@@ -115,7 +115,8 @@ function FormatButton({ serverUrl, onClose }: { serverUrl: string; onClose: () =
 
 
 interface CRMSettingsPanelProps {
-    onClose: () => void;
+    onClose?: () => void;
+    variant?: 'modal' | 'page';
 }
 
 const TYPE_LABELS: Record<FieldType, { label: string; icon: React.ReactNode }> = {
@@ -382,7 +383,8 @@ function KeywordChipsInput({
     );
 }
 
-export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
+export function CRMSettingsPanel({ onClose, variant = 'modal' }: CRMSettingsPanelProps) {
+    const safeOnClose = onClose || (() => { });
     const { currentUser, isWhatsAppConnected } = useAppStore();
     const [settings, setSettings] = useState<CRMSettings>(loadCRMSettings());
     const [saved, setSaved] = useState(false);
@@ -404,12 +406,14 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
     const [routingTestText, setRoutingTestText] = useState('');
     const [routingStats, setRoutingStats] = useState<Record<string, { count: number; last_at?: string }>>({});
 
-    // ESC close
+    // ESC close (modal only)
     useEffect(() => {
+        if (variant !== 'modal') return;
+        if (!onClose) return;
         const fn = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
         window.addEventListener('keydown', fn);
         return () => window.removeEventListener('keydown', fn);
-    }, [onClose]);
+    }, [onClose, variant]);
 
     const handleSave = async () => {
         setSaving(true);
@@ -639,13 +643,22 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
 
     return (
         <div
-            className="fixed inset-0 z-[60] bg-black/70 backdrop-blur-[2px] flex justify-end"
-            onClick={onClose}
+            className={cn(
+                variant === 'modal'
+                    ? 'fixed inset-0 z-[60] bg-black/70 backdrop-blur-[2px] flex justify-end'
+                    : 'p-3 sm:p-6 max-w-[1600px] mx-auto h-full'
+            )}
+            onClick={variant === 'modal' ? safeOnClose : undefined}
         >
             <div
-                className="h-full w-full sm:w-[500px] bg-[#0d1117] border-l border-white/5 shadow-2xl flex flex-col overflow-hidden"
-                style={{ animation: 'slideInRight 0.22s cubic-bezier(0.22,1,0.36,1)' }}
-                onClick={e => e.stopPropagation()}
+                className={cn(
+                    'bg-[#0d1117] shadow-2xl flex flex-col overflow-hidden',
+                    variant === 'modal'
+                        ? 'h-full w-full sm:w-[500px] border-l border-white/5'
+                        : 'w-full max-w-[1280px] mx-auto border border-slate-800 rounded-2xl min-h-[calc(100vh-160px)]'
+                )}
+                style={variant === 'modal' ? { animation: 'slideInRight 0.22s cubic-bezier(0.22,1,0.36,1)' } : undefined}
+                onClick={variant === 'modal' ? (e) => e.stopPropagation() : undefined}
             >
                 {/* Header */}
                 <div className="h-14 flex items-center justify-between px-5 border-b border-white/5 bg-[#111827] shrink-0">
@@ -653,9 +666,11 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
                         <Settings className="w-5 h-5 text-blue-400" />
                         <span className="font-bold text-white text-base">CRM Ayarları</span>
                     </div>
-                    <button onClick={onClose} className="p-2 rounded-lg text-slate-500 hover:text-white hover:bg-slate-800 transition-colors">
-                        <X className="w-5 h-5" />
-                    </button>
+                    {onClose && (
+                        <button onClick={safeOnClose} className="p-2 rounded-lg text-slate-500 hover:text-white hover:bg-slate-800 transition-colors" title="Bağla">
+                            <X className="w-5 h-5" />
+                        </button>
+                    )}
                 </div>
 
                 {/* Tabs */}
@@ -1516,7 +1531,7 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
                     </button>
 
                     {/* Factory Reset */}
-                    <FormatButton serverUrl={serverUrl} onClose={onClose} />
+                    <FormatButton serverUrl={serverUrl} onClose={safeOnClose} />
                 </div>
 
             </div>

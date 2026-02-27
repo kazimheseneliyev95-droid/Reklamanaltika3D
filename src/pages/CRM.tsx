@@ -3,10 +3,9 @@ import { useAppStore } from '../context/Store';
 import { Lead, LeadStatus } from '../types/crm';
 import { Badge } from '../components/ui/Badge';
 import { Input } from '../components/ui/Input';
-import { Trash2, Calendar, Filter, RefreshCcw, Pencil, ShoppingBag, DollarSign, TrendingUp, Users, MessageSquare, UserPlus, CheckCircle, XCircle, Phone, Settings, Route } from 'lucide-react';
+import { Trash2, Calendar, Filter, RefreshCcw, Pencil, ShoppingBag, DollarSign, TrendingUp, Users, MessageSquare, UserPlus, CheckCircle, XCircle, Phone, Route } from 'lucide-react';
 import { cn, formatCurrency } from '../lib/utils';
 import { LeadDetailsPanel } from '../components/LeadDetailsPanel';
-import { CRMSettingsPanel } from '../components/CRMSettingsPanel';
 import { loadCRMSettings, CustomField, LeadCardUISettings } from '../lib/crmSettings';
 
 export default function CRMPage() {
@@ -26,7 +25,6 @@ export default function CRMPage() {
   } = useAppStore();
 
   const [assigneeFilter, setAssigneeFilter] = useState<string>('');
-  const [showSettings, setShowSettings] = useState(false);
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
 
   const filteredLeads = useMemo(() => {
@@ -137,16 +135,6 @@ export default function CRMPage() {
               <span className="hidden sm:inline">Yenilə</span>
             </button>
 
-            {/* Settings */}
-            <button
-              onClick={() => setShowSettings(true)}
-              className="flex items-center gap-1.5 p-1.5 sm:px-3 sm:py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs sm:text-sm transition-all border border-slate-700"
-              title="CRM Ayarları"
-            >
-              <Settings className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-              <span className="hidden sm:inline">Ayarlar</span>
-            </button>
-
           </div>
         </div>
 
@@ -233,11 +221,6 @@ export default function CRMPage() {
 
         </div>
       </div>
-
-      {/* CRM SETTINGS PANEL */}
-      {showSettings && (
-        <CRMSettingsPanel onClose={() => setShowSettings(false)} />
-      )}
 
       {/* AMOCRM STYLE LEAD DETAILS PANEL */}
       {selectedLead && (

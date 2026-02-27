@@ -1,11 +1,16 @@
 import { Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Calculator, ShieldCheck, LogOut, BarChart3 } from 'lucide-react';
+import { LayoutDashboard, Calculator, ShieldCheck, LogOut, BarChart3, Settings } from 'lucide-react';
 import { useAppStore } from '../context/Store';
 import { cn } from '../lib/utils';
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const { logout, currentUser } = useAppStore();
+
+  const isActivePath = (path: string) => {
+    if (path === '/') return location.pathname === '/';
+    return location.pathname === path || location.pathname.startsWith(path + '/');
+  };
 
   const navItems = currentUser?.role === 'superadmin'
     ? [
@@ -42,10 +47,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
       {/* Mobile Bottom Navigation (PWA style) */}
       <nav className="mobile-bottom-nav md:hidden fixed bottom-0 w-full bg-slate-900 border-t border-slate-800 z-50 flex items-center justify-around pb-safe">
-        {navItems.map((item) => {
-          const isActive = location.pathname === item.path;
-          return (
-            <Link
+         {navItems.map((item) => {
+           const isActive = isActivePath(item.path);
+           return (
+             <Link
               key={item.path}
               to={item.path}
               className={cn(
@@ -74,7 +79,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       </nav>
 
       {/* Desktop Sidebar */}
-      <aside className="hidden md:flex md:w-64 bg-slate-900 border-r border-slate-800 flex-shrink-0 flex-col">
+       <aside className="hidden md:flex md:w-64 bg-slate-900 border-r border-slate-800 flex-shrink-0 flex-col">
         <div className="p-6 border-b border-slate-800">
           <h1 className="text-xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
             ReklamAnalitika
@@ -83,21 +88,43 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         </div>
 
         <nav className="p-4 space-y-2 flex-1">
-          {navItems.map((item) => (
-            <Link
-              key={item.path}
-              to={item.path}
-              className={cn(
-                "flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors",
-                location.pathname === item.path
-                  ? "bg-blue-600 text-white shadow-lg shadow-blue-900/20"
-                  : "text-slate-400 hover:text-white hover:bg-slate-800"
-              )}
-            >
-              {item.icon}
-              {item.name}
-            </Link>
-          ))}
+          {navItems.map((item) => {
+            const isActive = isActivePath(item.path);
+            const isAnalytics = item.path === '/analytics' && currentUser?.role !== 'superadmin';
+
+            return (
+              <div key={item.path} className={cn(isAnalytics && 'space-y-1')}
+              >
+                <Link
+                  to={item.path}
+                  className={cn(
+                    "flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors",
+                    isActive
+                      ? "bg-blue-600 text-white shadow-lg shadow-blue-900/20"
+                      : "text-slate-400 hover:text-white hover:bg-slate-800"
+                  )}
+                >
+                  {item.icon}
+                  {item.name}
+                </Link>
+
+                {isAnalytics && (
+                  <Link
+                    to="/analytics/settings"
+                    className={cn(
+                      'ml-10 mr-2 flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold transition-colors border',
+                      location.pathname === '/analytics/settings'
+                        ? 'bg-slate-800 text-white border-slate-700'
+                        : 'text-slate-400 border-transparent hover:border-slate-800 hover:bg-slate-800/50 hover:text-slate-200'
+                    )}
+                  >
+                    <Settings className="w-4 h-4" />
+                    Ayarlar
+                  </Link>
+                )}
+              </div>
+            );
+          })}
         </nav>
 
         <div className="p-4 border-t border-slate-800">

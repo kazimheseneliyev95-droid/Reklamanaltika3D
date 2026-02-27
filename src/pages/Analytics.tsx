@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { BarChart3, Save, Check, AlertTriangle, LayoutGrid, Users, BarChart2, PieChart } from 'lucide-react';
+import { BarChart3, Save, Check, AlertTriangle, LayoutGrid, Users, BarChart2, PieChart, Settings } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useAppStore } from '../context/Store';
 import { loadCRMSettings } from '../lib/crmSettings';
@@ -406,6 +406,13 @@ export default function AnalyticsPage() {
               <span className="break-words">{error}</span>
             </div>
           )}
+          <Link
+            to="/analytics/settings"
+            className="px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 border transition-colors bg-slate-900 border-slate-800 text-slate-200 hover:bg-slate-800"
+          >
+            <Settings className="w-4 h-4" />
+            Ayarlar
+          </Link>
           <button
             onClick={handleSave}
             disabled={saving}
