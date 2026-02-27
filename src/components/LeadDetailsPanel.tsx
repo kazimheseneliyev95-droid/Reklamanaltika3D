@@ -31,6 +31,17 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
     const prevLenRef = useRef(0);
     const [showJump, setShowJump] = useState(false);
 
+    const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
+        const el = listRef.current;
+        if (!el) return;
+        try {
+            el.scrollTo({ top: el.scrollHeight, behavior });
+        } catch {
+            // Safari/older browsers fallback
+            el.scrollTop = el.scrollHeight;
+        }
+    }, []);
+
     const loadMessages = useCallback(async () => {
         if (!serverUrl || !lead.id) { setLoading(false); return; }
         setLoading(true);
@@ -59,12 +70,12 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
         if (len <= prevLen) return;
 
         if (stickToBottomRef.current) {
-            bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+            scrollToBottom('smooth');
             setShowJump(false);
         } else {
             setShowJump(true);
         }
-    }, [messages, loading]);
+    }, [messages, loading, scrollToBottom]);
 
     const handleScroll = () => {
         const el = listRef.current;
@@ -106,7 +117,7 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
             { id: optimisticId, body: outgoing, direction: 'out', created_at: new Date().toISOString() }
         ]));
         setReplyText('');
-        requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }));
+        requestAnimationFrame(() => scrollToBottom('smooth'));
         try {
             const token = localStorage.getItem('crm_auth_token') || '';
             const res = await fetch(`${serverUrl}/api/leads/${lead.id}/messages`, {
@@ -132,8 +143,8 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
 
     return (
         <div className="relative flex flex-col flex-1 min-h-0 bg-[#0d1117]">
-            {/* Sticky header */}
-            <div className="px-4 py-2 border-b border-slate-800 flex items-center justify-between shrink-0 bg-[#111827] sticky top-0 z-10">
+            {/* Header */}
+            <div className="px-4 py-2 border-b border-slate-800 flex items-center justify-between shrink-0 bg-[#111827]">
                 <span className="text-xs font-semibold text-slate-400">
                     {messages.length} mesaj
                 </span>
@@ -146,6 +157,7 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
             <div
                 ref={listRef}
                 onScroll={handleScroll}
+                onWheel={(e) => e.stopPropagation()}
                 className="flex-1 min-h-0 overflow-y-auto p-4 space-y-2 overscroll-contain touch-pan-y"
                 style={{ WebkitOverflowScrolling: 'touch' }}
             >
@@ -235,7 +247,7 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                 <button
                     onClick={() => {
                         stickToBottomRef.current = true;
-                        bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+                        scrollToBottom('smooth');
                         setShowJump(false);
                     }}
                     className="absolute right-4 bottom-16 bg-blue-600/90 hover:bg-blue-500 text-white text-xs font-semibold px-3 py-1.5 rounded-full shadow-lg"
@@ -245,7 +257,7 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
             )}
 
             {/* Reply Input Area */}
-            <div className="sticky bottom-0 shrink-0 p-2 sm:p-3 border-t border-slate-800 bg-[#111827] z-20" style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 0.75rem)' }}>
+            <div className="shrink-0 p-2 sm:p-3 border-t border-slate-800 bg-[#111827]" style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 0.75rem)' }}>
                 <form onSubmit={handleSend} className="flex gap-2">
                     <input
                         type="text"
@@ -423,7 +435,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
         >
             {/* DRAWER — stops propagation so clicks inside don't close */}
             <div
-                className="relative h-[100dvh] w-full sm:w-[96%] md:w-[88%] lg:w-[78%] xl:w-[72%] max-w-5xl bg-[#0d1117] border-l border-white/5 shadow-2xl flex flex-col overflow-hidden"
+                className="relative h-screen h-[100dvh] w-full sm:w-[96%] md:w-[88%] lg:w-[78%] xl:w-[72%] max-w-5xl bg-[#0d1117] border-l border-white/5 shadow-2xl flex flex-col overflow-hidden"
                 style={{ paddingTop: 'env(safe-area-inset-top)', animation: 'slideInRight 0.22s cubic-bezier(0.22,1,0.36,1)' }}
                 onClick={e => e.stopPropagation()}
             >
