@@ -932,6 +932,8 @@ app.get('/api/leads/:id/story', requireTenantAuth, asyncHandler(async (req, res)
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   const leadId = req.params.id;
 
+  const includeMessages = String(req.query.includeMessages || '').trim() === '1';
+
   let limit = parseInt(String(req.query.limit || '800'), 10);
   if (!Number.isFinite(limit) || limit <= 0) limit = 800;
   if (limit > 2500) limit = 2500;
@@ -943,14 +945,16 @@ app.get('/api/leads/:id/story', requireTenantAuth, asyncHandler(async (req, res)
   if (leadRes.rowCount === 0) return res.status(404).json({ error: 'Lead not found' });
   const lead = leadRes.rows[0];
 
-  const msgsRes = await db.pool.query(
-    `SELECT id, body, direction, metadata, status, created_at
-     FROM messages
-     WHERE tenant_id = $1 AND (lead_id = $2 OR phone = $3)
-     ORDER BY created_at DESC
-     LIMIT $4`,
-    [req.tenantId, leadId, lead.phone, limit]
-  );
+  const msgsRes = includeMessages
+    ? await db.pool.query(
+        `SELECT id, body, direction, metadata, status, created_at
+         FROM messages
+         WHERE tenant_id = $1 AND (lead_id = $2 OR phone = $3)
+         ORDER BY created_at DESC
+         LIMIT $4`,
+        [req.tenantId, leadId, lead.phone, limit]
+      )
+    : { rows: [] };
 
   const auditsRes = await db.pool.query(
     `SELECT a.id, a.action, a.details, a.created_at, a.user_id,
@@ -979,56 +983,21 @@ app.get('/api/leads/:id/story', requireTenantAuth, asyncHandler(async (req, res)
     });
   }
 
-  for (const m of (msgsRes.rows || [])) {
-    events.push({
-      id: `m:${m.id}`,
-      kind: 'message',
-      at: m.created_at ? new Date(m.created_at).toISOString() : new Date().toISOString(),
-      message: {
-        id: m.id,
-        body: m.body,
-        direction: m.direction,
-        status: m.status,
-        metadata: m.metadata || {}
-      }
-    });
-  }
-
-  // Synthetic: snapshot lead messages if not present in DB
-  try {
-    const bodies = new Set((msgsRes.rows || []).map((m) => String(m?.body || '').trim()));
-
-    if (lead.source_message && !bodies.has(String(lead.source_message).trim())) {
+  if (includeMessages) {
+    for (const m of (msgsRes.rows || [])) {
       events.push({
-        id: `m:synthetic:source:${leadId}`,
+        id: `m:${m.id}`,
         kind: 'message',
-        at: lead.created_at ? new Date(lead.created_at).toISOString() : new Date().toISOString(),
+        at: m.created_at ? new Date(m.created_at).toISOString() : new Date().toISOString(),
         message: {
-          id: 'synthetic-source',
-          body: String(lead.source_message),
-          direction: 'out',
-          status: 'delivered',
-          metadata: { synthetic: true, kind: 'source_message' }
+          id: m.id,
+          body: m.body,
+          direction: m.direction,
+          status: m.status,
+          metadata: m.metadata || {}
         }
       });
     }
-
-    if (lead.last_message && !bodies.has(String(lead.last_message).trim())) {
-      events.push({
-        id: `m:synthetic:last:${leadId}`,
-        kind: 'message',
-        at: lead.updated_at ? new Date(lead.updated_at).toISOString() : (lead.created_at ? new Date(lead.created_at).toISOString() : new Date().toISOString()),
-        message: {
-          id: 'synthetic-last',
-          body: String(lead.last_message),
-          direction: 'in',
-          status: 'delivered',
-          metadata: { synthetic: true, kind: 'last_message' }
-        }
-      });
-    }
-  } catch {
-    // ignore
   }
 
   for (const a of (auditsRes.rows || [])) {

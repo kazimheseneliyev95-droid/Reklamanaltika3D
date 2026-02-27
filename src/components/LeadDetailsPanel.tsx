@@ -349,7 +349,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
         setStoryError('');
         try {
             const token = localStorage.getItem('crm_auth_token') || '';
-            const res = await fetch(`${serverUrl}/api/leads/${lead.id}/story?limit=1200`, {
+            const res = await fetch(`${serverUrl}/api/leads/${lead.id}/story?limit=1200&includeMessages=0`, {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             if (!res.ok) {
@@ -965,203 +965,221 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                 <div className="h-full overflow-y-auto overscroll-contain touch-pan-y" style={{ WebkitOverflowScrolling: 'touch' }}>
                                     <div className="p-4 sm:p-6 space-y-4 max-w-2xl mx-auto w-full">
 
-                                    {serverUrl && canAddNote && (
+                                        {/* Satış gedişatı (vertical stepper) */}
                                         <div className="rounded-2xl border border-slate-800 bg-slate-900/35 p-4">
                                             <div className="flex items-center justify-between gap-2">
-                                                <p className="text-xs font-bold text-slate-200">Qeyd əlavə et</p>
-                                                <button
-                                                    onClick={loadStory}
-                                                    className="text-[10px] text-blue-400 hover:text-blue-300"
-                                                    title="Yenilə"
-                                                >
-                                                    ↺ Yenilə
-                                                </button>
+                                                <p className="text-xs font-bold text-slate-200 uppercase tracking-wide">Satış Gedişatı</p>
+                                                <span className="text-[10px] text-slate-500">Cari: {activeStatus.label}</span>
                                             </div>
-                                            <textarea
-                                                value={noteDraft}
-                                                onChange={(e) => setNoteDraft(e.target.value)}
-                                                placeholder="məs: Bu gün 16:30 randevuya yazdıq"
-                                                rows={3}
-                                                className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-500 placeholder:text-slate-500"
-                                            />
-                                            <div className="mt-2 flex justify-end">
-                                                <button
-                                                    onClick={addNote}
-                                                    disabled={noteBusy || !noteDraft.trim()}
-                                                    className="px-3 py-2 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-60"
-                                                >
-                                                    {noteBusy ? 'Saxlanır...' : 'Əlavə et'}
-                                                </button>
+
+                                            <div className="mt-3">
+                                                {(() => {
+                                                    const currentIdx = STATUSES.findIndex(x => x.id === localStatus);
+                                                    return (
+                                                        <div className="space-y-2">
+                                                            {STATUSES.map((s, i) => {
+                                                                const done = currentIdx >= i;
+                                                                const isCurrent = currentIdx === i;
+                                                                return (
+                                                                    <div key={s.id} className="flex gap-3 items-stretch">
+                                                                        <div className="flex flex-col items-center">
+                                                                            <div className={cn(
+                                                                                'w-3.5 h-3.5 rounded-full border shadow-sm',
+                                                                                done ? s.bg : 'bg-slate-800',
+                                                                                done ? 'border-transparent' : 'border-slate-700'
+                                                                            )} />
+                                                                            {i < STATUSES.length - 1 ? (
+                                                                                <div className={cn('w-px flex-1 mt-1', done && currentIdx > i ? 'bg-blue-500/60' : 'bg-slate-800')} />
+                                                                            ) : null}
+                                                                        </div>
+                                                                        <div className="flex-1 pb-1">
+                                                                            <div className="flex items-center justify-between gap-2">
+                                                                                <span className={cn('text-xs font-semibold', done ? 'text-slate-200' : 'text-slate-500')}>
+                                                                                    {s.label}
+                                                                                </span>
+                                                                                {isCurrent ? (
+                                                                                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full border border-blue-500/20 bg-blue-600/15 text-blue-200">indi</span>
+                                                                                ) : null}
+                                                                            </div>
+                                                                        </div>
+                                                                    </div>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    );
+                                                })()}
                                             </div>
                                         </div>
-                                    )}
 
-                                    {storyLoading && (
-                                        <div className="flex items-center justify-center h-24 text-slate-500 text-sm">
-                                            <span className="animate-pulse">Yüklənir...</span>
-                                        </div>
-                                    )}
-
-                                    {storyError && !storyLoading && (
-                                        <div className="rounded-xl border border-red-900/40 bg-red-950/15 p-3 text-xs text-red-300">
-                                            {storyError}
-                                        </div>
-                                    )}
-
-                                    {!storyLoading && (!story || story.length === 0) && (
-                                        <div className="flex flex-col items-center py-12 gap-3 text-slate-600">
-                                            <MessageSquare className="w-10 h-10" />
-                                            <p className="text-sm">Hələ heç bir tarixçə yoxdur</p>
-                                            <p className="text-xs text-slate-700">Mesaj, status və qeydlər burada görünəcək</p>
-                                        </div>
-                                    )}
-
-                                    {!storyLoading && Array.isArray(story) && story.length > 0 && (() => {
-                                        let lastDay = '';
-                                        const rows: React.ReactNode[] = [];
-
-                                        for (const ev of story) {
-                                            const at = ev?.at ? new Date(ev.at) : new Date();
-                                            const day = at.toLocaleDateString('az-AZ');
-                                            const time = at.toLocaleTimeString('az-AZ', { hour: '2-digit', minute: '2-digit' });
-
-                                            if (day !== lastDay) {
-                                                lastDay = day;
-                                                rows.push(
-                                                    <div key={`day-${day}-${rows.length}`} className="flex items-center gap-3">
-                                                        <div className="h-px flex-1 bg-slate-800" />
-                                                        <span className="text-[10px] font-mono text-slate-500 bg-slate-900 border border-slate-800 px-2 py-0.5 rounded-full">
-                                                            {day}
-                                                        </span>
-                                                        <div className="h-px flex-1 bg-slate-800" />
-                                                    </div>
-                                                );
-                                            }
-
-                                            if (ev.kind === 'message') {
-                                                const isOut = ev.message.direction === 'out';
-                                                rows.push(
-                                                    <div key={ev.id} className="flex gap-3 items-start">
-                                                        <div className={cn(
-                                                            'w-7 h-7 rounded-full border flex items-center justify-center shrink-0 mt-0.5',
-                                                            isOut ? 'bg-blue-900/40 border-blue-800' : 'bg-green-900/40 border-green-800'
-                                                        )}>
-                                                            <MessageSquare className={cn('w-3.5 h-3.5', isOut ? 'text-blue-300' : 'text-green-300')} />
-                                                        </div>
-                                                        <div className={cn(
-                                                            'flex-1 border rounded-xl rounded-tl-sm p-3',
-                                                            isOut ? 'bg-blue-950/10 border-blue-900/40' : 'bg-slate-900/60 border-slate-800'
-                                                        )}>
-                                                            <div className="flex justify-between items-start gap-2">
-                                                                <span className="text-xs font-bold text-slate-200">
-                                                                    {isOut ? 'Biz' : (lead.name || lead.phone)}
-                                                                </span>
-                                                                <span className="text-[10px] text-slate-500">{time}</span>
-                                                            </div>
-                                                            <p className="text-xs text-slate-300 mt-1 whitespace-pre-wrap break-words">
-                                                                {String(ev.message.body || '').trim()}
-                                                            </p>
-                                                        </div>
-                                                    </div>
-                                                );
-                                                continue;
-                                            }
-
-                                            // audit
-                                            const who = ev.user?.displayName || ev.user?.username || 'Sistem';
-                                            const action = String(ev.action || '');
-                                            const details = ev.details || {};
-
-                                            const lines: string[] = [];
-                                            let icon = <User className="w-3.5 h-3.5 text-blue-400" />;
-                                            let bubble = 'bg-slate-900/60 border-slate-800';
-
-                                            if (action === 'LEAD_CREATED') {
-                                                icon = <User className="w-3.5 h-3.5 text-blue-300" />;
-                                                bubble = 'bg-blue-950/10 border-blue-900/40';
-                                                const src = details.source === 'manual' ? 'Manual' : 'WhatsApp';
-                                                lines.push(`Yeni əlaqə yaradıldı (mənbə: ${src})`);
-                                            } else if (action === 'UPDATE_STATUS') {
-                                                icon = <CheckCircle2 className="w-3.5 h-3.5 text-purple-300" />;
-                                                bubble = 'bg-purple-950/10 border-purple-900/40';
-                                                const oldS = details.oldStatus;
-                                                const newS = details.newStatus;
-                                                lines.push(`Status: ${stageLabel(oldS)} -> ${stageLabel(newS)}`);
-                                            } else if (action === 'UPDATE_FIELDS') {
-                                                icon = <Edit3 className="w-3.5 h-3.5 text-slate-300" />;
-                                                const ch = details.changed || {};
-                                                const chExtra = details.changedExtra || {};
-
-                                                if (ch.assignee_id) {
-                                                    const fromId = ch.assignee_id.from;
-                                                    const toId = ch.assignee_id.to;
-                                                    const fromU = fromId ? teamMembers.find((u: any) => u.id === fromId) : null;
-                                                    const toU = toId ? teamMembers.find((u: any) => u.id === toId) : null;
-                                                    const fromLabel = fromU ? (fromU.display_name || fromU.username) : (fromId ? String(fromId) : '--');
-                                                    const toLabel = toU ? (toU.display_name || toU.username) : (toId ? String(toId) : '--');
-                                                    lines.push(`Operator: ${fromLabel} -> ${toLabel}`);
-                                                }
-                                                if (ch.status) {
-                                                    lines.push(`Status: ${stageLabel(ch.status.from)} -> ${stageLabel(ch.status.to)}`);
-                                                }
-                                                if (ch.value) {
-                                                    lines.push(`Büdcə: ${ch.value.from ?? 0} -> ${ch.value.to ?? 0}`);
-                                                }
-                                                if (ch.product_name) {
-                                                    lines.push(`Məhsul: ${ch.product_name.from || '--'} -> ${ch.product_name.to || '--'}`);
-                                                }
-                                                if (ch.name) {
-                                                    lines.push(`Ad: ${ch.name.from || '--'} -> ${ch.name.to || '--'}`);
-                                                }
-
-                                                const fieldById = new Map((customFields || []).map((f: any) => [f.id, f]));
-                                                for (const k of Object.keys(chExtra || {})) {
-                                                    const meta = fieldById.get(k);
-                                                    const label = meta?.label || k;
-                                                    const fromV = chExtra[k]?.from;
-                                                    const toV = chExtra[k]?.to;
-                                                    const showFrom = meta?.type === 'datetime' ? formatMaybeDatetime(fromV) : String(fromV ?? '--');
-                                                    const showTo = meta?.type === 'datetime' ? formatMaybeDatetime(toV) : String(toV ?? '--');
-                                                    lines.push(`${label}: ${showFrom || '--'} -> ${showTo || '--'}`);
-                                                }
-                                            } else if (action === 'ROUTING_MATCH') {
-                                                icon = <Route className="w-3.5 h-3.5 text-emerald-300" />;
-                                                bubble = 'bg-emerald-950/10 border-emerald-900/40';
-                                                const field = (customFields || []).find((f: any) => f.id === details.fieldId);
-                                                const label = field?.label || details.fieldId || 'Field';
-                                                lines.push(`Routing: ${label} = ${details.setValue || ''}`);
-                                                if (details.targetStage) lines.push(`Mərhələ: ${stageLabel(details.targetStage)}`);
-                                            } else if (action === 'LEAD_NOTE') {
-                                                icon = <Edit3 className="w-3.5 h-3.5 text-amber-300" />;
-                                                bubble = 'bg-amber-950/10 border-amber-900/40';
-                                                lines.push(String(details.note || ''));
-                                            } else {
-                                                lines.push(action);
-                                            }
-
-                                            if (lines.length === 0) continue;
-                                            rows.push(
-                                                <div key={ev.id} className="flex gap-3 items-start">
-                                                    <div className={cn('w-7 h-7 rounded-full border flex items-center justify-center shrink-0 mt-0.5', bubble)}>
-                                                        {icon}
-                                                    </div>
-                                                    <div className={cn('flex-1 border rounded-xl rounded-tl-sm p-3', bubble)}>
-                                                        <div className="flex justify-between items-start gap-2">
-                                                            <span className="text-xs font-bold text-slate-200">{who}</span>
-                                                            <span className="text-[10px] text-slate-500">{time}</span>
-                                                        </div>
-                                                        <div className="mt-1 space-y-1">
-                                                            {lines.map((ln, i) => (
-                                                                <p key={i} className="text-xs text-slate-300 whitespace-pre-wrap">{ln}</p>
-                                                            ))}
-                                                        </div>
-                                                    </div>
+                                        {/* Qeyd əlavə et (operation) */}
+                                        {serverUrl && canAddNote && (
+                                            <div className="rounded-2xl border border-slate-800 bg-slate-900/35 p-4">
+                                                <div className="flex items-center justify-between gap-2">
+                                                    <p className="text-xs font-bold text-slate-200">Qeyd əlavə et</p>
+                                                    <button
+                                                        onClick={loadStory}
+                                                        className="text-[10px] text-blue-400 hover:text-blue-300"
+                                                        title="Yenilə"
+                                                    >
+                                                        ↺ Yenilə
+                                                    </button>
                                                 </div>
-                                            );
-                                        }
+                                                <textarea
+                                                    value={noteDraft}
+                                                    onChange={(e) => setNoteDraft(e.target.value)}
+                                                    placeholder="məs: Bu gün 16:30 randevuya yazdıq"
+                                                    rows={3}
+                                                    className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-500 placeholder:text-slate-500"
+                                                />
+                                                <div className="mt-2 flex justify-end">
+                                                    <button
+                                                        onClick={addNote}
+                                                        disabled={noteBusy || !noteDraft.trim()}
+                                                        className="px-3 py-2 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-60"
+                                                    >
+                                                        {noteBusy ? 'Saxlanır...' : 'Əlavə et'}
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        )}
 
-                                        return rows;
-                                    })()}
+                                        {/* Operations timeline (no messages) */}
+                                        <div className="rounded-2xl border border-slate-800 bg-slate-900/35 p-4">
+                                            <div className="flex items-center justify-between gap-2">
+                                                <p className="text-xs font-bold text-slate-200 uppercase tracking-wide">İşləmlər</p>
+                                                <span className="text-[10px] text-slate-500">Mesajlar bu bölmədə göstərilmir</span>
+                                            </div>
+
+                                            {storyLoading ? (
+                                                <div className="flex items-center justify-center h-24 text-slate-500 text-sm">
+                                                    <span className="animate-pulse">Yüklənir...</span>
+                                                </div>
+                                            ) : storyError ? (
+                                                <div className="mt-3 rounded-xl border border-red-900/40 bg-red-950/15 p-3 text-xs text-red-300">{storyError}</div>
+                                            ) : (
+                                                (() => {
+                                                    const ops = (Array.isArray(story) ? story : []).filter((ev) => ev && ev.kind === 'audit') as any[];
+                                                    if (ops.length === 0) {
+                                                        return (
+                                                            <div className="mt-4 flex flex-col items-center py-10 gap-3 text-slate-600">
+                                                                <MessageSquare className="w-10 h-10" />
+                                                                <p className="text-sm">Hələ heç bir əməliyyat yoxdur</p>
+                                                            </div>
+                                                        );
+                                                    }
+
+                                                    let lastDay = '';
+                                                    const out: React.ReactNode[] = [];
+
+                                                    for (const ev of ops) {
+                                                        const at = ev?.at ? new Date(ev.at) : new Date();
+                                                        const day = at.toLocaleDateString('az-AZ');
+                                                        const time = at.toLocaleTimeString('az-AZ', { hour: '2-digit', minute: '2-digit' });
+                                                        if (day !== lastDay) {
+                                                            lastDay = day;
+                                                            out.push(
+                                                                <div key={`day-${day}-${out.length}`} className="flex items-center gap-3 mt-3">
+                                                                    <div className="h-px flex-1 bg-slate-800" />
+                                                                    <span className="text-[10px] font-mono text-slate-500 bg-slate-950 border border-slate-800 px-2 py-0.5 rounded-full">{day}</span>
+                                                                    <div className="h-px flex-1 bg-slate-800" />
+                                                                </div>
+                                                            );
+                                                        }
+
+                                                        const who = ev.user?.displayName || ev.user?.username || 'Sistem';
+                                                        const action = String(ev.action || '');
+                                                        const details = ev.details || {};
+
+                                                        const lines: string[] = [];
+                                                        let icon = <User className="w-3.5 h-3.5 text-blue-300" />;
+                                                        let bubble = 'bg-slate-950/40 border-slate-800';
+
+                                                        if (action === 'LEAD_CREATED') {
+                                                            bubble = 'bg-blue-950/10 border-blue-900/40';
+                                                            const src = details.source === 'manual' ? 'Manual' : 'WhatsApp';
+                                                            lines.push(`Yeni əlaqə yaradıldı (mənbə: ${src})`);
+                                                        } else if (action === 'UPDATE_STATUS') {
+                                                            icon = <CheckCircle2 className="w-3.5 h-3.5 text-purple-300" />;
+                                                            bubble = 'bg-purple-950/10 border-purple-900/40';
+                                                            lines.push(`Status: ${stageLabel(details.oldStatus)} -> ${stageLabel(details.newStatus)}`);
+                                                        } else if (action === 'UPDATE_FIELDS') {
+                                                            icon = <Edit3 className="w-3.5 h-3.5 text-slate-200" />;
+                                                            const ch = details.changed || {};
+                                                            const chExtra = details.changedExtra || {};
+
+                                                            if (ch.assignee_id) {
+                                                                const fromId = ch.assignee_id.from;
+                                                                const toId = ch.assignee_id.to;
+                                                                const fromU = fromId ? teamMembers.find((u: any) => u.id === fromId) : null;
+                                                                const toU = toId ? teamMembers.find((u: any) => u.id === toId) : null;
+                                                                const fromLabel = fromU ? (fromU.display_name || fromU.username) : (fromId ? String(fromId) : '--');
+                                                                const toLabel = toU ? (toU.display_name || toU.username) : (toId ? String(toId) : '--');
+                                                                lines.push(`Operator: ${fromLabel} -> ${toLabel}`);
+                                                            }
+                                                            if (ch.status) {
+                                                                lines.push(`Status: ${stageLabel(ch.status.from)} -> ${stageLabel(ch.status.to)}`);
+                                                            }
+                                                            if (ch.value) {
+                                                                lines.push(`Büdcə: ${ch.value.from ?? 0} -> ${ch.value.to ?? 0}`);
+                                                            }
+                                                            if (ch.product_name) {
+                                                                lines.push(`Məhsul: ${ch.product_name.from || '--'} -> ${ch.product_name.to || '--'}`);
+                                                            }
+                                                            if (ch.name) {
+                                                                lines.push(`Ad: ${ch.name.from || '--'} -> ${ch.name.to || '--'}`);
+                                                            }
+
+                                                            const fieldById = new Map((customFields || []).map((f: any) => [f.id, f]));
+                                                            for (const k of Object.keys(chExtra || {})) {
+                                                                const meta = fieldById.get(k);
+                                                                const label = meta?.label || k;
+                                                                const fromV = chExtra[k]?.from;
+                                                                const toV = chExtra[k]?.to;
+                                                                const showFrom = meta?.type === 'datetime' ? formatMaybeDatetime(fromV) : String(fromV ?? '--');
+                                                                const showTo = meta?.type === 'datetime' ? formatMaybeDatetime(toV) : String(toV ?? '--');
+                                                                lines.push(`${label}: ${showFrom || '--'} -> ${showTo || '--'}`);
+                                                            }
+                                                        } else if (action === 'ROUTING_MATCH') {
+                                                            icon = <Route className="w-3.5 h-3.5 text-emerald-300" />;
+                                                            bubble = 'bg-emerald-950/10 border-emerald-900/40';
+                                                            const field = (customFields || []).find((f: any) => f.id === details.fieldId);
+                                                            const label = field?.label || details.fieldId || 'Field';
+                                                            lines.push(`Routing: ${label} = ${details.setValue || ''}`);
+                                                            if (details.targetStage) lines.push(`Mərhələ: ${stageLabel(details.targetStage)}`);
+                                                        } else if (action === 'LEAD_NOTE') {
+                                                            icon = <Edit3 className="w-3.5 h-3.5 text-amber-300" />;
+                                                            bubble = 'bg-amber-950/10 border-amber-900/40';
+                                                            lines.push(String(details.note || ''));
+                                                        } else {
+                                                            lines.push(action);
+                                                        }
+
+                                                        if (lines.length === 0) continue;
+
+                                                        out.push(
+                                                            <div key={ev.id} className="mt-3 flex gap-3 items-start">
+                                                                <div className={cn('w-8 h-8 rounded-full border flex items-center justify-center shrink-0 mt-0.5', bubble)}>
+                                                                    {icon}
+                                                                </div>
+                                                                <div className={cn('flex-1 border rounded-xl p-3', bubble)}>
+                                                                    <div className="flex justify-between items-start gap-2">
+                                                                        <span className="text-xs font-bold text-slate-200">{who}</span>
+                                                                        <span className="text-[10px] text-slate-500">{time}</span>
+                                                                    </div>
+                                                                    <div className="mt-1 space-y-1">
+                                                                        {lines.map((ln, i) => (
+                                                                            <p key={i} className="text-xs text-slate-300 whitespace-pre-wrap">{ln}</p>
+                                                                        ))}
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    }
+
+                                                    return <div className="mt-3">{out}</div>;
+                                                })()
+                                            )}
+                                        </div>
                                     </div>
                                 </div>
                             )}
