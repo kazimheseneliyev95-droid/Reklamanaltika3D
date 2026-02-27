@@ -91,9 +91,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           {navItems.map((item) => {
             const isActive = isActivePath(item.path);
             const isAnalytics = item.path === '/analytics' && currentUser?.role !== 'superadmin';
+            const showAnalyticsSub = isAnalytics && isActivePath('/analytics');
 
             return (
-              <div key={item.path} className={cn(isAnalytics && 'space-y-1')}
+              <div key={item.path} className={cn(showAnalyticsSub && 'space-y-1')}
               >
                 <Link
                   to={item.path}
@@ -108,7 +109,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                   {item.name}
                 </Link>
 
-                {isAnalytics && (
+                {showAnalyticsSub && (
                   <Link
                     to="/analytics/settings"
                     className={cn(

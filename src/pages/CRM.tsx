@@ -2,11 +2,11 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useAppStore } from '../context/Store';
 import { Lead, LeadStatus } from '../types/crm';
 import { Badge } from '../components/ui/Badge';
-import { Input } from '../components/ui/Input';
 import { Trash2, Calendar, Filter, RefreshCcw, Pencil, ShoppingBag, DollarSign, TrendingUp, Users, MessageSquare, UserPlus, CheckCircle, XCircle, Phone, Route } from 'lucide-react';
 import { cn, formatCurrency } from '../lib/utils';
 import { LeadDetailsPanel } from '../components/LeadDetailsPanel';
 import { loadCRMSettings, CustomField, LeadCardUISettings } from '../lib/crmSettings';
+import { CRMFilterSidebar, countActiveFilters, makeDefaultCRMFilters, type CRMFilters } from '../components/CRMFilterSidebar';
 
 export default function CRMPage() {
   const [activeMobileTab, setActiveMobileTab] = useState<string>('new');
@@ -24,12 +24,95 @@ export default function CRMPage() {
     currentUser
   } = useAppStore();
 
-  const [assigneeFilter, setAssigneeFilter] = useState<string>('');
+  const { pipelineStages, customFields, ui } = loadCRMSettings();
+  const leadCardUi = ui?.leadCard;
+
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
+  const [showFilters, setShowFilters] = useState(false);
+  const [filters, setFilters] = useState<CRMFilters>(() => makeDefaultCRMFilters(pipelineStages));
+
+  const activeFilterCount = useMemo(() => countActiveFilters(filters, pipelineStages), [filters, pipelineStages]);
 
   const filteredLeads = useMemo(() => {
-    return leads.filter(l => !assigneeFilter || l.assignee_id === assigneeFilter);
-  }, [leads, assigneeFilter]);
+    const q = filters.query.trim().toLowerCase();
+    const productQ = filters.product.trim().toLowerCase();
+
+    const stageSet = new Set(filters.stageIds);
+    const assigneeSet = new Set(filters.assigneeIds);
+
+    const vMin = Number.isFinite(parseFloat(filters.valueMin)) ? parseFloat(filters.valueMin) : null;
+    const vMax = Number.isFinite(parseFloat(filters.valueMax)) ? parseFloat(filters.valueMax) : null;
+
+    const customText = Object.entries(filters.customText).filter(([, v]) => String(v || '').trim() !== '');
+    const customSelect = Object.entries(filters.customSelect).filter(([, v]) => String(v || '').trim() !== '');
+    const customNumber = Object.entries(filters.customNumber).filter(([, r]) => String(r?.min || '').trim() !== '' || String(r?.max || '').trim() !== '');
+
+    return leads.filter((l) => {
+      // stage
+      if (stageSet.size > 0 && !stageSet.has(l.status)) return false;
+      if (stageSet.size === 0) return false;
+
+      // source
+      if (filters.source !== 'all' && l.source !== filters.source) return false;
+
+      // assignee
+      if (assigneeSet.size > 0) {
+        const k = l.assignee_id ? String(l.assignee_id) : 'unassigned';
+        if (!assigneeSet.has(k)) return false;
+      }
+
+      // value
+      if (vMin !== null || vMax !== null) {
+        const v = typeof l.value === 'number' ? l.value : parseFloat(String(l.value ?? ''));
+        if (!Number.isFinite(v)) return false;
+        if (vMin !== null && v < vMin) return false;
+        if (vMax !== null && v > vMax) return false;
+      }
+
+      // query
+      if (q) {
+        const hay = `${l.phone || ''} ${l.name || ''} ${l.last_message || ''}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+
+      // product
+      if (productQ) {
+        const hay = String(l.product_name || '').toLowerCase();
+        if (!hay.includes(productQ)) return false;
+      }
+
+      // custom
+      if (customText.length + customSelect.length + customNumber.length > 0) {
+        const extra = parseExtraData((l as any).extra_data);
+
+        for (const [fieldId, wantRaw] of customSelect) {
+          const want = String(wantRaw || '').trim();
+          if (!want) continue;
+          const got = String(extra?.[fieldId] ?? '').trim();
+          if (got !== want) return false;
+        }
+
+        for (const [fieldId, wantRaw] of customText) {
+          const want = String(wantRaw || '').trim().toLowerCase();
+          if (!want) continue;
+          const got = String(extra?.[fieldId] ?? '').trim().toLowerCase();
+          if (!got.includes(want)) return false;
+        }
+
+        for (const [fieldId, range] of customNumber) {
+          const min = Number.isFinite(parseFloat(String(range?.min ?? ''))) ? parseFloat(String(range?.min ?? '')) : null;
+          const max = Number.isFinite(parseFloat(String(range?.max ?? ''))) ? parseFloat(String(range?.max ?? '')) : null;
+          if (min === null && max === null) continue;
+          const gotN = parseFloat(String(extra?.[fieldId] ?? ''));
+          if (!Number.isFinite(gotN)) return false;
+          if (min !== null && gotN < min) return false;
+          if (max !== null && gotN > max) return false;
+        }
+      }
+
+      return true;
+    });
+  }, [leads, filters]);
 
   // Keep selectedLead in sync with the global leads store
   useEffect(() => {
@@ -52,33 +135,7 @@ export default function CRMPage() {
     setSelectedLead(lead);
   };
 
-  const handleDateFilterChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const value = e.target.value;
-    if (!value) return;
-
-    const end = new Date();
-    let start: Date | null = null;
-
-    if (value === 'max') {
-      start = null; // All time
-    } else {
-      const days = parseInt(value);
-      start = new Date(end.getTime() - (days * 24 * 60 * 60 * 1000));
-    }
-
-    const toLocalISO = (date: Date) => {
-      const offset = date.getTimezoneOffset() * 60000;
-      return new Date(date.getTime() - offset).toISOString().split('T')[0];
-    };
-
-    setDateRange({
-      start: start ? toLocalISO(start) : null,
-      end: toLocalISO(end)
-    });
-  };
-
-  const { pipelineStages, customFields, ui } = loadCRMSettings();
-  const leadCardUi = ui?.leadCard;
+  const resetFilters = () => setFilters(makeDefaultCRMFilters(pipelineStages));
 
   const getIconForColor = (color: string) => {
     switch (color) {
@@ -135,6 +192,20 @@ export default function CRMPage() {
               <span className="hidden sm:inline">Yenilə</span>
             </button>
 
+            <button
+              onClick={() => setShowFilters(true)}
+              className="bg-slate-800 hover:bg-slate-700 text-slate-200 p-1.5 sm:px-3 sm:py-2 rounded-lg flex items-center gap-1.5 text-xs sm:text-sm transition-all border border-slate-700"
+              title="Filtrlər"
+            >
+              <Filter className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+              <span className="hidden sm:inline">Filtrlər</span>
+              {activeFilterCount > 0 && (
+                <span className="ml-1 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-blue-600/20 text-blue-300 text-[10px] font-extrabold border border-blue-500/20">
+                  {activeFilterCount}
+                </span>
+              )}
+            </button>
+
           </div>
         </div>
 
@@ -166,61 +237,53 @@ export default function CRMPage() {
             )}
           </div>
 
-          {/* Filters */}
-          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 bg-slate-900 p-1.5 sm:p-2 rounded-lg border border-slate-800">
-            <div className="px-1.5 sm:px-2 text-slate-500 flex items-center gap-1.5 sm:gap-2 border-r border-slate-800 pr-2 sm:pr-3 mr-0.5 sm:mr-1">
-              <Filter className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-              <span className="text-[10px] sm:text-xs font-medium hidden sm:inline">Filter:</span>
+          <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-900 p-2 rounded-lg border border-slate-800">
+            <div className="flex items-center gap-2 text-[11px] text-slate-400">
+              <Calendar className="w-4 h-4 text-slate-500" />
+              <span className="tabular-nums">{dateRange.start || '...'} - {dateRange.end || '...'}</span>
             </div>
-
-            {/* Assignee Filter */}
-            <select
-              className="bg-slate-950 border border-slate-800 text-slate-300 text-[10px] sm:text-xs rounded px-2 py-1 sm:py-1.5 focus:ring-1 focus:ring-blue-500 outline-none max-w-[100px] sm:max-w-[140px]"
-              value={assigneeFilter}
-              onChange={(e) => setAssigneeFilter(e.target.value)}
-            >
-              <option value="">Hamısı</option>
-              {currentUser && <option value={currentUser.id}>Mənim</option>}
-              {teamMembers.map(tm => (
-                <option key={tm.id} value={tm.id}>{tm.username}</option>
-              ))}
-            </select>
-
-            {/* Dropdown Filter */}
-            <select
-              className="bg-slate-950 border border-slate-800 text-slate-300 text-[10px] sm:text-xs rounded px-2 py-1 sm:py-1.5 focus:ring-1 focus:ring-blue-500 outline-none"
-              onChange={handleDateFilterChange}
-              defaultValue="30"
-            >
-              <option value="3">Son 3</option>
-              <option value="7">Son 7</option>
-              <option value="15">Son 15</option>
-              <option value="30">Son 30</option>
-              <option value="max">Hamısı</option>
-            </select>
-
-            <div className="h-3 sm:h-4 w-px bg-slate-800 mx-0.5 sm:mx-1 hidden sm:block"></div>
-
-            {/* Custom Range Inputs */}
-            <div className="flex items-center gap-1 sm:gap-2 w-full sm:w-auto mt-1 sm:mt-0">
-              <Input
-                type="date"
-                className="flex-1 sm:w-28 h-7 sm:h-8 text-[9px] sm:text-[10px] bg-slate-950 border-slate-800 px-1 sm:px-2"
-                value={dateRange.start || ''}
-                onChange={(e) => setDateRange({ ...dateRange, start: e.target.value })}
-              />
-              <span className="text-slate-600 text-[10px] sm:text-xs">-</span>
-              <Input
-                type="date"
-                className="flex-1 sm:w-28 h-7 sm:h-8 text-[9px] sm:text-[10px] bg-slate-950 border-slate-800 px-1 sm:px-2"
-                value={dateRange.end || ''}
-                onChange={(e) => setDateRange({ ...dateRange, end: e.target.value })}
-              />
+            <div className="flex items-center gap-2">
+              {activeFilterCount > 0 && (
+                <button
+                  onClick={resetFilters}
+                  className="px-2 py-1.5 rounded-lg text-[11px] font-bold border border-slate-800 text-slate-300 hover:bg-slate-800"
+                  title="Filterləri sıfırla"
+                >
+                  Sıfırla
+                </button>
+              )}
+              <button
+                onClick={() => setShowFilters(true)}
+                className="px-2 py-1.5 rounded-lg text-[11px] font-bold border border-slate-800 text-slate-200 hover:bg-slate-800 flex items-center gap-1.5"
+              >
+                <Filter className="w-4 h-4" />
+                Filtrlər
+                {activeFilterCount > 0 && (
+                  <span className="ml-1 inline-flex items-center justify-center min-w-[16px] h-[16px] px-1 rounded-full bg-blue-600/20 text-blue-300 text-[10px] font-extrabold border border-blue-500/20">
+                    {activeFilterCount}
+                  </span>
+                )}
+              </button>
             </div>
           </div>
 
         </div>
       </div>
+
+      <CRMFilterSidebar
+        open={showFilters}
+        onClose={() => setShowFilters(false)}
+        filters={filters}
+        setFilters={setFilters}
+        pipelineStages={pipelineStages}
+        customFields={customFields}
+        teamMembers={teamMembers}
+        currentUser={currentUser}
+        dateRange={dateRange}
+        setDateRange={setDateRange}
+        resultCount={filteredLeads.length}
+        totalCount={leads.length}
+      />
 
       {/* AMOCRM STYLE LEAD DETAILS PANEL */}
       {selectedLead && (

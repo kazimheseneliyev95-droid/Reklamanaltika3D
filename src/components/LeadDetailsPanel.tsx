@@ -314,12 +314,42 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
     const feedRef = useRef<HTMLDivElement>(null);
     const serverUrl = CrmService.getServerUrl();
 
+    const markReadLockRef = useRef(false);
+    const markRead = useCallback(() => {
+        if (!lead?.id) return;
+        if (markReadLockRef.current) return;
+        markReadLockRef.current = true;
+        CrmService.markLeadRead(lead.id)
+            .catch(() => { })
+            .finally(() => {
+                setTimeout(() => { markReadLockRef.current = false; }, 800);
+            });
+    }, [lead?.id]);
+
     // Mark as read when opened
     useEffect(() => {
-        if (lead?.id) {
-            CrmService.markLeadRead(lead.id).catch(() => { });
-        }
-    }, [lead?.id]);
+        markRead();
+    }, [markRead]);
+
+    // If a new message arrives while this lead is open, keep it read (pro UX)
+    useEffect(() => {
+        if (!lead?.id) return;
+        const cleanupNew = CrmService.onNewMessage((newLead) => {
+            if (newLead.id === lead.id || newLead.phone === lead.phone) {
+                markRead();
+            }
+        });
+        const cleanupUpd = CrmService.onLeadUpdated((updated) => {
+            if (updated.id === lead.id || updated.phone === lead.phone) {
+                const unread = (updated as any).unread_count ? Number((updated as any).unread_count) : 0;
+                if (unread > 0) markRead();
+            }
+        });
+        return () => {
+            cleanupNew();
+            cleanupUpd();
+        };
+    }, [lead?.id, lead.phone, markRead]);
 
     // App-like modal behavior: prevent background page scroll and hide mobile nav bars
     useEffect(() => {

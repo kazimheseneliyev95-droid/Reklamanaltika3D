@@ -450,9 +450,10 @@ class CrmServiceImpl {
       try {
         const leadId = data?.leadId;
         if (!leadId) return;
+        const ts = data?.timestamp || new Date().toISOString();
         const idx = this.leadsCache.findIndex(l => l.id === leadId);
         if (idx !== -1) {
-          const updated = { ...this.leadsCache[idx], unread_count: 0 } as any;
+          const updated = { ...this.leadsCache[idx], unread_count: 0, last_read_at: ts } as any;
           this.leadsCache[idx] = updated;
 
           const raw = localStorage.getItem(getStorageKey());

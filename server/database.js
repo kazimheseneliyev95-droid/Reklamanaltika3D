@@ -495,7 +495,7 @@ async function findLeadByWhatsAppId(whatsappId, tenantId = 'admin') {
 /**
  * Update lead message and metadata (with transaction)
  */
-async function updateLeadMessage(phone, message, whatsappId, name = null, tenantId = 'admin') {
+async function updateLeadMessage(phone, message, whatsappId, name = null, tenantId = 'admin', direction = 'in') {
     const client = await pool.connect();
 
     try {
@@ -517,16 +517,26 @@ async function updateLeadMessage(phone, message, whatsappId, name = null, tenant
 
         const query = `
         UPDATE leads
-        SET last_message = $1, 
+        SET last_message = $1,
             whatsapp_id = COALESCE($2, whatsapp_id),
             name = COALESCE($3, name),
             assignee_id = COALESCE(assignee_id, $6),
+            unread_count = CASE WHEN $7 = 'in' THEN COALESCE(unread_count, 0) + 1 ELSE unread_count END,
+            last_inbound_at = CASE WHEN $7 = 'in' THEN NOW() ELSE last_inbound_at END,
             updated_at = NOW()
         WHERE phone = $4 AND tenant_id = $5
         RETURNING *;
       `;
 
-        const result = await client.query(query, [message || null, whatsappId || null, name || null, cleanedPhone, tenantId, defaultAssigneeId]);
+        const result = await client.query(query, [
+            message || null,
+            whatsappId || null,
+            name || null,
+            cleanedPhone,
+            tenantId,
+            defaultAssigneeId,
+            direction === 'out' ? 'out' : 'in'
+        ]);
         await client.query('COMMIT');
 
         if (result.rows.length === 0) {

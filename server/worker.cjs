@@ -531,8 +531,8 @@ async function processMessage(tenantId, msg, isFromMe) {
                 if (existingLead) {
                     // Use the canonical phone from the DB to avoid mismatch
                     var canonicalPhone = existingLead.phone;
-                    await db.updateLeadMessage(canonicalPhone, messageContent, whatsappId, contactName, tenantId, isFromMe ? 'out' : 'in');
-                    savedLead = existingLead;
+                    savedLead = await db.updateLeadMessage(canonicalPhone, messageContent, whatsappId, contactName, tenantId, isFromMe ? 'out' : 'in');
+                    if (!savedLead) savedLead = existingLead;
                 } else {
                     savedLead = await db.createLead({
                         phone: rawNumber,
@@ -542,9 +542,11 @@ async function processMessage(tenantId, msg, isFromMe) {
                         source: 'whatsapp',
                         status: 'new'
                     }, tenantId);
-                    if (!isFromMe && savedLead && savedLead.id) {
+                    // Ensure unread counter & last_inbound_at are updated for the first inbound message too
+                    if (savedLead && savedLead.phone) {
                         try {
-                            await db.updateLeadFields(savedLead.id, { unread_count: 1 }, tenantId);
+                            const updatedFirst = await db.updateLeadMessage(savedLead.phone, messageContent, whatsappId, contactName, tenantId, isFromMe ? 'out' : 'in');
+                            if (updatedFirst) savedLead = updatedFirst;
                         } catch { }
                     }
                     console.log('✨ New lead [' + tenantId + ']: ' + rawNumber);
