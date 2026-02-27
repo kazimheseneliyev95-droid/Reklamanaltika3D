@@ -50,7 +50,24 @@ async function fetchJsonWithRetry(url, options = {}, retryOptions = {}) {
       const response = await fetch(url, { ...options, signal: controller.signal });
       clearTimeout(timeoutId);
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+        let detail = '';
+        try {
+          const text = await response.text();
+          if (text) {
+            try {
+              const parsed = JSON.parse(text);
+              const msg = parsed?.error?.message || parsed?.message || '';
+              const code = parsed?.error?.code || parsed?.code || '';
+              detail = msg ? `${msg}${code ? ` (code ${code})` : ''}` : text;
+            } catch {
+              detail = text;
+            }
+          }
+        } catch {
+          // ignore
+        }
+        const suffix = detail ? `: ${String(detail).slice(0, 600)}` : '';
+        throw new Error(`HTTP ${response.status}${suffix}`);
       }
       return await response.json();
     } catch (err) {
@@ -1898,6 +1915,15 @@ app.get('/api/meta/pages', requireTenantAuth, requireAdmin, asyncHandler(async (
   if (!db || typeof db.getMetaPages !== 'function') return res.status(501).json({ error: 'Meta integration is unavailable' });
   const pages = await db.getMetaPages(req.tenantId);
   res.json({ pages });
+}));
+
+app.get('/api/meta/config', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  res.json({
+    hasAppSecret: Boolean(META_APP_SECRET),
+    hasVerifyToken: Boolean(META_VERIFY_TOKEN),
+    dbEnabled: Boolean(process.env.DATABASE_URL),
+    callbackPath: '/api/webhooks/meta'
+  });
 }));
 
 app.get('/api/meta/webhook/status', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {

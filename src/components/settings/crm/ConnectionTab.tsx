@@ -41,6 +41,7 @@ export function ConnectionTab() {
 
   const [webhookStats, setWebhookStats] = useState<any | null>(null);
   const [lastConnectReport, setLastConnectReport] = useState<any | null>(null);
+  const [metaConfig, setMetaConfig] = useState<any | null>(null);
 
   const refreshHealth = async () => {
     const h = await CrmService.fetchHealth();
@@ -87,6 +88,26 @@ export function ConnectionTab() {
       setWebhookStats(data?.stats || null);
     } catch (e: any) {
       setMetaError(e?.message || 'Webhook status oxunmadi');
+    } finally {
+      setMetaBusy(false);
+    }
+  };
+
+  const refreshMetaConfig = async () => {
+    setMetaBusy(true);
+    setMetaError('');
+    try {
+      const url = CrmService.getServerUrl();
+      const token = localStorage.getItem('crm_auth_token');
+      if (!url || !token) return;
+      const res = await fetch(`${url}/api/meta/config`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Config failed');
+      setMetaConfig(data || null);
+    } catch (e: any) {
+      setMetaError(e?.message || 'Meta config oxunmadi');
     } finally {
       setMetaBusy(false);
     }
@@ -151,6 +172,7 @@ export function ConnectionTab() {
       setSelectedPageIds([]);
       await refreshMeta();
       await refreshWebhookStats();
+      await refreshMetaConfig();
     } catch (e: any) {
       setMetaError(e?.message || 'Qoşulma alınmadı');
     } finally {
@@ -212,6 +234,7 @@ export function ConnectionTab() {
     refreshHealth();
     refreshMeta();
     refreshWebhookStats();
+    refreshMetaConfig();
 
     return () => {
       cleanupHealth();
@@ -373,7 +396,11 @@ export function ConnectionTab() {
 
             <div className="flex items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-950/20 px-3 py-2">
               <div className="text-[11px] text-slate-400">
-                Webhook hits: <span className="text-slate-200 font-semibold">{webhookStats?.accepted ?? 0}</span>
+                Webhook: <span className="text-slate-200 font-semibold">{webhookStats?.accepted ?? 0}</span>
+                <span className="text-slate-600"> ok</span>
+                <span className="text-slate-600"> · </span>
+                <span className="text-slate-200 font-semibold">{webhookStats?.rejected ?? 0}</span>
+                <span className="text-slate-600"> rej</span>
                 {webhookStats?.last_at ? <span className="text-slate-600"> · last: {new Date(webhookStats.last_at).toLocaleString()}</span> : null}
                 {webhookStats?.last_error ? <span className="text-red-300"> · err: {String(webhookStats.last_error)}</span> : null}
               </div>
@@ -385,6 +412,18 @@ export function ConnectionTab() {
                 {metaBusy ? '...' : 'Yoxla'}
               </button>
             </div>
+
+            {metaConfig && (!metaConfig.hasAppSecret || !metaConfig.hasVerifyToken) ? (
+              <div className="rounded-lg border border-amber-900/40 bg-amber-950/10 px-3 py-2 text-[11px] text-amber-300">
+                Meta env eksik: {!metaConfig.hasAppSecret ? 'META_APP_SECRET ' : ''}{!metaConfig.hasVerifyToken ? 'META_VERIFY_TOKEN' : ''}
+              </div>
+            ) : null}
+
+            {metaPages.some(p => !p.ig_business_id) ? (
+              <div className="rounded-lg border border-slate-800 bg-slate-950/20 px-3 py-2 text-[11px] text-slate-400">
+                IG ucu n: Saved Pages setrinde <span className="text-slate-200 font-semibold">ig:</span> gormursense, Instagram hesab Facebook Page-e bagli deyil.
+              </div>
+            ) : null}
 
             {metaPages.length > 0 ? (
               <div className="rounded-lg border border-slate-800 bg-slate-950/30 p-3">
