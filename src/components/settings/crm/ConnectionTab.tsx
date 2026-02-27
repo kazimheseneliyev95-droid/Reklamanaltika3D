@@ -39,6 +39,9 @@ export function ConnectionTab() {
   const [discovered, setDiscovered] = useState<DiscoveredPage[]>([]);
   const [selectedPageIds, setSelectedPageIds] = useState<string[]>([]);
 
+  const [webhookStats, setWebhookStats] = useState<any | null>(null);
+  const [lastConnectReport, setLastConnectReport] = useState<any | null>(null);
+
   const refreshHealth = async () => {
     const h = await CrmService.fetchHealth();
     if (h) setHealth(h);
@@ -64,6 +67,26 @@ export function ConnectionTab() {
       setMetaPages(Array.isArray(data?.pages) ? data.pages : []);
     } catch (e: any) {
       setMetaError(e?.message || 'Meta bağlantısı oxuna bilmədi');
+    } finally {
+      setMetaBusy(false);
+    }
+  };
+
+  const refreshWebhookStats = async () => {
+    setMetaBusy(true);
+    setMetaError('');
+    try {
+      const url = CrmService.getServerUrl();
+      const token = localStorage.getItem('crm_auth_token');
+      if (!url || !token) return;
+      const res = await fetch(`${url}/api/meta/webhook/status`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Status failed');
+      setWebhookStats(data?.stats || null);
+    } catch (e: any) {
+      setMetaError(e?.message || 'Webhook status oxunmadi');
     } finally {
       setMetaBusy(false);
     }
@@ -121,10 +144,13 @@ export function ConnectionTab() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || 'Connect failed');
 
+      setLastConnectReport(data?.subscribe || null);
+
       setUserToken('');
       setDiscovered([]);
       setSelectedPageIds([]);
       await refreshMeta();
+      await refreshWebhookStats();
     } catch (e: any) {
       setMetaError(e?.message || 'Qoşulma alınmadı');
     } finally {
@@ -345,6 +371,21 @@ export function ConnectionTab() {
               Qoşulu səhifə: <span className="text-slate-200 font-semibold">{metaPages.length}</span>
             </div>
 
+            <div className="flex items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-950/20 px-3 py-2">
+              <div className="text-[11px] text-slate-400">
+                Webhook hits: <span className="text-slate-200 font-semibold">{webhookStats?.accepted ?? 0}</span>
+                {webhookStats?.last_at ? <span className="text-slate-600"> · last: {new Date(webhookStats.last_at).toLocaleString()}</span> : null}
+                {webhookStats?.last_error ? <span className="text-red-300"> · err: {String(webhookStats.last_error)}</span> : null}
+              </div>
+              <button
+                onClick={refreshWebhookStats}
+                disabled={metaBusy}
+                className="px-2 py-1 rounded-md text-[10px] font-bold border border-slate-800 text-slate-300 hover:bg-slate-900 disabled:opacity-50"
+              >
+                {metaBusy ? '...' : 'Yoxla'}
+              </button>
+            </div>
+
             {metaPages.length > 0 ? (
               <div className="rounded-lg border border-slate-800 bg-slate-950/30 p-3">
                 <div className="text-[10px] uppercase font-bold text-slate-500 mb-2">Saved Pages</div>
@@ -468,6 +509,31 @@ export function ConnectionTab() {
                 >
                   {metaBusy ? 'Qoşulur...' : `Seçilənləri qoş (${selectedPageIds.length})`}
                 </button>
+              </div>
+            ) : null}
+
+            {Array.isArray(lastConnectReport) && lastConnectReport.length > 0 ? (
+              <div className="rounded-lg border border-slate-800 bg-slate-950/30 p-3">
+                <div className="text-[10px] uppercase font-bold text-slate-500 mb-2">Subscribe nəticəsi</div>
+                <div className="space-y-2">
+                  {lastConnectReport.slice(0, 8).map((r: any) => (
+                    <div key={String(r?.pageId)} className="text-[11px] text-slate-300">
+                      <span className="font-semibold">{String(r?.pageId)}</span>
+                      <span className="text-slate-500"> · page: </span>
+                      <span className={r?.result?.page?.ok ? 'text-green-300' : 'text-red-300'}>
+                        {r?.result?.page?.ok ? 'ok' : (r?.result?.page?.error || 'fail')}
+                      </span>
+                      {r?.igBusinessId ? (
+                        <>
+                          <span className="text-slate-500"> · ig: </span>
+                          <span className={r?.result?.instagram?.ok ? 'text-green-300' : 'text-red-300'}>
+                            {r?.result?.instagram?.ok ? 'ok' : (r?.result?.instagram?.error || 'fail')}
+                          </span>
+                        </>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
               </div>
             ) : null}
           </CardContent>
