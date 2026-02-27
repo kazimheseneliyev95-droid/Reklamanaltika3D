@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import QRCode from 'react-qr-code';
-import { RefreshCcw, Smartphone, Wifi, WifiOff, Link2 } from 'lucide-react';
+import { RefreshCcw, Smartphone, Wifi, WifiOff, Link2, CheckSquare, Square, Trash2 } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import { useAppStore } from '../../../context/Store';
 import { CrmService } from '../../../services/CrmService';
@@ -17,6 +17,14 @@ type MetaPage = {
   updated_at?: string;
 };
 
+type DiscoveredPage = {
+  pageId: string;
+  pageName: string | null;
+  pageAccessToken: string | null;
+  igBusinessId: string | null;
+  igUsername: string | null;
+};
+
 export function ConnectionTab() {
   const { isWhatsAppConnected } = useAppStore();
   const [health, setHealth] = useState<any | null>(null);
@@ -27,10 +35,9 @@ export function ConnectionTab() {
   const [metaBusy, setMetaBusy] = useState(false);
   const [metaError, setMetaError] = useState('');
 
-  const [pageId, setPageId] = useState('');
-  const [pageName, setPageName] = useState('');
-  const [pageAccessToken, setPageAccessToken] = useState('');
-  const [igBusinessId, setIgBusinessId] = useState('');
+  const [userToken, setUserToken] = useState('');
+  const [discovered, setDiscovered] = useState<DiscoveredPage[]>([]);
+  const [selectedPageIds, setSelectedPageIds] = useState<string[]>([]);
 
   const refreshHealth = async () => {
     const h = await CrmService.fetchHealth();
@@ -62,7 +69,40 @@ export function ConnectionTab() {
     }
   };
 
-  const saveMeta = async () => {
+  const discoverPages = async () => {
+    setMetaBusy(true);
+    setMetaError('');
+    try {
+      const url = CrmService.getServerUrl();
+      const token = localStorage.getItem('crm_auth_token');
+      if (!url || !token) return;
+      const res = await fetch(`${url}/api/meta/discover`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ token: userToken })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Discover failed');
+
+      const pages: DiscoveredPage[] = Array.isArray(data?.pages) ? data.pages : [];
+      setDiscovered(pages);
+
+      const connected = new Set((metaPages || []).map(p => String(p.page_id)));
+      const defaults = pages
+        .map(p => p.pageId)
+        .filter(pid => pid && !connected.has(pid));
+      setSelectedPageIds(defaults);
+    } catch (e: any) {
+      setMetaError(e?.message || 'Səhifələr alınmadı');
+    } finally {
+      setMetaBusy(false);
+    }
+  };
+
+  const connectSelected = async () => {
     setMetaBusy(true);
     setMetaError('');
     try {
@@ -70,26 +110,45 @@ export function ConnectionTab() {
       const token = localStorage.getItem('crm_auth_token');
       if (!url || !token) return;
 
-      const res = await fetch(`${url}/api/meta/pages`, {
+      const res = await fetch(`${url}/api/meta/connect`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({
-          pageId,
-          pageName,
-          pageAccessToken,
-          igBusinessId
-        })
+        body: JSON.stringify({ token: userToken, pageIds: selectedPageIds })
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.error || 'Meta save failed');
+      if (!res.ok) throw new Error(data?.error || 'Connect failed');
 
-      setPageAccessToken('');
+      setUserToken('');
+      setDiscovered([]);
+      setSelectedPageIds([]);
       await refreshMeta();
     } catch (e: any) {
-      setMetaError(e?.message || 'Meta bağlantısı saxlanmadı');
+      setMetaError(e?.message || 'Qoşulma alınmadı');
+    } finally {
+      setMetaBusy(false);
+    }
+  };
+
+  const disconnectPage = async (pageId: string) => {
+    setMetaBusy(true);
+    setMetaError('');
+    try {
+      const url = CrmService.getServerUrl();
+      const token = localStorage.getItem('crm_auth_token');
+      if (!url || !token) return;
+
+      const res = await fetch(`${url}/api/meta/pages/${encodeURIComponent(pageId)}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Disconnect failed');
+      await refreshMeta();
+    } catch (e: any) {
+      setMetaError(e?.message || 'Ayrilma alınmadı');
     } finally {
       setMetaBusy(false);
     }
@@ -273,59 +332,111 @@ export function ConnectionTab() {
                         <div className="text-[12px] text-slate-200 font-semibold truncate">{p.page_name || p.page_id}</div>
                         <div className="text-[10px] text-slate-600 truncate">page_id: {p.page_id}{p.ig_business_id ? ` · ig: ${p.ig_business_id}` : ''}</div>
                       </div>
+                      <button
+                        onClick={() => disconnectPage(p.page_id)}
+                        disabled={metaBusy}
+                        className="p-2 rounded-lg text-slate-500 hover:text-red-300 hover:bg-slate-900 border border-slate-800 disabled:opacity-50"
+                        title="Disconnect"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
                     </div>
                   ))}
                 </div>
               </div>
             ) : null}
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              <div>
-                <label className="text-[10px] uppercase font-bold text-slate-500 mb-1 block">Page ID</label>
-                <input
-                  value={pageId}
-                  onChange={(e) => setPageId(e.target.value)}
-                  className="w-full h-9 rounded-lg bg-slate-950 border border-slate-800 px-3 text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-600/50"
-                  placeholder="1234567890"
-                />
-              </div>
-              <div>
-                <label className="text-[10px] uppercase font-bold text-slate-500 mb-1 block">Page Name</label>
-                <input
-                  value={pageName}
-                  onChange={(e) => setPageName(e.target.value)}
-                  className="w-full h-9 rounded-lg bg-slate-950 border border-slate-800 px-3 text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-600/50"
-                  placeholder="My Business"
-                />
-              </div>
-              <div className="sm:col-span-2">
-                <label className="text-[10px] uppercase font-bold text-slate-500 mb-1 block">Page Access Token</label>
-                <input
-                  type="password"
-                  value={pageAccessToken}
-                  onChange={(e) => setPageAccessToken(e.target.value)}
-                  className="w-full h-9 rounded-lg bg-slate-950 border border-slate-800 px-3 text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-600/50"
-                  placeholder="EAAG..."
-                />
-              </div>
-              <div className="sm:col-span-2">
-                <label className="text-[10px] uppercase font-bold text-slate-500 mb-1 block">IG Business ID (optional)</label>
-                <input
-                  value={igBusinessId}
-                  onChange={(e) => setIgBusinessId(e.target.value)}
-                  className="w-full h-9 rounded-lg bg-slate-950 border border-slate-800 px-3 text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-600/50"
-                  placeholder="1784..."
-                />
+            <div>
+              <label className="text-[10px] uppercase font-bold text-slate-500 mb-1 block">User Access Token</label>
+              <input
+                type="password"
+                value={userToken}
+                onChange={(e) => setUserToken(e.target.value)}
+                className="w-full h-9 rounded-lg bg-slate-950 border border-slate-800 px-3 text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-600/50"
+                placeholder="EAAG..."
+              />
+              <div className="mt-1 text-[10px] text-slate-600">
+                Token yaz → hesaba aid Page/IG siyahisi gelecek → secib qos.
               </div>
             </div>
 
-            <button
-              onClick={saveMeta}
-              disabled={metaBusy || !pageId.trim() || !pageAccessToken.trim()}
-              className="w-full py-2 rounded-lg text-xs font-semibold bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-200 transition-colors disabled:opacity-50"
-            >
-              {metaBusy ? 'Saxlanır...' : 'Meta qoş (Token ilə)'}
-            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={discoverPages}
+                disabled={metaBusy || !userToken.trim()}
+                className="flex-1 py-2 rounded-lg text-xs font-semibold bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-200 transition-colors disabled:opacity-50"
+              >
+                {metaBusy ? '...' : 'Səhifələri gətir'}
+              </button>
+              <button
+                onClick={() => {
+                  setDiscovered([]);
+                  setSelectedPageIds([]);
+                }}
+                disabled={metaBusy || discovered.length === 0}
+                className="px-3 py-2 rounded-lg text-xs font-semibold bg-transparent hover:bg-slate-900 border border-slate-800 text-slate-300 transition-colors disabled:opacity-50"
+              >
+                Təmizlə
+              </button>
+            </div>
+
+            {discovered.length > 0 ? (
+              <div className="rounded-lg border border-slate-800 bg-slate-950/30 p-3">
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <div className="text-[10px] uppercase font-bold text-slate-500">Tapılan səhifələr</div>
+                  <button
+                    onClick={() => {
+                      const all = discovered.map(d => d.pageId).filter(Boolean);
+                      const allSelected = selectedPageIds.length === all.length;
+                      setSelectedPageIds(allSelected ? [] : all);
+                    }}
+                    className="px-2 py-1 rounded-md text-[10px] font-bold border border-slate-800 text-slate-300 hover:bg-slate-900"
+                  >
+                    hamısı
+                  </button>
+                </div>
+
+                <div className="space-y-2 max-h-48 overflow-auto pr-1 custom-scrollbar">
+                  {discovered.map((p) => {
+                    const checked = selectedPageIds.includes(p.pageId);
+                    const already = (metaPages || []).some(mp => String(mp.page_id) === String(p.pageId));
+                    return (
+                      <button
+                        key={p.pageId}
+                        onClick={() => {
+                          if (checked) setSelectedPageIds(prev => prev.filter(x => x !== p.pageId));
+                          else setSelectedPageIds(prev => [...prev, p.pageId]);
+                        }}
+                        className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-xl border border-slate-800 hover:bg-slate-900/40 text-left"
+                      >
+                        <span className="flex items-center gap-2 min-w-0">
+                          {checked ? <CheckSquare className="w-4 h-4 text-blue-400" /> : <Square className="w-4 h-4 text-slate-600" />}
+                          <span className="min-w-0">
+                            <span className="block text-[12px] font-semibold text-slate-200 truncate">
+                              {p.pageName || p.pageId}
+                            </span>
+                            <span className="block text-[10px] text-slate-600 truncate">
+                              page: {p.pageId}{p.igBusinessId ? ` · ig: ${p.igBusinessId}${p.igUsername ? ` (@${p.igUsername})` : ''}` : ''}
+                            </span>
+                          </span>
+                        </span>
+                        <span className={already ? 'text-[10px] font-bold text-green-300' : 'text-[10px] font-bold text-slate-500'}>
+                          {already ? 'connected' : 'new'}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <button
+                  onClick={connectSelected}
+                  disabled={metaBusy || !userToken.trim() || selectedPageIds.length === 0}
+                  className="mt-3 w-full py-2 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white transition-colors disabled:opacity-50"
+                >
+                  {metaBusy ? 'Qoşulur...' : `Seçilənləri qoş (${selectedPageIds.length})`}
+                </button>
+              </div>
+            ) : null}
           </CardContent>
         </Card>
       </SettingsMain>

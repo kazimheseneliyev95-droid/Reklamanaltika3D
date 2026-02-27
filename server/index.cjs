@@ -1700,6 +1700,63 @@ app.post('/api/settings', requireTenantAuth, requireAdmin, asyncHandler(async (r
 // META (FACEBOOK/INSTAGRAM) CONNECTION API
 // ═══════════════════════════════════════════════════════════════
 
+async function fetchMetaPagesForToken(userAccessToken) {
+  const token = String(userAccessToken || '').trim();
+  if (!token) throw new Error('Token is required');
+
+  const url = `https://graph.facebook.com/v19.0/me/accounts?fields=${encodeURIComponent(
+    'id,name,access_token,instagram_business_account{id,username},connected_instagram_account{id,username}'
+  )}&limit=200&access_token=${encodeURIComponent(token)}`;
+
+  const data = await fetchJsonWithRetry(url, {}, { retries: 1, timeoutMs: 6000 });
+  const rows = Array.isArray(data?.data) ? data.data : [];
+  return rows.map((p) => {
+    const ig = p?.instagram_business_account || p?.connected_instagram_account || null;
+    return {
+      pageId: String(p?.id || ''),
+      pageName: p?.name ? String(p.name) : null,
+      pageAccessToken: p?.access_token ? String(p.access_token) : null,
+      igBusinessId: ig?.id ? String(ig.id) : null,
+      igUsername: ig?.username ? String(ig.username) : null,
+    };
+  }).filter((p) => p.pageId && p.pageAccessToken);
+}
+
+app.post('/api/meta/discover', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  const token = String(req.body?.token || '').trim();
+  if (!token) return res.status(400).json({ error: 'token is required' });
+  const pages = await fetchMetaPagesForToken(token);
+  res.json({ pages });
+}));
+
+app.post('/api/meta/connect', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  if (!db || typeof db.upsertMetaPage !== 'function') return res.status(501).json({ error: 'Meta integration is unavailable' });
+
+  const token = String(req.body?.token || '').trim();
+  const pageIds = Array.isArray(req.body?.pageIds) ? req.body.pageIds.map((x) => String(x).trim()).filter(Boolean) : [];
+  if (!token) return res.status(400).json({ error: 'token is required' });
+  if (pageIds.length === 0) return res.status(400).json({ error: 'pageIds is required' });
+
+  const discovered = await fetchMetaPagesForToken(token);
+  const byId = new Map(discovered.map((p) => [p.pageId, p]));
+
+  const saved = [];
+  for (const pid of pageIds) {
+    const p = byId.get(pid);
+    if (!p || !p.pageAccessToken) continue;
+    const row = await db.upsertMetaPage(req.tenantId, {
+      page_id: p.pageId,
+      page_name: p.pageName || null,
+      page_access_token: p.pageAccessToken,
+      ig_business_id: p.igBusinessId || null
+    });
+    if (row) saved.push(row);
+  }
+
+  res.status(201).json({ success: true, savedCount: saved.length, pages: saved });
+}));
+
 app.get('/api/meta/pages', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   if (!db || typeof db.getMetaPages !== 'function') return res.status(501).json({ error: 'Meta integration is unavailable' });
