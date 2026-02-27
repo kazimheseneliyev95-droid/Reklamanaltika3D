@@ -7,7 +7,7 @@ import { Trash2, Calendar, Filter, RefreshCcw, Pencil, ShoppingBag, DollarSign, 
 import { cn, formatCurrency } from '../lib/utils';
 import { LeadDetailsPanel } from '../components/LeadDetailsPanel';
 import { CRMSettingsPanel } from '../components/CRMSettingsPanel';
-import { loadCRMSettings, CustomField } from '../lib/crmSettings';
+import { loadCRMSettings, CustomField, LeadCardUISettings } from '../lib/crmSettings';
 
 export default function CRMPage() {
   const [activeMobileTab, setActiveMobileTab] = useState<string>('new');
@@ -79,7 +79,8 @@ export default function CRMPage() {
     });
   };
 
-  const { pipelineStages, customFields } = loadCRMSettings();
+  const { pipelineStages, customFields, ui } = loadCRMSettings();
+  const leadCardUi = ui?.leadCard;
 
   const getIconForColor = (color: string) => {
     switch (color) {
@@ -97,6 +98,8 @@ export default function CRMPage() {
     color: stage.color,
     icon: getIconForColor(stage.color)
   }));
+
+  const kanbanMinWidth = Math.max(1000, columns.length * 290);
 
   return (
     <div className="p-2 sm:p-6 max-w-[1600px] mx-auto h-full flex flex-col font-sans space-y-2 sm:space-y-6">
@@ -280,11 +283,11 @@ export default function CRMPage() {
       {/* KANBAN BOARD — desktop: side-by-side | mobile: single column */}
       <div className="flex-1 overflow-x-auto pb-4">
         {/* Desktop */}
-        <div className="hidden sm:flex gap-4 lg:gap-6 min-w-[880px] h-full">
+        <div className="hidden sm:flex gap-4 lg:gap-6 h-full" style={{ minWidth: kanbanMinWidth }}>
           {columns.map((col) => (
             <div
               key={col.id}
-              className="flex-1 min-w-[205px] flex flex-col bg-slate-900/50 rounded-xl border border-slate-800 h-full max-h-[calc(100vh-300px)]"
+              className="flex-1 min-w-[250px] flex flex-col bg-slate-900/50 rounded-xl border border-slate-800 h-full max-h-[calc(100vh-300px)]"
               onDragOver={(e) => e.preventDefault()}
               onDrop={(e) => {
                 e.preventDefault();
@@ -314,6 +317,8 @@ export default function CRMPage() {
                     onViewMessage={() => setSelectedLead(lead)}
                     customFields={customFields}
                     teamMembers={teamMembers}
+                    pipelineStages={pipelineStages}
+                    leadCardUi={leadCardUi}
                   />
                 ))}
                 {filteredLeads.filter(l => l.status === col.id).length === 0 && (
@@ -349,6 +354,8 @@ export default function CRMPage() {
                   onViewMessage={() => setSelectedLead(lead)}
                   customFields={customFields}
                   teamMembers={teamMembers}
+                  pipelineStages={pipelineStages}
+                  leadCardUi={leadCardUi}
                 />
               ))}
               {filteredLeads.filter(l => l.status === col.id).length === 0 && (
@@ -397,6 +404,8 @@ function LeadCard({
   onViewMessage,
   customFields,
   teamMembers,
+  pipelineStages,
+  leadCardUi,
 }: {
   lead: Lead;
   onUpdateStatus: any;
@@ -405,12 +414,34 @@ function LeadCard({
   onViewMessage: () => void;
   customFields: CustomField[];
   teamMembers: any[];
+  pipelineStages: { id: string; label: string; color: string }[];
+  leadCardUi?: LeadCardUISettings;
 }) {
   const dateStr = new Date(lead.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   const unread = (lead as any).unread_count ? Number((lead as any).unread_count) : 0;
 
+  const cfg: LeadCardUISettings = {
+    showAssignee: true,
+    showSource: true,
+    showNameBadge: true,
+    showProductBadge: true,
+    showValue: true,
+    showLastMessagePreview: true,
+    showCustomFieldBadges: true,
+    customFieldBadgeMode: 'value',
+    customFieldIds: [],
+    maxCustomFieldBadges: 2,
+    ...(leadCardUi || {})
+  };
+
   const extra = parseExtraData((lead as any).extra_data);
-  const selectFields = (customFields || []).filter(f => f.type === 'select');
+  const selectFieldsAll = (customFields || []).filter(f => f.type === 'select');
+  const selectFields = (Array.isArray(cfg.customFieldIds) && cfg.customFieldIds.length > 0)
+    ? selectFieldsAll.filter(f => cfg.customFieldIds!.includes(f.id))
+    : selectFieldsAll;
+
+  const maxBadges = Number.isFinite(Number(cfg.maxCustomFieldBadges)) ? Math.max(0, Number(cfg.maxCustomFieldBadges)) : 2;
+
   const selectBadges = selectFields
     .map(f => {
       const v = extra?.[f.id];
@@ -419,7 +450,7 @@ function LeadCard({
       return { id: f.id, label: f.label, value };
     })
     .filter(Boolean)
-    .slice(0, 2) as Array<{ id: string; label: string; value: string }>;
+    .slice(0, maxBadges) as Array<{ id: string; label: string; value: string }>;
 
   const assigneeId = (lead as any).assignee_id || null;
   const assignee = assigneeId ? (teamMembers || []).find((u: any) => u.id === assigneeId) : null;
@@ -454,19 +485,25 @@ function LeadCard({
             <span className="text-[9px] text-slate-500 flex items-center gap-1">
               <Calendar className="w-2.5 h-2.5" /> {dateStr}
             </span>
-            {lead.name && lead.name !== 'Unknown' && (
+            {cfg.showNameBadge !== false && lead.name && lead.name !== 'Unknown' && (
               <span className="text-[9px] text-blue-400 bg-blue-950/30 px-1 rounded truncate max-w-[140px]">{lead.name}</span>
             )}
           </div>
 
-          <div className="mt-1 flex flex-wrap items-center gap-1">
-            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-semibold bg-slate-900/60 text-slate-300 border border-slate-800">
-              <Users className="w-2.5 h-2.5" /> {assigneeLabel}
-            </span>
-            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-semibold bg-slate-900/60 text-slate-300 border border-slate-800">
-              <Route className="w-2.5 h-2.5" /> {sourceLabel}
-            </span>
-          </div>
+          {(cfg.showAssignee !== false || cfg.showSource !== false) && (
+            <div className="mt-1 flex flex-wrap items-center gap-1">
+              {cfg.showAssignee !== false && (
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-semibold bg-slate-900/60 text-slate-300 border border-slate-800">
+                  <Users className="w-2.5 h-2.5" /> {assigneeLabel}
+                </span>
+              )}
+              {cfg.showSource !== false && (
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-semibold bg-slate-900/60 text-slate-300 border border-slate-800">
+                  <Route className="w-2.5 h-2.5" /> {sourceLabel}
+                </span>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -480,7 +517,7 @@ function LeadCard({
       </div>
 
       {/* Product Name Badge */}
-      {lead.product_name && (
+      {cfg.showProductBadge !== false && lead.product_name && (
         <div className="mb-2">
           <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-800 text-slate-300 border border-slate-700">
             <ShoppingBag className="w-2.5 h-2.5" /> {lead.product_name}
@@ -488,7 +525,7 @@ function LeadCard({
         </div>
       )}
 
-      {selectBadges.length > 0 && (
+      {cfg.showCustomFieldBadges !== false && selectBadges.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-1">
           {selectBadges.map(b => {
             const hue = hashHue(`${b.id}:${b.value}`);
@@ -504,14 +541,16 @@ function LeadCard({
                 className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold border max-w-full"
                 style={style}
               >
-                <span className="max-w-[180px] truncate">{b.label}: {b.value}</span>
+                <span className="max-w-[180px] truncate">
+                  {(cfg.customFieldBadgeMode || 'value') === 'label_value' ? `${b.label}: ${b.value}` : b.value}
+                </span>
               </span>
             );
           })}
         </div>
       )}
 
-      {lead.last_message && (
+      {cfg.showLastMessagePreview !== false && lead.last_message && (
         <div className="bg-slate-900/50 p-2 rounded mb-1.5 border border-slate-800/50">
           <p className="text-[11px] text-slate-300 line-clamp-2 italic leading-snug">
             "{lead.last_message}"
@@ -527,35 +566,46 @@ function LeadCard({
         ƏTRAFLI
       </button>
 
-      {lead.value && lead.value > 0 ? (
+      {cfg.showValue !== false && lead.value && lead.value > 0 ? (
         <div className="mb-2 text-xs font-mono text-green-400 flex items-center gap-1">
           <DollarSign className="w-3 h-3" /> {lead.value} AZN
         </div>
       ) : null}
 
-      {/* Quick Actions */}
-      <div className="flex gap-1 mt-1.5 opacity-80 hover:opacity-100 transition-opacity">
-        {lead.status !== 'new' && (
-          <button onClick={() => onUpdateStatus(lead.id, 'new')} className="flex-1 py-1 text-[9px] font-medium bg-slate-900 hover:bg-slate-800 text-slate-400 rounded border border-slate-800 transition-colors">
-            New
-          </button>
-        )}
-        {lead.status !== 'potential' && (
-          <button onClick={() => onUpdateStatus(lead.id, 'potential')} className="flex-1 py-1 text-[9px] font-medium bg-purple-950/20 hover:bg-purple-900/40 text-purple-400 rounded border border-purple-900/30 transition-colors">
-            Lead
-          </button>
-        )}
-        {lead.status !== 'won' && (
-          <button onClick={() => onUpdateStatus(lead.id, 'won')} className="flex-1 py-1 text-[9px] font-medium bg-green-950/20 hover:bg-green-900/40 text-green-400 rounded border border-green-900/30 transition-colors">
-            Sale
-          </button>
-        )}
-        {lead.status !== 'lost' && (
-          <button onClick={() => onUpdateStatus(lead.id, 'lost')} className="flex-1 py-1 text-[9px] font-medium bg-slate-900 hover:bg-slate-800 text-slate-500 rounded border border-slate-800 transition-colors">
-            X
-          </button>
-        )}
-      </div>
+      {/* Quick Actions (dynamic from Kanban stages) */}
+      {Array.isArray(pipelineStages) && pipelineStages.length > 0 && (
+        <div className="mt-1.5 opacity-80 hover:opacity-100 transition-opacity">
+          <div className="-mx-1 px-1 overflow-x-auto no-scrollbar">
+            <div className="flex gap-1 min-w-max">
+              {pipelineStages.filter(s => s.id !== lead.status).map(stage => {
+                const c = String(stage.color || 'slate');
+                const cls = c === 'green'
+                  ? 'bg-green-950/20 hover:bg-green-900/40 text-green-300 border-green-900/30'
+                  : c === 'blue'
+                    ? 'bg-blue-950/20 hover:bg-blue-900/40 text-blue-300 border-blue-900/30'
+                    : c === 'purple'
+                      ? 'bg-purple-950/20 hover:bg-purple-900/40 text-purple-300 border-purple-900/30'
+                      : c === 'red'
+                        ? 'bg-red-950/20 hover:bg-red-900/40 text-red-300 border-red-900/30'
+                        : c === 'orange' || c === 'amber' || c === 'yellow'
+                          ? 'bg-amber-950/20 hover:bg-amber-900/40 text-amber-200 border-amber-900/30'
+                          : 'bg-slate-900 hover:bg-slate-800 text-slate-400 border-slate-800';
+
+                return (
+                  <button
+                    key={stage.id}
+                    onClick={() => onUpdateStatus(lead.id, stage.id)}
+                    className={cn('px-2 py-1 text-[9px] font-semibold rounded border transition-colors whitespace-nowrap', cls)}
+                    title={stage.label}
+                  >
+                    {stage.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -3,12 +3,12 @@ import QRCode from 'react-qr-code';
 import {
     Settings, X, Plus, Trash2, GripVertical,
     Type, Hash, List, ChevronDown, ChevronUp, Save, Check,
-    Zap, ToggleLeft, ToggleRight, AlertTriangle, Users, Activity, Smartphone, Wifi, WifiOff, RefreshCcw, Route
+    Zap, ToggleLeft, ToggleRight, AlertTriangle, Users, Activity, Smartphone, Wifi, WifiOff, RefreshCcw, Route, LayoutGrid
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import {
     CustomField, CRMSettings, FieldType, PipelineStage, AutoRule, RoutingRule,
-    loadCRMSettings, saveCRMSettings, generateFieldId, applyRoutingRules
+    loadCRMSettings, saveCRMSettings, generateFieldId, applyRoutingRules, LeadCardUISettings
 } from '../lib/crmSettings';
 import { CrmService } from '../services/CrmService';
 import { UsersSettings } from './UsersSettings';
@@ -125,13 +125,14 @@ const TYPE_LABELS: Record<FieldType, { label: string; icon: React.ReactNode }> =
 };
 
 // ─── Tabs ─────────────────────────────────────────────────────────────────────
-type Tab = 'connection' | 'rules' | 'routing' | 'stages' | 'fields' | 'users' | 'audit';
+type Tab = 'connection' | 'rules' | 'routing' | 'stages' | 'cards' | 'fields' | 'users' | 'audit';
 
 const TABS: { id: Tab; label: string; icon: React.ReactNode; reqRole?: string[] }[] = [
     { id: 'connection', label: 'Bağlantı', icon: <Smartphone className="w-3.5 h-3.5" /> },
     { id: 'rules', label: 'Avtomatik Qaydalar', icon: <Zap className="w-3.5 h-3.5" /> },
     { id: 'routing', label: 'Mənbə (Routing)', icon: <Route className="w-3.5 h-3.5" /> },
     { id: 'stages', label: 'Kanban Sütunları', icon: <List className="w-3.5 h-3.5" /> },
+    { id: 'cards', label: 'Lead Kartları', icon: <LayoutGrid className="w-3.5 h-3.5" /> },
     { id: 'fields', label: 'Xüsusi Sahələr', icon: <Type className="w-3.5 h-3.5" /> },
     { id: 'users', label: 'İstifadəçilər', icon: <Users className="w-3.5 h-3.5" />, reqRole: ['admin', 'manager'] },
     { id: 'audit', label: 'Audit Log', icon: <Activity className="w-3.5 h-3.5" />, reqRole: ['admin'] },
@@ -496,6 +497,19 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
         setSettings(prev => ({
             ...prev,
             routingRules: (prev.routingRules || []).filter(r => r.id !== id)
+        }));
+    };
+
+    const updateLeadCardUi = (updates: Partial<LeadCardUISettings>) => {
+        setSettings(prev => ({
+            ...prev,
+            ui: {
+                ...(prev.ui || {}),
+                leadCard: {
+                    ...((prev.ui && prev.ui.leadCard) || {}),
+                    ...updates
+                }
+            }
         }));
     };
 
@@ -1160,6 +1174,219 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
                                 <Plus className="w-3 h-3" />
                                 Yeni Sütun əlavə et
                             </button>
+                        </section>
+                    )}
+
+                    {/* ─── TAB: Lead Card UI ───────────────────────────────────── */}
+                    {activeTab === 'cards' && (
+                        <section className="space-y-4">
+                            <div>
+                                <h2 className="text-sm font-bold text-white">Lead Kartları</h2>
+                                <p className="text-xs text-slate-500 mt-0.5">Kanban kartlarının üstündə hansı məlumatlar görünsün</p>
+                            </div>
+
+                            {(() => {
+                                const ui = settings.ui?.leadCard || {};
+                                const selectFieldsAll = settings.customFields.filter(f => f.type === 'select');
+                                const enabledIds = Array.isArray(ui.customFieldIds) ? ui.customFieldIds : [];
+                                const useAll = (ui.showCustomFieldBadges !== false) && (enabledIds.length === 0);
+
+                                return (
+                                    <>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <button
+                                                type="button"
+                                                onClick={() => updateLeadCardUi({ showNameBadge: !(ui.showNameBadge !== false) })}
+                                                className={cn(
+                                                    'px-3 py-2 rounded-lg border text-xs font-semibold transition-colors',
+                                                    ui.showNameBadge !== false
+                                                        ? 'border-emerald-800/40 bg-emerald-950/20 text-emerald-200'
+                                                        : 'border-slate-800 bg-slate-950/30 text-slate-400 hover:text-slate-200'
+                                                )}
+                                            >
+                                                Ad
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => updateLeadCardUi({ showAssignee: !(ui.showAssignee !== false) })}
+                                                className={cn(
+                                                    'px-3 py-2 rounded-lg border text-xs font-semibold transition-colors',
+                                                    ui.showAssignee !== false
+                                                        ? 'border-emerald-800/40 bg-emerald-950/20 text-emerald-200'
+                                                        : 'border-slate-800 bg-slate-950/30 text-slate-400 hover:text-slate-200'
+                                                )}
+                                            >
+                                                Operator
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => updateLeadCardUi({ showSource: !(ui.showSource !== false) })}
+                                                className={cn(
+                                                    'px-3 py-2 rounded-lg border text-xs font-semibold transition-colors',
+                                                    ui.showSource !== false
+                                                        ? 'border-emerald-800/40 bg-emerald-950/20 text-emerald-200'
+                                                        : 'border-slate-800 bg-slate-950/30 text-slate-400 hover:text-slate-200'
+                                                )}
+                                            >
+                                                Mənbə
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => updateLeadCardUi({ showProductBadge: !(ui.showProductBadge !== false) })}
+                                                className={cn(
+                                                    'px-3 py-2 rounded-lg border text-xs font-semibold transition-colors',
+                                                    ui.showProductBadge !== false
+                                                        ? 'border-emerald-800/40 bg-emerald-950/20 text-emerald-200'
+                                                        : 'border-slate-800 bg-slate-950/30 text-slate-400 hover:text-slate-200'
+                                                )}
+                                            >
+                                                Məhsul
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => updateLeadCardUi({ showLastMessagePreview: !(ui.showLastMessagePreview !== false) })}
+                                                className={cn(
+                                                    'px-3 py-2 rounded-lg border text-xs font-semibold transition-colors',
+                                                    ui.showLastMessagePreview !== false
+                                                        ? 'border-emerald-800/40 bg-emerald-950/20 text-emerald-200'
+                                                        : 'border-slate-800 bg-slate-950/30 text-slate-400 hover:text-slate-200'
+                                                )}
+                                            >
+                                                Mesaj Preview
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => updateLeadCardUi({ showValue: !(ui.showValue !== false) })}
+                                                className={cn(
+                                                    'px-3 py-2 rounded-lg border text-xs font-semibold transition-colors',
+                                                    ui.showValue !== false
+                                                        ? 'border-emerald-800/40 bg-emerald-950/20 text-emerald-200'
+                                                        : 'border-slate-800 bg-slate-950/30 text-slate-400 hover:text-slate-200'
+                                                )}
+                                            >
+                                                Büdcə
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => updateLeadCardUi({ showCustomFieldBadges: !(ui.showCustomFieldBadges !== false) })}
+                                                className={cn(
+                                                    'px-3 py-2 rounded-lg border text-xs font-semibold transition-colors',
+                                                    ui.showCustomFieldBadges !== false
+                                                        ? 'border-emerald-800/40 bg-emerald-950/20 text-emerald-200'
+                                                        : 'border-slate-800 bg-slate-950/30 text-slate-400 hover:text-slate-200'
+                                                )}
+                                            >
+                                                Xüsusi Sahələr
+                                            </button>
+                                        </div>
+
+                                        <div className="rounded-xl border border-slate-800 bg-slate-900/30 p-4 space-y-3">
+                                            <div className="flex items-center justify-between">
+                                                <p className="text-xs font-bold text-slate-200">Xüsusi Sahə Badge-ləri</p>
+                                                <span className="text-[10px] text-slate-600">Select field-lər</span>
+                                            </div>
+
+                                            <div className="grid grid-cols-2 gap-2">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => updateLeadCardUi({ customFieldBadgeMode: 'value' })}
+                                                    className={cn(
+                                                        'px-3 py-2 rounded-lg border text-xs font-semibold transition-colors',
+                                                        (ui.customFieldBadgeMode || 'value') === 'value'
+                                                            ? 'border-blue-800/40 bg-blue-950/20 text-blue-200'
+                                                            : 'border-slate-800 bg-slate-950/30 text-slate-400 hover:text-slate-200'
+                                                    )}
+                                                >
+                                                    Yalnız dəyər
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => updateLeadCardUi({ customFieldBadgeMode: 'label_value' })}
+                                                    className={cn(
+                                                        'px-3 py-2 rounded-lg border text-xs font-semibold transition-colors',
+                                                        (ui.customFieldBadgeMode || 'value') === 'label_value'
+                                                            ? 'border-blue-800/40 bg-blue-950/20 text-blue-200'
+                                                            : 'border-slate-800 bg-slate-950/30 text-slate-400 hover:text-slate-200'
+                                                    )}
+                                                >
+                                                    Başlıq + dəyər
+                                                </button>
+                                            </div>
+
+                                            <div className="flex items-center justify-between gap-2">
+                                                <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Max badge</label>
+                                                <input
+                                                    type="number"
+                                                    min={0}
+                                                    max={8}
+                                                    value={Number.isFinite(Number(ui.maxCustomFieldBadges)) ? Number(ui.maxCustomFieldBadges) : 2}
+                                                    onChange={(e) => {
+                                                        const n = parseInt(e.target.value, 10);
+                                                        updateLeadCardUi({ maxCustomFieldBadges: Number.isFinite(n) ? Math.max(0, Math.min(8, n)) : 2 });
+                                                    }}
+                                                    className="w-20 bg-slate-950 border border-slate-800 rounded-lg px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                                />
+                                            </div>
+
+                                            {selectFieldsAll.length === 0 ? (
+                                                <p className="text-xs text-slate-600 italic">Heç bir select tipli xüsusi sahə yoxdur.</p>
+                                            ) : (
+                                                <>
+                                                    <div className="flex items-center justify-between gap-2">
+                                                        <p className="text-[10px] text-slate-600">Hansı sahələr kartda görünsün</p>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => updateLeadCardUi({ customFieldIds: [] })}
+                                                            className="text-[10px] text-slate-500 hover:text-slate-300"
+                                                            title="Boş olduqda: hamısı"
+                                                        >
+                                                            Hamısı (default)
+                                                        </button>
+                                                    </div>
+
+                                                    <div className="space-y-1">
+                                                        {selectFieldsAll.map(f => {
+                                                            const checked = useAll ? true : enabledIds.includes(f.id);
+                                                            return (
+                                                                <label key={f.id} className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg border border-slate-800 bg-slate-950/30">
+                                                                    <div className="min-w-0">
+                                                                        <p className="text-xs text-slate-200 font-semibold truncate">{f.label}</p>
+                                                                        <p className="text-[10px] text-slate-600 truncate">{f.id}</p>
+                                                                    </div>
+                                                                    <input
+                                                                        type="checkbox"
+                                                                        checked={checked}
+                                                                        onChange={(e) => {
+                                                                            // If user is in "all" mode (empty list), convert to explicit list on first change.
+                                                                            if (enabledIds.length === 0) {
+                                                                                if (!e.target.checked) {
+                                                                                    const explicit = selectFieldsAll.map(sf => sf.id).filter(id => id !== f.id);
+                                                                                    updateLeadCardUi({ customFieldIds: explicit });
+                                                                                } else {
+                                                                                    // no-op: already all
+                                                                                }
+                                                                                return;
+                                                                            }
+
+                                                                            const next = new Set(enabledIds);
+                                                                            if (e.target.checked) next.add(f.id);
+                                                                            else next.delete(f.id);
+                                                                            updateLeadCardUi({ customFieldIds: Array.from(next) });
+                                                                        }}
+                                                                        className="h-4 w-4 accent-blue-500"
+                                                                        disabled={ui.showCustomFieldBadges === false}
+                                                                    />
+                                                                </label>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                    <p className="text-[10px] text-slate-600">Qeyd: siyahı boşdursa kartda bütün select sahələr (dəyəri olanlar) görünəcək.</p>
+                                                </>
+                                            )}
+                                        </div>
+                                    </>
+                                );
+                            })()}
                         </section>
                     )}
 

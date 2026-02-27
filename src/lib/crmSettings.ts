@@ -48,12 +48,41 @@ export interface RoutingRule {
     targetStage?: string; // optional: also move stage
 }
 
+export interface LeadCardUISettings {
+    showAssignee?: boolean;
+    showSource?: boolean;
+    showNameBadge?: boolean;
+    showProductBadge?: boolean;
+    showValue?: boolean;
+    showLastMessagePreview?: boolean;
+    showCustomFieldBadges?: boolean;
+    customFieldBadgeMode?: 'value' | 'label_value';
+    customFieldIds?: string[]; // if empty/undefined and showCustomFieldBadges=true -> show all select fields
+    maxCustomFieldBadges?: number;
+}
+
 export interface CRMSettings {
     customFields: CustomField[];
     pipelineStages: PipelineStage[];
     autoRules: AutoRule[];
     routingRules?: RoutingRule[];
+    ui?: {
+        leadCard?: LeadCardUISettings;
+    };
 }
+
+const DEFAULT_LEAD_CARD_UI: LeadCardUISettings = {
+    showAssignee: true,
+    showSource: true,
+    showNameBadge: true,
+    showProductBadge: true,
+    showValue: true,
+    showLastMessagePreview: true,
+    showCustomFieldBadges: true,
+    customFieldBadgeMode: 'value',
+    customFieldIds: [],
+    maxCustomFieldBadges: 2,
+};
 
 function getApiBase(): string {
     const fromStorage = localStorage.getItem('crm_server_url') || '';
@@ -113,10 +142,21 @@ export function loadCRMSettings(): CRMSettings {
             if (!parsed.routingRules) {
                 parsed.routingRules = [];
             }
+
+            // UI defaults (back-compat)
+            if (!parsed.ui) parsed.ui = {};
+            if (!parsed.ui.leadCard) parsed.ui.leadCard = { ...DEFAULT_LEAD_CARD_UI };
+            else parsed.ui.leadCard = { ...DEFAULT_LEAD_CARD_UI, ...parsed.ui.leadCard };
             return parsed;
         }
     } catch { }
-    return { customFields: DEFAULT_FIELDS, pipelineStages: DEFAULT_STAGES, autoRules: DEFAULT_RULES, routingRules: [] };
+    return {
+        customFields: DEFAULT_FIELDS,
+        pipelineStages: DEFAULT_STAGES,
+        autoRules: DEFAULT_RULES,
+        routingRules: [],
+        ui: { leadCard: { ...DEFAULT_LEAD_CARD_UI } }
+    };
 }
 
 export async function saveCRMSettings(settings: CRMSettings): Promise<void> {
