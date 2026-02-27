@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { Lead, LeadStatus } from '../types/crm';
 import {
     User, Phone, Package, MessageSquare, Clock, Hash,
-    Save, CheckCircle2, TrendingUp, BarChart2, Edit3, Check
+    Save, CheckCircle2, TrendingUp, BarChart2, Edit3, Check, Route
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { loadCRMSettings } from '../lib/crmSettings';
@@ -19,6 +19,28 @@ interface ChatMessage {
     created_at: string;
     metadata?: any;
 }
+
+type StoryEvent =
+    | {
+        id: string;
+        kind: 'message';
+        at: string;
+        message: {
+            id: string;
+            body: string;
+            direction: 'in' | 'out';
+            status?: string;
+            metadata?: any;
+        };
+    }
+    | {
+        id: string;
+        kind: 'audit';
+        at: string;
+        action: string;
+        user: null | { id: string; username: string | null; displayName: string | null };
+        details: any;
+    };
 
 function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) {
     const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -315,6 +337,86 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
     const drawerRef = useRef<HTMLDivElement>(null);
     const serverUrl = CrmService.getServerUrl();
 
+    const [story, setStory] = useState<StoryEvent[]>([]);
+    const [storyLoading, setStoryLoading] = useState(false);
+    const [storyError, setStoryError] = useState('');
+    const [noteDraft, setNoteDraft] = useState('');
+    const [noteBusy, setNoteBusy] = useState(false);
+
+    const loadStory = useCallback(async () => {
+        if (!serverUrl || !lead?.id) return;
+        setStoryLoading(true);
+        setStoryError('');
+        try {
+            const token = localStorage.getItem('crm_auth_token') || '';
+            const res = await fetch(`${serverUrl}/api/leads/${lead.id}/story?limit=1200`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (!res.ok) {
+                const data = await res.json().catch(() => ({}));
+                throw new Error(data?.error || 'Story yuklenmedi');
+            }
+            const data = await res.json();
+            const events = Array.isArray(data?.events) ? data.events : [];
+            setStory(events);
+        } catch (e: any) {
+            setStoryError(e?.message || 'Story yuklenmedi');
+        } finally {
+            setStoryLoading(false);
+        }
+    }, [serverUrl, lead?.id]);
+
+    useEffect(() => {
+        loadStory();
+    }, [loadStory]);
+
+    // Refresh story on live updates
+    useEffect(() => {
+        if (!lead?.id) return;
+        let t: any = null;
+        const schedule = () => {
+            if (t) clearTimeout(t);
+            t = setTimeout(() => loadStory(), 300);
+        };
+        const cleanupUpdate = CrmService.onLeadUpdated((updated) => {
+            if (updated.id === lead.id || updated.phone === lead.phone) schedule();
+        });
+        const cleanupNew = CrmService.onNewMessage((newLead) => {
+            if (newLead.id === lead.id || newLead.phone === lead.phone) schedule();
+        });
+        return () => {
+            if (t) clearTimeout(t);
+            cleanupUpdate();
+            cleanupNew();
+        };
+    }, [lead.id, lead.phone, loadStory]);
+
+    const canAddNote = currentUser?.role !== 'viewer';
+    const addNote = async () => {
+        const note = noteDraft.trim();
+        if (!note || !serverUrl || noteBusy) return;
+        setNoteBusy(true);
+        try {
+            const token = localStorage.getItem('crm_auth_token') || '';
+            const res = await fetch(`${serverUrl}/api/leads/${lead.id}/notes`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ note })
+            });
+            if (!res.ok) {
+                const data = await res.json().catch(() => ({}));
+                throw new Error(data?.error || 'Qeyd elave olunmadi');
+            }
+            setNoteDraft('');
+            await loadStory();
+        } catch (e) {
+            // non-fatal
+            console.warn('Failed to add note');
+        } finally {
+            setNoteBusy(false);
+        }
+    };
+
     const markReadLockRef = useRef(false);
     const markRead = useCallback(() => {
         if (!lead?.id) return;
@@ -489,11 +591,49 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
 
     // ─── UI Helpers ────────────────────────────────────────────────────────────
 
+    const toDatetimeLocal = (raw: any) => {
+        const v = String(raw ?? '').trim();
+        if (!v) return '';
+        // Already in input format
+        if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(v)) return v;
+        // Date-only
+        if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return `${v}T00:00`;
+        // Try to parse ISO-like values
+        const d = new Date(v);
+        if (!Number.isFinite(d.getTime())) {
+            // Best-effort truncate
+            if (v.includes('T')) return v.slice(0, 16);
+            return v;
+        }
+        const pad = (n: number) => String(n).padStart(2, '0');
+        const yyyy = d.getFullYear();
+        const mm = pad(d.getMonth() + 1);
+        const dd = pad(d.getDate());
+        const hh = pad(d.getHours());
+        const mi = pad(d.getMinutes());
+        return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+    };
+
     const activeStatus = STATUSES.find(s => s.id === localStatus) || STATUSES[0];
     const dateStr = new Date(lead.created_at).toLocaleString('az-AZ', {
         day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
     });
     const leadIdShort = lead.id.split('-')[0].toUpperCase();
+
+    const stageLabel = (statusId: any) => {
+        const s = (pipelineStages || []).find(x => x.id === statusId);
+        return s ? s.label : String(statusId || '');
+    };
+
+    const formatMaybeDatetime = (raw: any) => {
+        const v = String(raw ?? '').trim();
+        if (!v) return '';
+        const d = new Date(v);
+        if (Number.isFinite(d.getTime())) {
+            return d.toLocaleString('az-AZ', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+        }
+        return v;
+    };
 
     if (typeof document === 'undefined') return null;
 
@@ -693,7 +833,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                             </FieldGroup>
 
                             {/* Dynamic Custom Fields from CRM Settings */}
-                            {customFields.map(field => {
+                             {customFields.map(field => {
                                 const isBuiltin = field.id === 'product_name';
                                 const value = isBuiltin ? formData.product_name : (customValues[field.id] || '');
                                 const handleFieldChange = (val: string) => {
@@ -704,10 +844,10 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                     }
                                 };
 
-                                return (
-                                    <FieldGroup key={field.id} label={field.label} icon={<Package className="w-3 h-3" />}>
-                                        {field.type === 'select' ? (
-                                            <select
+                                 return (
+                                     <FieldGroup key={field.id} label={field.label} icon={<Package className="w-3 h-3" />}>
+                                         {field.type === 'select' ? (
+                                             <select
                                                 value={value}
                                                 onChange={e => handleFieldChange(e.target.value)}
                                                 className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 appearance-none"
@@ -716,12 +856,19 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                                 {(field.options || []).map(opt => (
                                                     <option key={opt} value={opt}>{opt}</option>
                                                 ))}
-                                            </select>
-                                        ) : (
+                                             </select>
+                                        ) : field.type === 'datetime' ? (
                                             <input
-                                                type={field.type === 'number' ? 'number' : 'text'}
-                                                value={value}
+                                                type="datetime-local"
+                                                value={toDatetimeLocal(value)}
                                                 onChange={e => handleFieldChange(e.target.value)}
+                                                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                            />
+                                        ) : (
+                                             <input
+                                                 type={field.type === 'number' ? 'number' : 'text'}
+                                                 value={value}
+                                                 onChange={e => handleFieldChange(e.target.value)}
                                                 placeholder={field.label}
                                                 className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
                                             />
@@ -818,73 +965,203 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                 <div className="h-full overflow-y-auto overscroll-contain touch-pan-y" style={{ WebkitOverflowScrolling: 'touch' }}>
                                     <div className="p-4 sm:p-6 space-y-4 max-w-2xl mx-auto w-full">
 
-                                    {/* Date separator */}
-                                    <div className="flex items-center gap-3">
-                                        <div className="h-px flex-1 bg-slate-800" />
-                                        <span className="text-[10px] font-mono text-slate-500 bg-slate-900 border border-slate-800 px-2 py-0.5 rounded-full">
-                                            {new Date(lead.created_at).toLocaleDateString('az-AZ')}
-                                        </span>
-                                        <div className="h-px flex-1 bg-slate-800" />
-                                    </div>
-
-                                    {/* System event */}
-                                    <div className="flex gap-3 items-start">
-                                        <div className="w-7 h-7 rounded-full bg-blue-900/50 border border-blue-800 flex items-center justify-center shrink-0 mt-0.5">
-                                            <User className="w-3.5 h-3.5 text-blue-400" />
-                                        </div>
-                                        <div className="flex-1 bg-slate-900/60 border border-slate-800 rounded-xl rounded-tl-sm p-3">
-                                            <div className="flex justify-between items-start">
-                                                <span className="text-xs font-bold text-slate-200">Sistem</span>
-                                                <span className="text-[10px] text-slate-500">
-                                                    {new Date(lead.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                                </span>
+                                    {serverUrl && canAddNote && (
+                                        <div className="rounded-2xl border border-slate-800 bg-slate-900/35 p-4">
+                                            <div className="flex items-center justify-between gap-2">
+                                                <p className="text-xs font-bold text-slate-200">Qeyd əlavə et</p>
+                                                <button
+                                                    onClick={loadStory}
+                                                    className="text-[10px] text-blue-400 hover:text-blue-300"
+                                                    title="Yenilə"
+                                                >
+                                                    ↺ Yenilə
+                                                </button>
                                             </div>
-                                            <p className="text-xs text-slate-400 mt-1">
-                                                Yeni əlaqə yaradıldı. Mənbə: <strong className="text-slate-300">{lead.source === 'whatsapp' ? 'WhatsApp' : 'Manual Giriş'}</strong>
-                                            </p>
-                                        </div>
-                                    </div>
-
-                                    {/* Source message bubble */}
-                                    {lead.source_message && lead.source_message !== lead.last_message && (
-                                        <MessageBubble
-                                            name={lead.name || lead.phone}
-                                            message={lead.source_message}
-                                            time={new Date(lead.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                        />
-                                    )}
-
-                                    {/* Last message */}
-                                    {lead.last_message && (
-                                        <MessageBubble
-                                            name={lead.name || lead.phone}
-                                            message={lead.last_message}
-                                            time={new Date(lead.updated_at || lead.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                        />
-                                    )}
-
-                                    {/* Status change event */}
-                                    {lead.status !== 'new' && (
-                                        <div className="flex gap-3 items-start">
-                                            <div className="w-7 h-7 rounded-full bg-purple-900/50 border border-purple-800 flex items-center justify-center shrink-0 mt-0.5">
-                                                <CheckCircle2 className="w-3.5 h-3.5 text-purple-400" />
-                                            </div>
-                                            <div className="flex-1 bg-slate-900/60 border border-slate-800 rounded-xl rounded-tl-sm p-3">
-                                                <span className="text-xs font-bold text-slate-200">Sistem</span>
-                                                <p className="text-xs text-slate-400 mt-1">
-                                                    Status dəyişdirildi: <strong className={cn('font-bold', activeStatus.accent.split(' ')[1])}>{activeStatus.label}</strong>
-                                                </p>
+                                            <textarea
+                                                value={noteDraft}
+                                                onChange={(e) => setNoteDraft(e.target.value)}
+                                                placeholder="məs: Bu gün 16:30 randevuya yazdıq"
+                                                rows={3}
+                                                className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-500 placeholder:text-slate-500"
+                                            />
+                                            <div className="mt-2 flex justify-end">
+                                                <button
+                                                    onClick={addNote}
+                                                    disabled={noteBusy || !noteDraft.trim()}
+                                                    className="px-3 py-2 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-60"
+                                                >
+                                                    {noteBusy ? 'Saxlanır...' : 'Əlavə et'}
+                                                </button>
                                             </div>
                                         </div>
                                     )}
 
-                                    {/* No message empty state */}
-                                    {!lead.last_message && !lead.source_message && (
+                                    {storyLoading && (
+                                        <div className="flex items-center justify-center h-24 text-slate-500 text-sm">
+                                            <span className="animate-pulse">Yüklənir...</span>
+                                        </div>
+                                    )}
+
+                                    {storyError && !storyLoading && (
+                                        <div className="rounded-xl border border-red-900/40 bg-red-950/15 p-3 text-xs text-red-300">
+                                            {storyError}
+                                        </div>
+                                    )}
+
+                                    {!storyLoading && (!story || story.length === 0) && (
                                         <div className="flex flex-col items-center py-12 gap-3 text-slate-600">
                                             <MessageSquare className="w-10 h-10" />
-                                            <p className="text-sm">Hələ mesaj yoxdur</p>
+                                            <p className="text-sm">Hələ heç bir tarixçə yoxdur</p>
+                                            <p className="text-xs text-slate-700">Mesaj, status və qeydlər burada görünəcək</p>
                                         </div>
                                     )}
+
+                                    {!storyLoading && Array.isArray(story) && story.length > 0 && (() => {
+                                        let lastDay = '';
+                                        const rows: React.ReactNode[] = [];
+
+                                        for (const ev of story) {
+                                            const at = ev?.at ? new Date(ev.at) : new Date();
+                                            const day = at.toLocaleDateString('az-AZ');
+                                            const time = at.toLocaleTimeString('az-AZ', { hour: '2-digit', minute: '2-digit' });
+
+                                            if (day !== lastDay) {
+                                                lastDay = day;
+                                                rows.push(
+                                                    <div key={`day-${day}-${rows.length}`} className="flex items-center gap-3">
+                                                        <div className="h-px flex-1 bg-slate-800" />
+                                                        <span className="text-[10px] font-mono text-slate-500 bg-slate-900 border border-slate-800 px-2 py-0.5 rounded-full">
+                                                            {day}
+                                                        </span>
+                                                        <div className="h-px flex-1 bg-slate-800" />
+                                                    </div>
+                                                );
+                                            }
+
+                                            if (ev.kind === 'message') {
+                                                const isOut = ev.message.direction === 'out';
+                                                rows.push(
+                                                    <div key={ev.id} className="flex gap-3 items-start">
+                                                        <div className={cn(
+                                                            'w-7 h-7 rounded-full border flex items-center justify-center shrink-0 mt-0.5',
+                                                            isOut ? 'bg-blue-900/40 border-blue-800' : 'bg-green-900/40 border-green-800'
+                                                        )}>
+                                                            <MessageSquare className={cn('w-3.5 h-3.5', isOut ? 'text-blue-300' : 'text-green-300')} />
+                                                        </div>
+                                                        <div className={cn(
+                                                            'flex-1 border rounded-xl rounded-tl-sm p-3',
+                                                            isOut ? 'bg-blue-950/10 border-blue-900/40' : 'bg-slate-900/60 border-slate-800'
+                                                        )}>
+                                                            <div className="flex justify-between items-start gap-2">
+                                                                <span className="text-xs font-bold text-slate-200">
+                                                                    {isOut ? 'Biz' : (lead.name || lead.phone)}
+                                                                </span>
+                                                                <span className="text-[10px] text-slate-500">{time}</span>
+                                                            </div>
+                                                            <p className="text-xs text-slate-300 mt-1 whitespace-pre-wrap break-words">
+                                                                {String(ev.message.body || '').trim()}
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                );
+                                                continue;
+                                            }
+
+                                            // audit
+                                            const who = ev.user?.displayName || ev.user?.username || 'Sistem';
+                                            const action = String(ev.action || '');
+                                            const details = ev.details || {};
+
+                                            const lines: string[] = [];
+                                            let icon = <User className="w-3.5 h-3.5 text-blue-400" />;
+                                            let bubble = 'bg-slate-900/60 border-slate-800';
+
+                                            if (action === 'LEAD_CREATED') {
+                                                icon = <User className="w-3.5 h-3.5 text-blue-300" />;
+                                                bubble = 'bg-blue-950/10 border-blue-900/40';
+                                                const src = details.source === 'manual' ? 'Manual' : 'WhatsApp';
+                                                lines.push(`Yeni əlaqə yaradıldı (mənbə: ${src})`);
+                                            } else if (action === 'UPDATE_STATUS') {
+                                                icon = <CheckCircle2 className="w-3.5 h-3.5 text-purple-300" />;
+                                                bubble = 'bg-purple-950/10 border-purple-900/40';
+                                                const oldS = details.oldStatus;
+                                                const newS = details.newStatus;
+                                                lines.push(`Status: ${stageLabel(oldS)} -> ${stageLabel(newS)}`);
+                                            } else if (action === 'UPDATE_FIELDS') {
+                                                icon = <Edit3 className="w-3.5 h-3.5 text-slate-300" />;
+                                                const ch = details.changed || {};
+                                                const chExtra = details.changedExtra || {};
+
+                                                if (ch.assignee_id) {
+                                                    const fromId = ch.assignee_id.from;
+                                                    const toId = ch.assignee_id.to;
+                                                    const fromU = fromId ? teamMembers.find((u: any) => u.id === fromId) : null;
+                                                    const toU = toId ? teamMembers.find((u: any) => u.id === toId) : null;
+                                                    const fromLabel = fromU ? (fromU.display_name || fromU.username) : (fromId ? String(fromId) : '--');
+                                                    const toLabel = toU ? (toU.display_name || toU.username) : (toId ? String(toId) : '--');
+                                                    lines.push(`Operator: ${fromLabel} -> ${toLabel}`);
+                                                }
+                                                if (ch.status) {
+                                                    lines.push(`Status: ${stageLabel(ch.status.from)} -> ${stageLabel(ch.status.to)}`);
+                                                }
+                                                if (ch.value) {
+                                                    lines.push(`Büdcə: ${ch.value.from ?? 0} -> ${ch.value.to ?? 0}`);
+                                                }
+                                                if (ch.product_name) {
+                                                    lines.push(`Məhsul: ${ch.product_name.from || '--'} -> ${ch.product_name.to || '--'}`);
+                                                }
+                                                if (ch.name) {
+                                                    lines.push(`Ad: ${ch.name.from || '--'} -> ${ch.name.to || '--'}`);
+                                                }
+
+                                                const fieldById = new Map((customFields || []).map((f: any) => [f.id, f]));
+                                                for (const k of Object.keys(chExtra || {})) {
+                                                    const meta = fieldById.get(k);
+                                                    const label = meta?.label || k;
+                                                    const fromV = chExtra[k]?.from;
+                                                    const toV = chExtra[k]?.to;
+                                                    const showFrom = meta?.type === 'datetime' ? formatMaybeDatetime(fromV) : String(fromV ?? '--');
+                                                    const showTo = meta?.type === 'datetime' ? formatMaybeDatetime(toV) : String(toV ?? '--');
+                                                    lines.push(`${label}: ${showFrom || '--'} -> ${showTo || '--'}`);
+                                                }
+                                            } else if (action === 'ROUTING_MATCH') {
+                                                icon = <Route className="w-3.5 h-3.5 text-emerald-300" />;
+                                                bubble = 'bg-emerald-950/10 border-emerald-900/40';
+                                                const field = (customFields || []).find((f: any) => f.id === details.fieldId);
+                                                const label = field?.label || details.fieldId || 'Field';
+                                                lines.push(`Routing: ${label} = ${details.setValue || ''}`);
+                                                if (details.targetStage) lines.push(`Mərhələ: ${stageLabel(details.targetStage)}`);
+                                            } else if (action === 'LEAD_NOTE') {
+                                                icon = <Edit3 className="w-3.5 h-3.5 text-amber-300" />;
+                                                bubble = 'bg-amber-950/10 border-amber-900/40';
+                                                lines.push(String(details.note || ''));
+                                            } else {
+                                                lines.push(action);
+                                            }
+
+                                            if (lines.length === 0) continue;
+                                            rows.push(
+                                                <div key={ev.id} className="flex gap-3 items-start">
+                                                    <div className={cn('w-7 h-7 rounded-full border flex items-center justify-center shrink-0 mt-0.5', bubble)}>
+                                                        {icon}
+                                                    </div>
+                                                    <div className={cn('flex-1 border rounded-xl rounded-tl-sm p-3', bubble)}>
+                                                        <div className="flex justify-between items-start gap-2">
+                                                            <span className="text-xs font-bold text-slate-200">{who}</span>
+                                                            <span className="text-[10px] text-slate-500">{time}</span>
+                                                        </div>
+                                                        <div className="mt-1 space-y-1">
+                                                            {lines.map((ln, i) => (
+                                                                <p key={i} className="text-xs text-slate-300 whitespace-pre-wrap">{ln}</p>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        }
+
+                                        return rows;
+                                    })()}
                                     </div>
                                 </div>
                             )}

@@ -73,6 +73,19 @@ export default function CRMPage() {
     const customText = Object.entries(filters.customText).filter(([, v]) => String(v || '').trim() !== '');
     const customSelect = Object.entries(filters.customSelect).filter(([, v]) => String(v || '').trim() !== '');
     const customNumber = Object.entries(filters.customNumber).filter(([, r]) => String(r?.min || '').trim() !== '' || String(r?.max || '').trim() !== '');
+    const customDate = Object.entries(filters.customDate).filter(([, r]) => String(r?.start || '').trim() !== '' || String(r?.end || '').trim() !== '');
+
+    const normDt = (raw: any): string | null => {
+      const v = String(raw ?? '').trim();
+      if (!v) return null;
+      if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(v)) return v;
+      if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return `${v}T00:00`;
+      if (v.includes('T') && v.length >= 16) return v.slice(0, 16);
+      const d = new Date(v);
+      if (!Number.isFinite(d.getTime())) return null;
+      const pad = (n: number) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    };
 
     return leads.filter((l) => {
       // stage
@@ -109,7 +122,7 @@ export default function CRMPage() {
       }
 
       // custom
-      if (customText.length + customSelect.length + customNumber.length > 0) {
+      if (customText.length + customSelect.length + customNumber.length + customDate.length > 0) {
         const extra = parseExtraData((l as any).extra_data);
 
         for (const [fieldId, wantRaw] of customSelect) {
@@ -134,6 +147,17 @@ export default function CRMPage() {
           if (!Number.isFinite(gotN)) return false;
           if (min !== null && gotN < min) return false;
           if (max !== null && gotN > max) return false;
+        }
+
+        for (const [fieldId, range] of customDate) {
+          const start = normDt(range?.start);
+          const end = normDt(range?.end);
+          if (!start && !end) continue;
+
+          const got = normDt(extra?.[fieldId]);
+          if (!got) return false;
+          if (start && got < start) return false;
+          if (end && got > end) return false;
         }
       }
 
@@ -496,17 +520,40 @@ function LeadCard({
   };
 
   const extra = parseExtraData((lead as any).extra_data);
-  const selectFieldsAll = (customFields || []).filter(f => f.type === 'select');
-  const selectFields = (Array.isArray(cfg.customFieldIds) && cfg.customFieldIds.length > 0)
-    ? selectFieldsAll.filter(f => cfg.customFieldIds!.includes(f.id))
-    : selectFieldsAll;
+  const badgeFieldsAll = (customFields || []).filter(f => f.type === 'select' || f.type === 'datetime');
+  const badgeFields = (Array.isArray(cfg.customFieldIds) && cfg.customFieldIds.length > 0)
+    ? badgeFieldsAll.filter(f => cfg.customFieldIds!.includes(f.id))
+    : badgeFieldsAll;
 
   const maxBadges = Number.isFinite(Number(cfg.maxCustomFieldBadges)) ? Math.max(0, Number(cfg.maxCustomFieldBadges)) : 2;
 
-  const selectBadges = selectFields
+  const formatDatetimeBadge = (raw: any) => {
+    const v = String(raw ?? '').trim();
+    if (!v) return '';
+    const d = new Date(v);
+    if (Number.isFinite(d.getTime())) {
+      return d.toLocaleString('az-AZ', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+    }
+    // Fallback for "YYYY-MM-DDTHH:mm"
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(v)) {
+      try {
+        const d2 = new Date(v);
+        if (Number.isFinite(d2.getTime())) {
+          return d2.toLocaleString('az-AZ', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+        }
+      } catch {
+        // ignore
+      }
+    }
+    return v;
+  };
+
+  const selectBadges = badgeFields
     .map(f => {
       const v = extra?.[f.id];
-      const value = typeof v === 'string' ? v.trim() : (v !== undefined && v !== null ? String(v).trim() : '');
+      const value = f.type === 'datetime'
+        ? formatDatetimeBadge(v)
+        : (typeof v === 'string' ? v.trim() : (v !== undefined && v !== null ? String(v).trim() : ''));
       if (!value) return null;
       return { id: f.id, label: f.label, value };
     })

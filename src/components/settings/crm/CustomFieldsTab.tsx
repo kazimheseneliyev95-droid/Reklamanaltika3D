@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { ChevronDown, ChevronUp, Plus, Trash2, Type, Hash, List, X } from 'lucide-react';
+import { Calendar, ChevronDown, ChevronUp, Plus, Trash2, Type, Hash, List, X } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import { CRMSettings, CustomField, FieldType, generateFieldId } from '../../../lib/crmSettings';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/Card';
@@ -11,6 +11,7 @@ const TYPE_LABELS: Record<FieldType, { label: string; icon: React.ReactNode }> =
   text: { label: 'Mətn', icon: <Type className="w-3.5 h-3.5" /> },
   number: { label: 'Rəqəm', icon: <Hash className="w-3.5 h-3.5" /> },
   select: { label: 'Seçim', icon: <List className="w-3.5 h-3.5" /> },
+  datetime: { label: 'Tarix/Saat', icon: <Calendar className="w-3.5 h-3.5" /> },
 };
 
 export function CustomFieldsTab({
@@ -26,7 +27,14 @@ export function CustomFieldsTab({
   const addField = (type: FieldType) => {
     const newField: CustomField = {
       id: generateFieldId(),
-      label: type === 'text' ? 'Yeni Mətn Sahəsi' : type === 'number' ? 'Yeni Rəqəm Sahəsi' : 'Yeni Seçim Sahəsi',
+      label:
+        type === 'text'
+          ? 'Yeni Mətn Sahəsi'
+          : type === 'number'
+            ? 'Yeni Rəqəm Sahəsi'
+            : type === 'datetime'
+              ? 'Yeni Tarix/Saat Sahəsi'
+              : 'Yeni Seçim Sahəsi',
       type,
       options: type === 'select' ? [] : undefined,
     };

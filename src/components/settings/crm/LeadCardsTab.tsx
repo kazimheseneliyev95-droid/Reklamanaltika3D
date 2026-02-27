@@ -56,7 +56,7 @@ export function LeadCardsTab({
     }));
   };
 
-  const selectFieldsAll = settings.customFields.filter((f) => f.type === 'select');
+  const badgeEligibleFields = settings.customFields.filter((f) => f.type === 'select' || f.type === 'datetime');
   const enabledIds = Array.isArray(ui.customFieldIds) ? ui.customFieldIds : [];
   const useAll = (ui.showCustomFieldBadges !== false) && enabledIds.length === 0;
 
@@ -107,7 +107,7 @@ export function LeadCardsTab({
             <ToggleRow label="Mesaj preview" checked={show.msg} onChange={(v) => updateLeadCardUi({ showLastMessagePreview: v })} />
             <ToggleRow
               label="Xüsusi sahə badge-ləri"
-              description="Select sahələrdən dəyəri olanlar"
+              description="Select və tarix/saat sahələrindən dəyəri olanlar"
               checked={show.custom}
               onChange={(v) => updateLeadCardUi({ showCustomFieldBadges: v })}
             />
@@ -161,8 +161,8 @@ export function LeadCardsTab({
               />
             </div>
 
-            {selectFieldsAll.length === 0 ? (
-              <p className="text-xs text-slate-500 italic">Heç bir select tipli xüsusi sahə yoxdur.</p>
+            {badgeEligibleFields.length === 0 ? (
+              <p className="text-xs text-slate-500 italic">Heç bir select/tarix tipli xüsusi sahə yoxdur.</p>
             ) : (
               <>
                 <div className="flex items-center justify-between gap-2">
@@ -178,7 +178,7 @@ export function LeadCardsTab({
                 </div>
 
                 <div className="space-y-1">
-                  {selectFieldsAll.map((f) => {
+                  {badgeEligibleFields.map((f) => {
                     const checked = useAll ? true : enabledIds.includes(f.id);
                     return (
                       <label
@@ -195,7 +195,7 @@ export function LeadCardsTab({
                           onChange={(e) => {
                             if (enabledIds.length === 0) {
                               if (!e.target.checked) {
-                                const explicit = selectFieldsAll.map((sf) => sf.id).filter((id) => id !== f.id);
+                                const explicit = badgeEligibleFields.map((sf) => sf.id).filter((id) => id !== f.id);
                                 updateLeadCardUi({ customFieldIds: explicit });
                               }
                               return;

@@ -1,7 +1,7 @@
 // CRM Settings — persisted in localStorage as 'crm_settings'
-// Custom fields can be: text, number, select (dropdown)
+// Custom fields can be: text, number, select (dropdown), datetime (appointment)
 
-export type FieldType = 'text' | 'number' | 'select';
+export type FieldType = 'text' | 'number' | 'select' | 'datetime';
 
 export interface CustomField {
     id: string;
@@ -57,7 +57,7 @@ export interface LeadCardUISettings {
     showLastMessagePreview?: boolean;
     showCustomFieldBadges?: boolean;
     customFieldBadgeMode?: 'value' | 'label_value';
-    customFieldIds?: string[]; // if empty/undefined and showCustomFieldBadges=true -> show all select fields
+    customFieldIds?: string[]; // if empty/undefined and showCustomFieldBadges=true -> show all select/datetime fields
     maxCustomFieldBadges?: number;
 }
 

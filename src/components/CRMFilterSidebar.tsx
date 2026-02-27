@@ -15,6 +15,7 @@ export type CRMFilters = {
   customText: Record<string, string>;
   customSelect: Record<string, string>;
   customNumber: Record<string, { min: string; max: string }>;
+  customDate: Record<string, { start: string; end: string }>;
 };
 
 function toLocalISO(date: Date) {
@@ -60,6 +61,13 @@ export function countActiveFilters(filters: CRMFilters, pipelineStages: Pipeline
     }
   }
 
+  for (const v of Object.values(filters.customDate)) {
+    if (isNonEmpty(v?.start) || isNonEmpty(v?.end)) {
+      n++;
+      break;
+    }
+  }
+
   return n;
 }
 
@@ -75,6 +83,7 @@ export function makeDefaultCRMFilters(pipelineStages: PipelineStage[]): CRMFilte
     customText: {},
     customSelect: {},
     customNumber: {},
+    customDate: {},
   };
 }
 
@@ -108,6 +117,7 @@ export function CRMFilterSidebar({
   const selectFields = useMemo(() => (customFields || []).filter(f => f.type === 'select'), [customFields]);
   const textFields = useMemo(() => (customFields || []).filter(f => f.type === 'text'), [customFields]);
   const numberFields = useMemo(() => (customFields || []).filter(f => f.type === 'number'), [customFields]);
+  const dateFields = useMemo(() => (customFields || []).filter(f => f.type === 'datetime'), [customFields]);
 
   const activeCount = useMemo(() => countActiveFilters(filters, pipelineStages), [filters, pipelineStages]);
 
@@ -409,7 +419,7 @@ export function CRMFilterSidebar({
             </div>
           </section>
 
-          {(selectFields.length + textFields.length + numberFields.length) > 0 && (
+          {(selectFields.length + textFields.length + numberFields.length + dateFields.length) > 0 && (
             <section className="rounded-2xl border border-slate-800 bg-slate-900/35 p-4">
               <div className="flex items-center gap-2 text-xs font-bold text-slate-200">
                 <Tag className="w-4 h-4 text-slate-400" />
@@ -475,6 +485,34 @@ export function CRMFilterSidebar({
                             className="h-9 rounded-lg bg-slate-950 border border-slate-800 px-2 text-[12px] text-slate-100 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-600/50"
                           />
                         </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {dateFields.length > 0 && (
+                <div className="mt-3 space-y-2">
+                  {dateFields.map(f => {
+                    const cur = filters.customDate[f.id] || { start: '', end: '' };
+                    return (
+                      <div key={f.id} className="rounded-xl border border-slate-800 bg-slate-950/30 p-3">
+                        <div className="text-[11px] font-bold text-slate-300">{f.label}</div>
+                        <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          <input
+                            type="datetime-local"
+                            value={cur.start}
+                            onChange={(e) => setFilters(p => ({ ...p, customDate: { ...p.customDate, [f.id]: { ...cur, start: e.target.value } } }))}
+                            className="h-9 rounded-lg bg-slate-950 border border-slate-800 px-2 text-[12px] text-slate-100 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-600/50"
+                          />
+                          <input
+                            type="datetime-local"
+                            value={cur.end}
+                            onChange={(e) => setFilters(p => ({ ...p, customDate: { ...p.customDate, [f.id]: { ...cur, end: e.target.value } } }))}
+                            className="h-9 rounded-lg bg-slate-950 border border-slate-800 px-2 text-[12px] text-slate-100 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-600/50"
+                          />
+                        </div>
+                        <div className="mt-2 text-[10px] text-slate-600">Aralıq: başlanğıc - bitiş</div>
                       </div>
                     );
                   })}

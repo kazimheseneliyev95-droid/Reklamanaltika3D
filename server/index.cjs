@@ -822,6 +822,11 @@ app.post('/api/leads', requireTenantAuth, asyncHandler(async (req, res) => {
 
 app.put('/api/leads/:id/status', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  const beforeRes = await db.pool.query(
+    'SELECT status FROM leads WHERE id = $1 AND tenant_id = $2',
+    [req.params.id, req.tenantId]
+  );
+  const oldStatus = beforeRes.rows[0]?.status || null;
   const lead = await db.updateLeadStatus(req.params.id, req.body.status, req.tenantId);
   if (!lead) return res.status(404).json({ error: 'Lead not found' });
   io.to(req.tenantId).emit('lead_updated', lead);
@@ -833,7 +838,7 @@ app.put('/api/leads/:id/status', requireTenantAuth, asyncHandler(async (req, res
     action: 'UPDATE_STATUS',
     entityType: 'lead',
     entityId: req.params.id,
-    details: { newStatus: req.body.status }
+    details: { oldStatus, newStatus: req.body.status }
   });
 
   res.json(lead);
@@ -847,21 +852,225 @@ app.put('/api/leads/:id', requireTenantAuth, asyncHandler(async (req, res) => {
     return res.status(403).json({ error: 'Büdcəni dəyişmək üçün icazəniz yoxdur' });
   }
 
+  const beforeRes = await db.pool.query(
+    'SELECT name, value, product_name, assignee_id, status, extra_data FROM leads WHERE id = $1 AND tenant_id = $2',
+    [req.params.id, req.tenantId]
+  );
+  const before = beforeRes.rows[0] || null;
+
   const lead = await db.updateLeadFields(req.params.id, req.body, req.tenantId);
   if (!lead) return res.status(404).json({ error: 'Lead not found' });
   io.to(req.tenantId).emit('lead_updated', lead);
 
   // Audit Log
+  const changed = {};
+  const isSame = (a, b) => {
+    if (a === b) return true;
+    try {
+      return JSON.stringify(a) === JSON.stringify(b);
+    } catch {
+      return false;
+    }
+  };
+  const putChange = (key, fromV, toV) => {
+    if (isSame(fromV, toV)) return;
+    changed[key] = { from: fromV, to: toV };
+  };
+
+  if (before) {
+    putChange('status', before.status ?? null, lead.status ?? null);
+    putChange('name', before.name ?? null, lead.name ?? null);
+    putChange('product_name', before.product_name ?? null, lead.product_name ?? null);
+    putChange('assignee_id', before.assignee_id ?? null, lead.assignee_id ?? null);
+    putChange('value', before.value ?? null, lead.value ?? null);
+  }
+
+  const isSimple = (v) => {
+    if (v === null || v === undefined) return true;
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return true;
+    if (Array.isArray(v)) {
+      if (v.length > 12) return false;
+      return v.every((x) => x === null || x === undefined || typeof x === 'string' || typeof x === 'number' || typeof x === 'boolean');
+    }
+    return false;
+  };
+
+  const changedExtra = {};
+  if (before && before.extra_data && lead.extra_data && typeof before.extra_data === 'object' && typeof lead.extra_data === 'object') {
+    const keys = new Set([...(Object.keys(before.extra_data || {})), ...(Object.keys(lead.extra_data || {}))]);
+    let n = 0;
+    for (const k of keys) {
+      if (n >= 30) break;
+      if (k === 'ad' || k === 'quotedAd' || k === 'ctwa') continue;
+      const fromV = before.extra_data ? before.extra_data[k] : null;
+      const toV = lead.extra_data ? lead.extra_data[k] : null;
+      if (isSame(fromV, toV)) continue;
+      if (!isSimple(fromV) || !isSimple(toV)) continue;
+      changedExtra[k] = { from: fromV ?? null, to: toV ?? null };
+      n++;
+    }
+  }
+
   await db.logAuditAction({
     tenantId: req.tenantId,
     userId: req.userId,
     action: 'UPDATE_FIELDS',
     entityType: 'lead',
     entityId: req.params.id,
-    details: { fields: Object.keys(req.body) }
+    details: {
+      fields: Object.keys(req.body),
+      changed,
+      changedExtra
+    }
   });
 
   res.json(lead);
+}));
+
+// Lead Story / Timeline (messages + audit events)
+app.get('/api/leads/:id/story', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  const leadId = req.params.id;
+
+  let limit = parseInt(String(req.query.limit || '800'), 10);
+  if (!Number.isFinite(limit) || limit <= 0) limit = 800;
+  if (limit > 2500) limit = 2500;
+
+  const leadRes = await db.pool.query(
+    'SELECT id, phone, source, created_at, updated_at, last_message, source_message FROM leads WHERE id = $1 AND tenant_id = $2',
+    [leadId, req.tenantId]
+  );
+  if (leadRes.rowCount === 0) return res.status(404).json({ error: 'Lead not found' });
+  const lead = leadRes.rows[0];
+
+  const msgsRes = await db.pool.query(
+    `SELECT id, body, direction, metadata, status, created_at
+     FROM messages
+     WHERE tenant_id = $1 AND (lead_id = $2 OR phone = $3)
+     ORDER BY created_at DESC
+     LIMIT $4`,
+    [req.tenantId, leadId, lead.phone, limit]
+  );
+
+  const auditsRes = await db.pool.query(
+    `SELECT a.id, a.action, a.details, a.created_at, a.user_id,
+            u.username, u.display_name
+     FROM audit_logs a
+     LEFT JOIN users u ON a.user_id = u.id
+     WHERE a.tenant_id = $1
+       AND a.entity_type = 'lead'
+       AND a.entity_id = $2
+     ORDER BY a.created_at DESC
+     LIMIT $3`,
+    [req.tenantId, leadId, limit]
+  );
+
+  const events = [];
+
+  // Synthetic: lead created
+  if (lead.created_at) {
+    events.push({
+      id: `a:created:${leadId}`,
+      kind: 'audit',
+      at: new Date(lead.created_at).toISOString(),
+      action: 'LEAD_CREATED',
+      user: null,
+      details: { source: lead.source || null }
+    });
+  }
+
+  for (const m of (msgsRes.rows || [])) {
+    events.push({
+      id: `m:${m.id}`,
+      kind: 'message',
+      at: m.created_at ? new Date(m.created_at).toISOString() : new Date().toISOString(),
+      message: {
+        id: m.id,
+        body: m.body,
+        direction: m.direction,
+        status: m.status,
+        metadata: m.metadata || {}
+      }
+    });
+  }
+
+  // Synthetic: snapshot lead messages if not present in DB
+  try {
+    const bodies = new Set((msgsRes.rows || []).map((m) => String(m?.body || '').trim()));
+
+    if (lead.source_message && !bodies.has(String(lead.source_message).trim())) {
+      events.push({
+        id: `m:synthetic:source:${leadId}`,
+        kind: 'message',
+        at: lead.created_at ? new Date(lead.created_at).toISOString() : new Date().toISOString(),
+        message: {
+          id: 'synthetic-source',
+          body: String(lead.source_message),
+          direction: 'out',
+          status: 'delivered',
+          metadata: { synthetic: true, kind: 'source_message' }
+        }
+      });
+    }
+
+    if (lead.last_message && !bodies.has(String(lead.last_message).trim())) {
+      events.push({
+        id: `m:synthetic:last:${leadId}`,
+        kind: 'message',
+        at: lead.updated_at ? new Date(lead.updated_at).toISOString() : (lead.created_at ? new Date(lead.created_at).toISOString() : new Date().toISOString()),
+        message: {
+          id: 'synthetic-last',
+          body: String(lead.last_message),
+          direction: 'in',
+          status: 'delivered',
+          metadata: { synthetic: true, kind: 'last_message' }
+        }
+      });
+    }
+  } catch {
+    // ignore
+  }
+
+  for (const a of (auditsRes.rows || [])) {
+    events.push({
+      id: `a:${a.id}`,
+      kind: 'audit',
+      at: a.created_at ? new Date(a.created_at).toISOString() : new Date().toISOString(),
+      action: a.action,
+      user: a.user_id ? { id: a.user_id, username: a.username || null, displayName: a.display_name || null } : null,
+      details: a.details || {}
+    });
+  }
+
+  events.sort((x, y) => {
+    const ax = Date.parse(x.at || '');
+    const ay = Date.parse(y.at || '');
+    return (Number.isFinite(ax) ? ax : 0) - (Number.isFinite(ay) ? ay : 0);
+  });
+
+  res.json({ leadId, count: events.length, events });
+}));
+
+// Internal note for the lead (adds a timeline entry)
+app.post('/api/leads/:id/notes', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  const leadId = req.params.id;
+  const note = String(req.body?.note || '').trim();
+  if (!note) return res.status(400).json({ error: 'Note is required' });
+
+  const leadRes = await db.pool.query('SELECT id FROM leads WHERE id = $1 AND tenant_id = $2', [leadId, req.tenantId]);
+  if (leadRes.rowCount === 0) return res.status(404).json({ error: 'Lead not found' });
+
+  await db.logAuditAction({
+    tenantId: req.tenantId,
+    userId: req.userId,
+    action: 'LEAD_NOTE',
+    entityType: 'lead',
+    entityId: leadId,
+    details: { note }
+  });
+
+  res.status(201).json({ success: true });
 }));
 
 // 🗑️ FACTORY RESET — delete ALL leads and messages FOR TENANT
