@@ -185,6 +185,7 @@ export function ConnectionTab() {
     });
     refreshHealth();
     refreshMeta();
+    refreshWebhookStats();
 
     return () => {
       cleanupHealth();

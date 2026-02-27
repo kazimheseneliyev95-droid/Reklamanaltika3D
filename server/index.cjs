@@ -27,6 +27,7 @@ const ALLOW_LEGACY_TOKEN = process.env.ALLOW_LEGACY_TOKEN !== 'false';
 // Meta (Facebook/Instagram) Webhooks
 const META_APP_SECRET = process.env.META_APP_SECRET || '';
 const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || '';
+const META_WEBHOOK_DEBUG = process.env.META_WEBHOOK_DEBUG === 'true';
 
 if (!process.env.DATABASE_URL) {
   console.warn('⚠️ DATABASE_URL is missing. The app will run in file-based fallback mode.');
@@ -177,9 +178,15 @@ const metaWebhookStats = {
   accepted: 0,
   rejected: 0,
   last_at: null,
+  last_error: null,
   by_source: { facebook: 0, instagram: 0 },
   by_kind: { dm: 0, comment: 0 },
 };
+
+function metaDebugLog(...args) {
+  if (!META_WEBHOOK_DEBUG) return;
+  try { console.log('[META]', ...args); } catch { /* ignore */ }
+}
 
 function computeMetaSignature(rawBodyBuffer) {
   if (!META_APP_SECRET) return null;
@@ -281,6 +288,10 @@ app.post('/api/webhooks/meta', (req, res) => {
   try {
     if (!META_APP_SECRET) {
       console.warn('⚠️ META_APP_SECRET missing; refusing to accept Meta webhooks.');
+      metaWebhookStats.total++;
+      metaWebhookStats.rejected++;
+      metaWebhookStats.last_at = new Date().toISOString();
+      metaWebhookStats.last_error = 'META_APP_SECRET missing';
       return res.sendStatus(500);
     }
 
@@ -292,6 +303,12 @@ app.post('/api/webhooks/meta', (req, res) => {
       metaWebhookStats.total++;
       metaWebhookStats.rejected++;
       metaWebhookStats.last_at = new Date().toISOString();
+      metaWebhookStats.last_error = 'signature_mismatch';
+      metaDebugLog('Signature mismatch', {
+        hasHeader: Boolean(headerSig),
+        headerLen: String(headerSig || '').length,
+        expectedLen: String(expected || '').length,
+      });
       return res.sendStatus(401);
     }
 
@@ -301,158 +318,180 @@ app.post('/api/webhooks/meta', (req, res) => {
     metaWebhookStats.total++;
     metaWebhookStats.accepted++;
     metaWebhookStats.last_at = new Date().toISOString();
+    metaWebhookStats.last_error = null;
 
     setImmediate(async () => {
-      const payload = json || {};
-      const objectType = String(payload.object || '').toLowerCase();
-      const entries = Array.isArray(payload.entry) ? payload.entry : [];
-      if (!objectType || entries.length === 0) return;
-
-      for (const entry of entries) {
-        const entryId = entry && entry.id ? String(entry.id) : '';
-        if (!entryId) continue;
-
-        // Resolve tenant + token by page_id or ig_business_id
-        let integration = null;
-        try {
-          if (!process.env.DATABASE_URL || !db || !db.pool) continue;
-          if (objectType === 'page' && typeof db.getMetaPageByPageId === 'function') {
-            integration = await db.getMetaPageByPageId(entryId);
-          } else if (objectType === 'instagram' && typeof db.getMetaPageByIgBusinessId === 'function') {
-            integration = await db.getMetaPageByIgBusinessId(entryId);
-          }
-        } catch (e) {
-          console.warn('⚠️ Meta integration lookup failed:', e.message);
-        }
-        if (!integration || !integration.tenant_id || !integration.page_access_token) continue;
-
-        const tenantId = integration.tenant_id;
-        const pageId = integration.page_id;
-        const pageToken = integration.page_access_token;
-        const igBusinessId = integration.ig_business_id || null;
-
-        const source = objectType === 'instagram' ? 'instagram' : 'facebook';
-        if (source === 'instagram' || source === 'facebook') {
-          metaWebhookStats.by_source[source] = (metaWebhookStats.by_source[source] || 0) + 1;
+      try {
+        const payload = json || {};
+        const objectType = String(payload.object || '').toLowerCase();
+        const entries = Array.isArray(payload.entry) ? payload.entry : [];
+        if (!objectType || entries.length === 0) {
+          metaDebugLog('Webhook payload missing object/entry');
+          return;
         }
 
-        // Messaging (DM)
-        const messaging = Array.isArray(entry.messaging) ? entry.messaging : [];
-        for (const ev of messaging) {
-          const senderId = ev?.sender?.id ? String(ev.sender.id) : '';
-          const recipientId = ev?.recipient?.id ? String(ev.recipient.id) : '';
-          const isFromPage = senderId && pageId && senderId === String(pageId);
+        for (const entry of entries) {
+          const entryId = entry && entry.id ? String(entry.id) : '';
+          if (!entryId) continue;
 
-          const contactId = isFromPage ? recipientId : senderId;
-          if (!contactId) continue;
-
-          const contactKey = (source === 'instagram' ? 'ig:' : 'fb:') + contactId;
-          const text = ev?.message?.text || '';
-          const mid = ev?.message?.mid ? String(ev.message.mid) : '';
-          const msgId = (source === 'instagram' ? 'igmid:' : 'fbmid:') + (mid || (String(ev?.timestamp || '') || String(Date.now())));
-          const createdAtIso = toIsoFromMetaTimestamp(ev?.timestamp || Date.now());
-          const direction = isFromPage ? 'out' : 'in';
-
-          await upsertMetaInbound({
-            tenantId,
-            source,
-            contactKey,
-            displayName: null,
-            text,
-            msgId,
-            direction,
-            createdAtIso,
-            meta: {
-              platform: source,
-              kind: 'dm',
-              page_id: pageId,
-              ig_business_id: igBusinessId,
-              sender_id: senderId || null,
-              recipient_id: recipientId || null
+          // Resolve tenant + token by page_id or ig_business_id
+          let integration = null;
+          try {
+            if (!process.env.DATABASE_URL || !db || !db.pool) continue;
+            if (objectType === 'page' && typeof db.getMetaPageByPageId === 'function') {
+              integration = await db.getMetaPageByPageId(entryId);
+            } else if (objectType === 'instagram' && typeof db.getMetaPageByIgBusinessId === 'function') {
+              integration = await db.getMetaPageByIgBusinessId(entryId);
             }
-          });
+          } catch (e) {
+            console.warn('⚠️ Meta integration lookup failed:', e.message);
+          }
+          if (!integration || !integration.tenant_id || !integration.page_access_token) {
+            metaDebugLog('No integration match', { objectType, entryId });
+            continue;
+          }
 
-          metaWebhookStats.by_kind.dm = (metaWebhookStats.by_kind.dm || 0) + 1;
-        }
+          const tenantId = integration.tenant_id;
+          const pageId = integration.page_id;
+          const pageToken = integration.page_access_token;
+          const igBusinessId = integration.ig_business_id || null;
 
-        // Comments / feed changes
-        const changes = Array.isArray(entry.changes) ? entry.changes : [];
-        for (const ch of changes) {
-          const value = ch && ch.value ? ch.value : {};
-          const verb = String(value.verb || '').toLowerCase();
-          if (verb && verb !== 'add') continue;
+          const source = objectType === 'instagram' ? 'instagram' : 'facebook';
+          if (source === 'instagram' || source === 'facebook') {
+            metaWebhookStats.by_source[source] = (metaWebhookStats.by_source[source] || 0) + 1;
+          }
+          metaDebugLog('Webhook accepted', { objectType, entryId, tenantId, pageId, igBusinessId });
 
-          const commentId = value.comment_id || value.id || null;
-          const postId = value.post_id || value.post_id || value.post || null;
-          const messageText = value.message || value.text || '';
+          // Messaging (DM)
+          const messaging = Array.isArray(entry.messaging) ? entry.messaging : [];
+          for (const ev of messaging) {
+            const senderId = ev?.sender?.id ? String(ev.sender.id) : '';
+            const recipientId = ev?.recipient?.id ? String(ev.recipient.id) : '';
+            // Facebook: entry.id is Page ID. Instagram: entry.id is IG Business Account ID.
+            const threadOwnerId = source === 'instagram'
+              ? (igBusinessId ? String(igBusinessId) : entryId)
+              : String(pageId);
+            const isFromPage = senderId && threadOwnerId && senderId === String(threadOwnerId);
 
-          if (!commentId && !messageText) continue;
+            const contactId = isFromPage ? recipientId : senderId;
+            if (!contactId) continue;
 
-          let fromId = null;
-          let fromName = null;
+            const contactKey = (source === 'instagram' ? 'ig:' : 'fb:') + contactId;
+            const text = ev?.message?.text || '';
+            const mid = ev?.message?.mid ? String(ev.message.mid) : '';
+            const msgId = (source === 'instagram' ? 'igmid:' : 'fbmid:') + (mid || (String(ev?.timestamp || '') || String(Date.now())));
+            const createdAtIso = toIsoFromMetaTimestamp(ev?.timestamp || Date.now());
+            const direction = isFromPage ? 'out' : 'in';
 
-          // Try to enrich comment via Graph API when possible
-          let finalText = String(messageText || '').trim();
-          let permalink = null;
-          if (!finalText && commentId) {
-            try {
-              const fields = source === 'instagram'
-                ? 'text,username,timestamp,media{id,permalink}'
-                : 'message,from,created_time,permalink_url';
-              const url = `https://graph.facebook.com/v19.0/${commentId}?fields=${encodeURIComponent(fields)}&access_token=${encodeURIComponent(pageToken)}`;
-              const data = await fetchJsonWithRetry(url, {}, { retries: 0, timeoutMs: 4000 }).catch(() => null);
-              if (data) {
-                if (source === 'instagram') {
-                  finalText = String(data.text || '').trim();
-                  fromName = data.username || null;
-                  permalink = data?.media?.permalink || null;
-                } else {
-                  finalText = String(data.message || '').trim();
-                  fromId = data?.from?.id || null;
-                  fromName = data?.from?.name || null;
-                  permalink = data?.permalink_url || null;
-                }
+            await upsertMetaInbound({
+              tenantId,
+              source,
+              contactKey,
+              displayName: null,
+              text,
+              msgId,
+              direction,
+              createdAtIso,
+              meta: {
+                platform: source,
+                kind: 'dm',
+                page_id: pageId,
+                ig_business_id: igBusinessId,
+                sender_id: senderId || null,
+                recipient_id: recipientId || null
               }
-            } catch {
-              // ignore
-            }
+            });
+
+            metaWebhookStats.by_kind.dm = (metaWebhookStats.by_kind.dm || 0) + 1;
           }
 
-          if (!finalText) finalText = '[Comment]';
-          const contactKey = (source === 'instagram'
-            ? `ig:${fromName || (commentId ? String(commentId) : 'comment')}`
-            : `fb:${fromId || (commentId ? String(commentId) : 'comment')}`
-          );
+          // Comments / feed changes
+          const changes = Array.isArray(entry.changes) ? entry.changes : [];
+          for (const ch of changes) {
+            const value = ch && ch.value ? ch.value : {};
+            const verb = String(value.verb || '').toLowerCase();
+            if (verb && verb !== 'add') continue;
 
-          const msgId = (source === 'instagram' ? 'igcmt:' : 'fbcmt:') + (commentId ? String(commentId) : String(Date.now()));
-          const createdAtIso = new Date().toISOString();
+            const commentId = value.comment_id || value.id || null;
+            const postId = value.post_id || value.post_id || value.post || null;
+            const messageText = value.message || value.text || '';
 
-          await upsertMetaInbound({
-            tenantId,
-            source,
-            contactKey,
-            displayName: fromName,
-            text: finalText,
-            msgId,
-            direction: 'in',
-            createdAtIso,
-            meta: {
-              platform: source,
-              kind: 'comment',
-              page_id: pageId,
-              ig_business_id: igBusinessId,
-              comment_id: commentId ? String(commentId) : null,
-              post_id: postId ? String(postId) : null,
-              permalink: permalink
+            if (!commentId && !messageText) continue;
+
+            let fromId = value?.from?.id ? String(value.from.id) : null;
+            let fromName = value?.from?.name ? String(value.from.name) : null;
+            if (!fromName && value?.from?.username) fromName = String(value.from.username);
+
+            // Try to enrich comment via Graph API when possible
+            let finalText = String(messageText || '').trim();
+            let permalink = null;
+            if (!finalText && commentId) {
+              try {
+                const fields = source === 'instagram'
+                  ? 'text,username,timestamp,media{id,permalink}'
+                  : 'message,from,created_time,permalink_url';
+                const url = `https://graph.facebook.com/v19.0/${commentId}?fields=${encodeURIComponent(fields)}&access_token=${encodeURIComponent(pageToken)}`;
+                const data = await fetchJsonWithRetry(url, {}, { retries: 0, timeoutMs: 4000 }).catch(() => null);
+                if (data) {
+                  if (source === 'instagram') {
+                    finalText = String(data.text || '').trim();
+                    fromName = fromName || data.username || null;
+                    permalink = data?.media?.permalink || null;
+                  } else {
+                    finalText = String(data.message || '').trim();
+                    fromId = fromId || data?.from?.id || null;
+                    fromName = fromName || data?.from?.name || null;
+                    permalink = data?.permalink_url || null;
+                  }
+                }
+              } catch {
+                // ignore
+              }
             }
-          });
 
-          metaWebhookStats.by_kind.comment = (metaWebhookStats.by_kind.comment || 0) + 1;
+            if (!finalText) finalText = '[Comment]';
+            const contactKey = (source === 'instagram'
+              ? `ig:${fromId || fromName || (commentId ? String(commentId) : 'comment')}`
+              : `fb:${fromId || (commentId ? String(commentId) : 'comment')}`
+            );
+
+            const msgId = (source === 'instagram' ? 'igcmt:' : 'fbcmt:') + (commentId ? String(commentId) : String(Date.now()));
+            const createdAtIso = new Date().toISOString();
+
+            await upsertMetaInbound({
+              tenantId,
+              source,
+              contactKey,
+              displayName: fromName,
+              text: finalText,
+              msgId,
+              direction: 'in',
+              createdAtIso,
+              meta: {
+                platform: source,
+                kind: 'comment',
+                page_id: pageId,
+                ig_business_id: igBusinessId,
+                comment_id: commentId ? String(commentId) : null,
+                post_id: postId ? String(postId) : null,
+                permalink: permalink
+              }
+            });
+
+            metaWebhookStats.by_kind.comment = (metaWebhookStats.by_kind.comment || 0) + 1;
+          }
         }
+      } catch (err) {
+        metaWebhookStats.last_error = err?.message || 'processing_error';
+        metaDebugLog('Webhook processing error', metaWebhookStats.last_error);
       }
     });
   } catch (e) {
     console.error('Meta webhook handler error:', e.message);
+    metaWebhookStats.total++;
+    metaWebhookStats.rejected++;
+    metaWebhookStats.last_at = new Date().toISOString();
+    metaWebhookStats.last_error = e?.message || 'handler_error';
     return res.sendStatus(400);
   }
 });
