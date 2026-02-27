@@ -581,7 +581,8 @@ async function updateLeadFields(id, updates, tenantId = 'admin') {
             if (!extra || typeof extra !== 'object' || Array.isArray(extra)) {
                 extra = {};
             }
-            fields.push(`extra_data = $${paramCount++}`);
+            // Merge into existing JSON (preserve other keys)
+            fields.push(`extra_data = COALESCE(extra_data, '{}'::jsonb) || $${paramCount++}::jsonb`);
             values.push(extra);
         }
 
@@ -811,7 +812,7 @@ async function healthCheck() {
 /**
  * Append a single message to the messages table (idempotent via whatsapp_id without relying on constraints)
  */
-async function appendMessage({ leadId, phone, body, direction, whatsappId, createdAt, tenantId = 'admin' }) {
+async function appendMessage({ leadId, phone, body, direction, whatsappId, metadata, createdAt, tenantId = 'admin' }) {
     try {
         const ts = createdAt ? new Date(createdAt * 1000) : new Date();
 
@@ -825,10 +826,16 @@ async function appendMessage({ leadId, phone, body, direction, whatsappId, creat
         }
 
         // 2. Insert message
+        let meta = metadata;
+        if (typeof meta === 'string') {
+            try { meta = JSON.parse(meta); } catch { meta = {}; }
+        }
+        if (!meta || typeof meta !== 'object' || Array.isArray(meta)) meta = {};
+
         await pool.query(`
-            INSERT INTO messages (lead_id, phone, body, direction, whatsapp_id, created_at, tenant_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-        `, [leadId, phone, body || '', direction, whatsappId || null, ts, tenantId]);
+            INSERT INTO messages (lead_id, phone, body, direction, whatsapp_id, metadata, created_at, tenant_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `, [leadId, phone, body || '', direction, whatsappId || null, meta, ts, tenantId]);
     } catch (error) {
         // Non-fatal - log and continue
         console.warn('⚠️ appendMessage error:', error.message);

@@ -288,25 +288,100 @@ async function processMessage(tenantId, msg, isFromMe) {
             return m;
         }
 
+        function detectType(m) {
+            if (!m) return 'unknown';
+            if (m.conversation || m.extendedTextMessage) return 'text';
+            if (m.imageMessage) return 'image';
+            if (m.videoMessage) return 'video';
+            if (m.documentMessage) return 'document';
+            if (m.audioMessage) return 'audio';
+            if (m.stickerMessage) return 'sticker';
+            if (m.locationMessage || m.liveLocationMessage) return 'location';
+            if (m.contactMessage || m.contactsArrayMessage) return 'contact';
+            if (m.reactionMessage) return 'reaction';
+            if (m.buttonsResponseMessage) return 'buttons_response';
+            if (m.listResponseMessage) return 'list_response';
+            if (m.templateMessage) return 'template';
+            return 'unknown';
+        }
+
         function extractText(m) {
             if (!m) return '';
             if (m.conversation) return m.conversation;
             if (m.extendedTextMessage && m.extendedTextMessage.text) return m.extendedTextMessage.text;
-            if (m.imageMessage && m.imageMessage.caption) return m.imageMessage.caption;
-            if (m.videoMessage && m.videoMessage.caption) return m.videoMessage.caption;
-            if (m.documentMessage && m.documentMessage.caption) return m.documentMessage.caption;
+
+            if (m.imageMessage) return m.imageMessage.caption || '[Image]';
+            if (m.videoMessage) return m.videoMessage.caption || '[Video]';
+            if (m.documentMessage) return m.documentMessage.caption || '[Document]';
+            if (m.audioMessage) return '[Audio]';
+            if (m.stickerMessage) return '[Sticker]';
+            if (m.locationMessage || m.liveLocationMessage) return '[Location]';
+            if (m.contactMessage || m.contactsArrayMessage) return '[Contact]';
+            if (m.reactionMessage) return m.reactionMessage.text || '[Reaction]';
 
             if (m.buttonsResponseMessage) {
-                return m.buttonsResponseMessage.selectedDisplayText || m.buttonsResponseMessage.selectedButtonId || '';
+                return m.buttonsResponseMessage.selectedDisplayText || m.buttonsResponseMessage.selectedButtonId || '[Button]';
             }
             if (m.listResponseMessage && m.listResponseMessage.singleSelectReply) {
-                return m.listResponseMessage.title || m.listResponseMessage.singleSelectReply.selectedRowId || '';
+                return m.listResponseMessage.title || m.listResponseMessage.singleSelectReply.selectedRowId || '[List]';
             }
             if (m.templateMessage && m.templateMessage.hydratedTemplate) {
-                return m.templateMessage.hydratedTemplate.hydratedContentText || '';
+                return m.templateMessage.hydratedTemplate.hydratedContentText || '[Template]';
             }
 
             return '';
+        }
+
+        function extractContextInfo(m) {
+            if (!m) return null;
+            try {
+                if (m.extendedTextMessage && m.extendedTextMessage.contextInfo) return m.extendedTextMessage.contextInfo;
+                if (m.imageMessage && m.imageMessage.contextInfo) return m.imageMessage.contextInfo;
+                if (m.videoMessage && m.videoMessage.contextInfo) return m.videoMessage.contextInfo;
+                if (m.documentMessage && m.documentMessage.contextInfo) return m.documentMessage.contextInfo;
+                if (m.buttonsResponseMessage && m.buttonsResponseMessage.contextInfo) return m.buttonsResponseMessage.contextInfo;
+                if (m.listResponseMessage && m.listResponseMessage.contextInfo) return m.listResponseMessage.contextInfo;
+                if (m.templateMessage && m.templateMessage.contextInfo) return m.templateMessage.contextInfo;
+                if (m.messageContextInfo) return m.messageContextInfo;
+            } catch { }
+            return null;
+        }
+
+        function pickExternalAd(ad) {
+            if (!ad || typeof ad !== 'object') return null;
+            return {
+                title: ad.title || null,
+                body: ad.body || null,
+                sourceUrl: ad.sourceUrl || null,
+                mediaUrl: ad.mediaUrl || null,
+                thumbnailUrl: ad.thumbnailUrl || null,
+                originalImageUrl: ad.originalImageUrl || null,
+                adPreviewUrl: ad.adPreviewUrl || null,
+                wtwaWebsiteUrl: ad.wtwaWebsiteUrl || null,
+                sourceType: ad.sourceType || null,
+                sourceId: ad.sourceId || null,
+                sourceApp: ad.sourceApp || null,
+                ref: ad.ref || null,
+                ctwaClid: ad.ctwaClid || null,
+                showAdAttribution: ad.showAdAttribution || null,
+                containsAutoReply: ad.containsAutoReply || null,
+                automatedGreetingMessageShown: ad.automatedGreetingMessageShown || null,
+                greetingMessageBody: ad.greetingMessageBody || null
+            };
+        }
+
+        function extractLinks(text) {
+            if (!text) return [];
+            var out = [];
+            var re = /(https?:\/\/[^\s)\]]+)|(www\.[^\s)\]]+)/gi;
+            var m2;
+            while ((m2 = re.exec(String(text))) !== null) {
+                var u = m2[0];
+                if (u && u.startsWith('www.')) u = 'https://' + u;
+                out.push(u);
+            }
+            // de-dupe
+            return Array.from(new Set(out)).slice(0, 10);
         }
 
         function phoneFromJid(jid) {
@@ -350,8 +425,20 @@ async function processMessage(tenantId, msg, isFromMe) {
         var unwrapped = unwrapMessage(msg.message);
         if (!unwrapped) return;
 
+        var msgType = detectType(unwrapped);
+        var contextInfo = extractContextInfo(unwrapped);
+        var externalAd = contextInfo && contextInfo.externalAdReply ? pickExternalAd(contextInfo.externalAdReply) : null;
+
         var messageContent = extractText(unwrapped);
-        if (!messageContent || messageContent.trim() === '') return;
+
+        // If message has no visible text, but contains ad greeting/body, surface it
+        if ((!messageContent || String(messageContent).trim() === '') && externalAd && externalAd.greetingMessageBody) {
+            messageContent = String(externalAd.greetingMessageBody);
+        }
+
+        if (!messageContent || String(messageContent).trim() === '') {
+            messageContent = '[Unsupported message]';
+        }
 
         var whatsappId = msg.key.id;
         if (!whatsappId) return;
@@ -385,6 +472,27 @@ async function processMessage(tenantId, msg, isFromMe) {
         var displayName = contactName || ('+' + rawNumber);
         console.log('[' + tenantId + '] ' + prefix + ' ' + rawNumber + ' | ' + messageContent.substring(0, 50));
 
+        var metadata = {
+            type: msgType,
+            links: extractLinks(messageContent),
+            ad: externalAd,
+            entry: contextInfo ? {
+                conversionSource: contextInfo.conversionSource || null,
+                entryPointConversionSource: contextInfo.entryPointConversionSource || null,
+                entryPointConversionApp: contextInfo.entryPointConversionApp || null,
+                entryPointConversionExternalSource: contextInfo.entryPointConversionExternalSource || null,
+                entryPointConversionExternalMedium: contextInfo.entryPointConversionExternalMedium || null
+            } : null
+        };
+        if (externalAd) {
+            var adLinks = [];
+            if (externalAd.sourceUrl) adLinks.push(externalAd.sourceUrl);
+            if (externalAd.wtwaWebsiteUrl) adLinks.push(externalAd.wtwaWebsiteUrl);
+            if (externalAd.adPreviewUrl) adLinks.push(externalAd.adPreviewUrl);
+            if (externalAd.mediaUrl) adLinks.push(externalAd.mediaUrl);
+            metadata.links = Array.from(new Set([].concat(metadata.links || [], adLinks))).slice(0, 10);
+        }
+
         // Write ALL messages (incoming AND outgoing caught by Baileys) to DB
         if (HAS_DATABASE && db) {
             try {
@@ -415,9 +523,17 @@ async function processMessage(tenantId, msg, isFromMe) {
                         body: messageContent,
                         direction: isFromMe ? 'out' : 'in',
                         whatsappId: whatsappId,
+                        metadata: metadata,
                         createdAt: msg.messageTimestamp || null,
                         tenantId: tenantId
                     });
+
+                    // If this message contains ad attribution, persist it on the lead as well (extra_data.ad)
+                    if (externalAd && savedLead && savedLead.id) {
+                        try {
+                            await db.updateLeadFields(savedLead.id, { extra_data: JSON.stringify({ ad: externalAd }) }, tenantId);
+                        } catch { }
+                    }
                 }
             } catch (dbError) {
                 console.error('⚠️ DB error (non-fatal):', dbError.message);
