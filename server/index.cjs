@@ -172,6 +172,15 @@ if (!process.env.DATABASE_URL) {
 // META (FACEBOOK/INSTAGRAM) WEBHOOKS
 // ═══════════════════════════════════════════════════════════════
 
+const metaWebhookStats = {
+  total: 0,
+  accepted: 0,
+  rejected: 0,
+  last_at: null,
+  by_source: { facebook: 0, instagram: 0 },
+  by_kind: { dm: 0, comment: 0 },
+};
+
 function computeMetaSignature(rawBodyBuffer) {
   if (!META_APP_SECRET) return null;
   const h = crypto.createHmac('sha256', META_APP_SECRET);
@@ -280,11 +289,18 @@ app.post('/api/webhooks/meta', (req, res) => {
     const expected = computeMetaSignature(buf);
 
     if (!expected || !safeEqual(String(headerSig || ''), expected)) {
+      metaWebhookStats.total++;
+      metaWebhookStats.rejected++;
+      metaWebhookStats.last_at = new Date().toISOString();
       return res.sendStatus(401);
     }
 
     // Respond fast; process async
     res.status(200).send('EVENT_RECEIVED');
+
+    metaWebhookStats.total++;
+    metaWebhookStats.accepted++;
+    metaWebhookStats.last_at = new Date().toISOString();
 
     setImmediate(async () => {
       const payload = json || {};
@@ -316,6 +332,9 @@ app.post('/api/webhooks/meta', (req, res) => {
         const igBusinessId = integration.ig_business_id || null;
 
         const source = objectType === 'instagram' ? 'instagram' : 'facebook';
+        if (source === 'instagram' || source === 'facebook') {
+          metaWebhookStats.by_source[source] = (metaWebhookStats.by_source[source] || 0) + 1;
+        }
 
         // Messaging (DM)
         const messaging = Array.isArray(entry.messaging) ? entry.messaging : [];
@@ -352,6 +371,8 @@ app.post('/api/webhooks/meta', (req, res) => {
               recipient_id: recipientId || null
             }
           });
+
+          metaWebhookStats.by_kind.dm = (metaWebhookStats.by_kind.dm || 0) + 1;
         }
 
         // Comments / feed changes
@@ -425,6 +446,8 @@ app.post('/api/webhooks/meta', (req, res) => {
               permalink: permalink
             }
           });
+
+          metaWebhookStats.by_kind.comment = (metaWebhookStats.by_kind.comment || 0) + 1;
         }
       }
     });
@@ -1722,6 +1745,52 @@ async function fetchMetaPagesForToken(userAccessToken) {
   }).filter((p) => p.pageId && p.pageAccessToken);
 }
 
+async function subscribeMetaWebhooks({ pageId, pageAccessToken, igBusinessId }) {
+  const page = String(pageId || '').trim();
+  const token = String(pageAccessToken || '').trim();
+  const ig = igBusinessId ? String(igBusinessId).trim() : '';
+
+  const out = {
+    page: { ok: false, error: null },
+    instagram: ig ? { ok: false, error: null } : null,
+  };
+
+  if (!page || !token) {
+    out.page.error = 'Missing pageId/pageAccessToken';
+    return out;
+  }
+
+  // Subscribe Page webhooks (messages + comments/feed)
+  try {
+    const url = `https://graph.facebook.com/v19.0/${encodeURIComponent(page)}/subscribed_apps`;
+    const body = new URLSearchParams({
+      subscribed_fields: 'messages,feed',
+      access_token: token,
+    });
+    await fetchJsonWithRetry(url, { method: 'POST', body }, { retries: 0, timeoutMs: 6000 });
+    out.page.ok = true;
+  } catch (e) {
+    out.page.error = e?.message || 'Page subscribe failed';
+  }
+
+  // Subscribe IG webhooks (DM + comments)
+  if (ig) {
+    try {
+      const url = `https://graph.facebook.com/v19.0/${encodeURIComponent(ig)}/subscribed_apps`;
+      const body = new URLSearchParams({
+        subscribed_fields: 'messages,comments',
+        access_token: token,
+      });
+      await fetchJsonWithRetry(url, { method: 'POST', body }, { retries: 0, timeoutMs: 6000 });
+      out.instagram.ok = true;
+    } catch (e) {
+      out.instagram.error = e?.message || 'Instagram subscribe failed';
+    }
+  }
+
+  return out;
+}
+
 app.post('/api/meta/discover', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
   const token = String(req.body?.token || '').trim();
   if (!token) return res.status(400).json({ error: 'token is required' });
@@ -1742,6 +1811,7 @@ app.post('/api/meta/connect', requireTenantAuth, requireAdmin, asyncHandler(asyn
   const byId = new Map(discovered.map((p) => [p.pageId, p]));
 
   const saved = [];
+  const subscribe = [];
   for (const pid of pageIds) {
     const p = byId.get(pid);
     if (!p || !p.pageAccessToken) continue;
@@ -1752,9 +1822,36 @@ app.post('/api/meta/connect', requireTenantAuth, requireAdmin, asyncHandler(asyn
       ig_business_id: p.igBusinessId || null
     });
     if (row) saved.push(row);
+
+    // Best-effort: subscribe app to the Page/IG for webhook delivery
+    const sub = await subscribeMetaWebhooks({
+      pageId: p.pageId,
+      pageAccessToken: p.pageAccessToken,
+      igBusinessId: p.igBusinessId || null,
+    });
+    subscribe.push({ pageId: p.pageId, igBusinessId: p.igBusinessId || null, result: sub });
   }
 
-  res.status(201).json({ success: true, savedCount: saved.length, pages: saved });
+  res.status(201).json({ success: true, savedCount: saved.length, pages: saved, subscribe });
+}));
+
+app.post('/api/meta/pages/:pageId/subscribe', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  const pageId = String(req.params.pageId || '').trim();
+  if (!pageId) return res.status(400).json({ error: 'pageId is required' });
+
+  const integration = await db.getMetaPageByPageId(pageId);
+  if (!integration || integration.tenant_id !== req.tenantId) {
+    return res.status(404).json({ error: 'Connected page not found' });
+  }
+
+  const result = await subscribeMetaWebhooks({
+    pageId: integration.page_id,
+    pageAccessToken: integration.page_access_token,
+    igBusinessId: integration.ig_business_id || null,
+  });
+
+  res.json({ success: true, result });
 }));
 
 app.get('/api/meta/pages', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
@@ -1762,6 +1859,159 @@ app.get('/api/meta/pages', requireTenantAuth, requireAdmin, asyncHandler(async (
   if (!db || typeof db.getMetaPages !== 'function') return res.status(501).json({ error: 'Meta integration is unavailable' });
   const pages = await db.getMetaPages(req.tenantId);
   res.json({ pages });
+}));
+
+app.get('/api/meta/webhook/status', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  res.json({ stats: metaWebhookStats });
+}));
+
+async function postGraphForm(path, form, timeoutMs = 7000) {
+  const url = `https://graph.facebook.com/v19.0/${String(path).replace(/^\//, '')}`;
+  const body = form instanceof URLSearchParams ? form : new URLSearchParams(form || {});
+  const json = await fetchJsonWithRetry(url, { method: 'POST', body }, { retries: 0, timeoutMs });
+  return json;
+}
+
+async function postGraphJson(path, payload, accessToken, timeoutMs = 7000) {
+  const url = `https://graph.facebook.com/v19.0/${String(path).replace(/^\//, '')}?access_token=${encodeURIComponent(String(accessToken || ''))}`;
+  const json = await fetchJsonWithRetry(
+    url,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload || {})
+    },
+    { retries: 0, timeoutMs }
+  );
+  return json;
+}
+
+app.post('/api/meta/leads/:id/reply', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  const leadId = String(req.params.id || '').trim();
+  const bodyText = String(req.body?.body || '').trim();
+  const mode = String(req.body?.mode || '').trim(); // dm | comment | private
+  if (!leadId) return res.status(400).json({ error: 'lead id is required' });
+  if (!bodyText) return res.status(400).json({ error: 'body is required' });
+
+  const leadRes = await db.pool.query('SELECT id, phone, name, source FROM leads WHERE id = $1 AND tenant_id = $2', [leadId, req.tenantId]);
+  if (leadRes.rowCount === 0) return res.status(404).json({ error: 'Lead not found' });
+  const lead = leadRes.rows[0];
+
+  const src = String(lead.source || '').toLowerCase();
+  if (src !== 'facebook' && src !== 'instagram') {
+    return res.status(400).json({ error: 'Lead is not a Meta (FB/IG) lead' });
+  }
+
+  // Find the most recent relevant inbound event metadata
+  const lastCommentRes = await db.pool.query(
+    "SELECT metadata FROM messages WHERE lead_id = $1 AND tenant_id = $2 AND (metadata->>'kind') = 'comment' ORDER BY created_at DESC LIMIT 1",
+    [leadId, req.tenantId]
+  );
+  const lastDmRes = await db.pool.query(
+    "SELECT metadata, direction FROM messages WHERE lead_id = $1 AND tenant_id = $2 AND (metadata->>'kind') = 'dm' ORDER BY created_at DESC LIMIT 1",
+    [leadId, req.tenantId]
+  );
+
+  const commentMeta = lastCommentRes.rows[0]?.metadata || null;
+  const dmMeta = lastDmRes.rows[0]?.metadata || null;
+  const dmDirection = lastDmRes.rows[0]?.direction || 'in';
+
+  const pageIdFromMeta = (commentMeta?.page_id || dmMeta?.page_id || null);
+  const igFromMeta = (commentMeta?.ig_business_id || dmMeta?.ig_business_id || null);
+
+  let integration = null;
+  if (pageIdFromMeta && typeof db.getMetaPageByPageId === 'function') {
+    integration = await db.getMetaPageByPageId(String(pageIdFromMeta));
+  }
+  if (!integration && igFromMeta && typeof db.getMetaPageByIgBusinessId === 'function') {
+    integration = await db.getMetaPageByIgBusinessId(String(igFromMeta));
+  }
+
+  if (!integration || integration.tenant_id !== req.tenantId || !integration.page_access_token) {
+    return res.status(400).json({ error: 'Connected Meta Page not found for this lead' });
+  }
+
+  const pageToken = integration.page_access_token;
+  const igBusinessId = integration.ig_business_id || null;
+  const pageId = integration.page_id;
+
+  let graphResult = null;
+  let outId = null;
+
+  if (mode === 'comment') {
+    const commentId = commentMeta?.comment_id;
+    if (!commentId) return res.status(400).json({ error: 'No comment_id found to reply' });
+
+    if (src === 'instagram') {
+      graphResult = await postGraphForm(`${commentId}/replies`, { message: bodyText, access_token: pageToken });
+      outId = graphResult?.id || null;
+    } else {
+      graphResult = await postGraphForm(`${commentId}/comments`, { message: bodyText, access_token: pageToken });
+      outId = graphResult?.id || null;
+    }
+  } else if (mode === 'private') {
+    const commentId = commentMeta?.comment_id;
+    if (!commentId) return res.status(400).json({ error: 'No comment_id found for private reply' });
+
+    // Private reply to a comment (DM) - availability depends on permissions/platform.
+    graphResult = await postGraphForm(`${commentId}/private_replies`, { message: bodyText, access_token: pageToken });
+    outId = graphResult?.id || graphResult?.message_id || null;
+  } else if (mode === 'dm') {
+    if (!dmMeta) return res.status(400).json({ error: 'No DM thread found for this lead yet' });
+
+    const senderId = dmMeta?.sender_id ? String(dmMeta.sender_id) : '';
+    const recipientId = dmMeta?.recipient_id ? String(dmMeta.recipient_id) : '';
+    const userId = (dmDirection === 'in') ? senderId : recipientId;
+    if (!userId) return res.status(400).json({ error: 'No recipient id found for DM' });
+
+    if (src === 'instagram') {
+      const igId = igBusinessId ? String(igBusinessId) : (igFromMeta ? String(igFromMeta) : '');
+      if (!igId) return res.status(400).json({ error: 'IG business id is missing for DM send' });
+      graphResult = await postGraphJson(`${igId}/messages`, { recipient: { id: userId }, message: { text: bodyText } }, pageToken);
+      outId = graphResult?.message_id || graphResult?.id || null;
+    } else {
+      // Messenger Send API uses Page access token
+      graphResult = await postGraphJson(`me/messages`, { recipient: { id: userId }, message: { text: bodyText } }, pageToken);
+      outId = graphResult?.message_id || graphResult?.id || null;
+    }
+  } else {
+    return res.status(400).json({ error: "mode must be one of: 'dm', 'comment', 'private'" });
+  }
+
+  // Persist outgoing message
+  const outKey = outId ? `metaout:${outId}` : `metaout:${Date.now()}`;
+  await db.appendMessage({
+    leadId: lead.id,
+    phone: lead.phone,
+    body: bodyText,
+    direction: 'out',
+    whatsappId: outKey,
+    metadata: {
+      platform: src,
+      kind: mode === 'comment' ? 'comment_reply' : mode === 'private' ? 'private_reply' : 'dm_out',
+      page_id: pageId,
+      ig_business_id: igBusinessId,
+      graph: graphResult || null,
+    },
+    createdAt: Math.floor(Date.now() / 1000),
+    tenantId: req.tenantId
+  });
+
+  await db.updateLeadMessage(lead.phone, bodyText, outKey, lead.name || null, req.tenantId, 'out').catch(() => null);
+
+  // Fast UI update
+  io.to(req.tenantId).emit('new_message', {
+    phone: lead.phone,
+    name: lead.name,
+    message: bodyText,
+    whatsapp_id: outKey,
+    fromMe: true,
+    timestamp: new Date().toISOString(),
+    source: src
+  });
+
+  res.status(201).json({ success: true, id: outId || outKey, graph: graphResult });
 }));
 
 app.post('/api/meta/pages', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {

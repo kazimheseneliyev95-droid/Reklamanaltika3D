@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import QRCode from 'react-qr-code';
-import { RefreshCcw, Smartphone, Wifi, WifiOff, Link2, CheckSquare, Square, Trash2 } from 'lucide-react';
+import { RefreshCcw, Smartphone, Wifi, WifiOff, Link2, CheckSquare, Square, Trash2, BellRing } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import { useAppStore } from '../../../context/Store';
 import { CrmService } from '../../../services/CrmService';
@@ -149,6 +149,28 @@ export function ConnectionTab() {
       await refreshMeta();
     } catch (e: any) {
       setMetaError(e?.message || 'Ayrilma alınmadı');
+    } finally {
+      setMetaBusy(false);
+    }
+  };
+
+  const subscribePage = async (pageId: string) => {
+    setMetaBusy(true);
+    setMetaError('');
+    try {
+      const url = CrmService.getServerUrl();
+      const token = localStorage.getItem('crm_auth_token');
+      if (!url || !token) return;
+
+      const res = await fetch(`${url}/api/meta/pages/${encodeURIComponent(pageId)}/subscribe`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Subscribe failed');
+      await refreshMeta();
+    } catch (e: any) {
+      setMetaError(e?.message || 'Webhook subscribe alınmadı');
     } finally {
       setMetaBusy(false);
     }
@@ -332,14 +354,24 @@ export function ConnectionTab() {
                         <div className="text-[12px] text-slate-200 font-semibold truncate">{p.page_name || p.page_id}</div>
                         <div className="text-[10px] text-slate-600 truncate">page_id: {p.page_id}{p.ig_business_id ? ` · ig: ${p.ig_business_id}` : ''}</div>
                       </div>
-                      <button
-                        onClick={() => disconnectPage(p.page_id)}
-                        disabled={metaBusy}
-                        className="p-2 rounded-lg text-slate-500 hover:text-red-300 hover:bg-slate-900 border border-slate-800 disabled:opacity-50"
-                        title="Disconnect"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => subscribePage(p.page_id)}
+                          disabled={metaBusy}
+                          className="p-2 rounded-lg text-slate-500 hover:text-blue-300 hover:bg-slate-900 border border-slate-800 disabled:opacity-50"
+                          title="Webhook subscribe"
+                        >
+                          <BellRing className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => disconnectPage(p.page_id)}
+                          disabled={metaBusy}
+                          className="p-2 rounded-lg text-slate-500 hover:text-red-300 hover:bg-slate-900 border border-slate-800 disabled:opacity-50"
+                          title="Disconnect"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>

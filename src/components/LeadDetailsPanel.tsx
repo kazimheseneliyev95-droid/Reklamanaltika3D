@@ -53,7 +53,11 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
     const prevLenRef = useRef(0);
     const [showJump, setShowJump] = useState(false);
 
-    const canSend = lead.source === 'whatsapp';
+    const isMeta = lead.source === 'facebook' || lead.source === 'instagram';
+    const [metaMode, setMetaMode] = useState<'dm' | 'comment' | 'private'>(isMeta ? 'comment' : 'dm');
+    const [sendError, setSendError] = useState('');
+
+    const canSend = lead.source === 'whatsapp' || isMeta;
 
     const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
         const el = listRef.current;
@@ -134,6 +138,7 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
         const outgoing = replyText.trim();
         if (!outgoing || isSending) return;
         setIsSending(true);
+        setSendError('');
 
         // Optimistic: show immediately (important on mobile)
         const optimisticId = `tmp-${Date.now()}`;
@@ -145,16 +150,28 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
         requestAnimationFrame(() => scrollToBottom('smooth'));
         try {
             const token = localStorage.getItem('crm_auth_token') || '';
-            const res = await fetch(`${serverUrl}/api/leads/${lead.id}/messages`, {
+            const endpoint = lead.source === 'whatsapp'
+                ? `${serverUrl}/api/leads/${lead.id}/messages`
+                : `${serverUrl}/api/meta/leads/${lead.id}/reply`;
+
+            const payload = lead.source === 'whatsapp'
+                ? { body: outgoing }
+                : { body: outgoing, mode: metaMode };
+
+            const res = await fetch(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                body: JSON.stringify({ body: outgoing })
+                body: JSON.stringify(payload)
             });
             if (res.ok) {
                 loadMessages();
+            } else {
+                const data = await res.json().catch(() => ({}));
+                setSendError(String(data?.error || 'Mesaj gonderilemedi'));
             }
         } catch (err) {
             console.error('Failed to send message', err);
+            setSendError('Mesaj gonderilemedi');
         } finally {
             setIsSending(false);
         }
@@ -283,9 +300,27 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
 
             {/* Reply Input Area */}
             <div className="shrink-0 p-2 sm:p-3 border-t border-slate-800 bg-[#111827]" style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 0.75rem)' }}>
-                {!canSend ? (
-                    <div className="mb-2 rounded-lg border border-amber-900/40 bg-amber-950/10 px-3 py-2 text-[11px] text-amber-300">
-                        Bu lead WhatsApp deyil (FB/IG). Mesaj gonderme hələ aktiv deyil.
+                {isMeta ? (
+                    <div className="mb-2 flex flex-col sm:flex-row sm:items-center gap-2">
+                        <div className="text-[10px] uppercase font-bold text-slate-500">Reply mode</div>
+                        <select
+                            value={metaMode}
+                            onChange={(e) => setMetaMode(e.target.value as any)}
+                            className="h-9 rounded-lg bg-slate-900 border border-slate-700 px-3 text-xs text-slate-200 focus:outline-none focus:border-blue-500"
+                        >
+                            <option value="comment">Reply with comment</option>
+                            <option value="private">Reply with message (private)</option>
+                            <option value="dm">DM (requires existing DM)</option>
+                        </select>
+                        <div className="text-[10px] text-slate-600">
+                            IG/FB limitleri var (permission + 24h pəncərə). Comment gelmeyibse once webhook subscribe edin.
+                        </div>
+                    </div>
+                ) : null}
+
+                {sendError ? (
+                    <div className="mb-2 rounded-lg border border-red-900/40 bg-red-950/15 px-3 py-2 text-[11px] text-red-300">
+                        {sendError}
                     </div>
                 ) : null}
                 <form onSubmit={handleSend} className="flex gap-2">
@@ -293,7 +328,7 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                         type="text"
                         value={replyText}
                         onChange={(e) => setReplyText(e.target.value)}
-                        placeholder={canSend ? 'Mesaj yazın...' : 'Yalniz WhatsApp ucun'}
+                        placeholder={'Mesaj yazın...'}
                         disabled={isSending || !canSend}
                         enterKeyHint="send"
                         autoComplete="off"
