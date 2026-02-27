@@ -820,8 +820,59 @@ app.post('/api/leads/cleanup-duplicates', requireTenantAuth, asyncHandler(async 
 
 app.get('/api/leads/:id/messages', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
-  const messages = await db.getMessages(req.params.id, req.tenantId);
-  res.json(messages);
+  const leadRes = await db.pool.query(
+    'SELECT id, phone, last_message, source_message, created_at, updated_at FROM leads WHERE id = $1 AND tenant_id = $2',
+    [req.params.id, req.tenantId]
+  );
+  if (leadRes.rowCount === 0) return res.status(404).json({ error: 'Lead not found' });
+  const lead = leadRes.rows[0];
+
+  let messages = await db.getMessages(req.params.id, req.tenantId);
+
+  // Fallback: if messages are attached to a different lead_id (duplicate/merge), fetch by phone
+  if (!messages || messages.length === 0) {
+    const byPhone = await db.pool.query(
+      'SELECT * FROM messages WHERE phone = $1 AND tenant_id = $2 ORDER BY created_at ASC',
+      [lead.phone, req.tenantId]
+    );
+    messages = byPhone.rows || [];
+  }
+
+  // If still empty or missing snapshot fields, synthesize from lead columns
+  const out = Array.isArray(messages) ? [...messages] : [];
+  const bodies = new Set(out.map(m => String(m?.body || '').trim()));
+
+  if (lead.source_message && !bodies.has(String(lead.source_message).trim())) {
+    out.unshift({
+      id: 'synthetic-source',
+      lead_id: lead.id,
+      phone: lead.phone,
+      body: lead.source_message,
+      direction: 'out',
+      whatsapp_id: null,
+      metadata: { synthetic: true, kind: 'source_message' },
+      tenant_id: req.tenantId,
+      status: 'delivered',
+      created_at: lead.created_at
+    });
+  }
+
+  if (lead.last_message && !bodies.has(String(lead.last_message).trim())) {
+    out.push({
+      id: 'synthetic-last',
+      lead_id: lead.id,
+      phone: lead.phone,
+      body: lead.last_message,
+      direction: 'in',
+      whatsapp_id: null,
+      metadata: { synthetic: true, kind: 'last_message' },
+      tenant_id: req.tenantId,
+      status: 'delivered',
+      created_at: lead.updated_at || lead.created_at
+    });
+  }
+
+  res.json(out);
 }));
 
 // Mark lead as read (shared across tenant)

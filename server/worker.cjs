@@ -551,6 +551,21 @@ async function processMessage(tenantId, msg, isFromMe) {
                 }
 
                 if (savedLead && savedLead.id) {
+                    // If this CTWA thread includes an automated greeting, persist it as a synthetic outgoing message
+                    // so it shows up in CRM chat history even when WhatsApp renders it as a banner.
+                    if (externalAd && externalAd.greetingMessageBody) {
+                        await db.appendMessage({
+                            leadId: savedLead.id,
+                            phone: existingLead ? existingLead.phone : rawNumber,
+                            body: String(externalAd.greetingMessageBody),
+                            direction: 'out',
+                            whatsappId: 'greeting-' + whatsappId,
+                            metadata: { type: 'ad_greeting', ad: externalAd },
+                            createdAt: msg.messageTimestamp || null,
+                            tenantId: tenantId
+                        });
+                    }
+
                     await db.appendMessage({
                         leadId: savedLead.id,
                         phone: existingLead ? existingLead.phone : rawNumber,
