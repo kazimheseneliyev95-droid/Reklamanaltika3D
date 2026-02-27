@@ -515,11 +515,11 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                 </div>
 
                 {/* ════════════════════ BODY (2-column on md+) ════════════════════ */}
-                <div className="flex-1 flex flex-col md:flex-row overflow-hidden relative">
+                <div className="flex-1 min-h-0 flex flex-col md:flex-row overflow-hidden relative">
 
                     {/* ───── LEFT SIDEBAR ───── */}
                     <aside className={cn(
-                        "w-full md:w-72 lg:w-80 shrink-0 border-r border-white/5 bg-[#111827]/60 flex-col overflow-y-auto overscroll-contain h-full relative",
+                        "w-full md:w-72 lg:w-80 shrink-0 min-h-0 border-r border-white/5 bg-[#111827]/60 flex-col overflow-y-auto overscroll-contain relative",
                         ['feed', 'chat', 'stats'].includes(activeTab) ? "hidden md:flex" : "flex"
                     )}>
 
@@ -696,7 +696,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
 
                     {/* ───── RIGHT MAIN AREA ───── */}
                     <main className={cn(
-                        "flex-1 flex flex-col min-w-0 bg-[#0d1117] h-full",
+                        "flex-1 min-h-0 flex flex-col min-w-0 bg-[#0d1117]",
                         ['feed', 'chat', 'stats'].includes(activeTab) ? "flex" : "hidden md:flex"
                     )}>
 

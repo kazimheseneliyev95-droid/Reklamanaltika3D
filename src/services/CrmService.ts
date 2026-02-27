@@ -658,6 +658,31 @@ class CrmServiceImpl {
         method: 'POST',
         headers: this.getAuthHeaders()
       });
+
+      // Optimistic local update: some deployments may not emit `lead_read` over socket.
+      // Keep UI badge in sync immediately after successful API call.
+      if (res.ok) {
+        try {
+          const idx = this.leadsCache.findIndex(l => l.id === leadId);
+          if (idx !== -1) {
+            const updated = { ...this.leadsCache[idx], unread_count: 0, last_read_at: new Date().toISOString() } as any;
+            this.leadsCache[idx] = updated;
+
+            const raw = localStorage.getItem(getStorageKey());
+            const allLeads: Lead[] = raw ? JSON.parse(raw) : [];
+            const index = allLeads.findIndex(l => l.id === leadId);
+            if (index !== -1) {
+              allLeads[index] = updated as any;
+              localStorage.setItem(getStorageKey(), JSON.stringify(allLeads));
+            }
+
+            this.notifyLeadUpdateListeners(updated as any);
+          }
+        } catch {
+          // ignore
+        }
+      }
+
       return res.ok;
     } catch {
       return false;
