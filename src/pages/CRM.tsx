@@ -3,11 +3,11 @@ import { useAppStore } from '../context/Store';
 import { Lead, LeadStatus } from '../types/crm';
 import { Badge } from '../components/ui/Badge';
 import { Input } from '../components/ui/Input';
-import { Trash2, Calendar, Filter, RefreshCcw, Pencil, ShoppingBag, DollarSign, TrendingUp, Users, MessageSquare, UserPlus, CheckCircle, XCircle, Phone, Settings } from 'lucide-react';
+import { Trash2, Calendar, Filter, RefreshCcw, Pencil, ShoppingBag, DollarSign, TrendingUp, Users, MessageSquare, UserPlus, CheckCircle, XCircle, Phone, Settings, Route } from 'lucide-react';
 import { cn, formatCurrency } from '../lib/utils';
 import { LeadDetailsPanel } from '../components/LeadDetailsPanel';
 import { CRMSettingsPanel } from '../components/CRMSettingsPanel';
-import { loadCRMSettings } from '../lib/crmSettings';
+import { loadCRMSettings, CustomField } from '../lib/crmSettings';
 
 export default function CRMPage() {
   const [activeMobileTab, setActiveMobileTab] = useState<string>('new');
@@ -79,7 +79,7 @@ export default function CRMPage() {
     });
   };
 
-  const { pipelineStages } = loadCRMSettings();
+  const { pipelineStages, customFields } = loadCRMSettings();
 
   const getIconForColor = (color: string) => {
     switch (color) {
@@ -312,6 +312,8 @@ export default function CRMPage() {
                     onRemove={removeLead}
                     onEdit={handleEdit}
                     onViewMessage={() => setSelectedLead(lead)}
+                    customFields={customFields}
+                    teamMembers={teamMembers}
                   />
                 ))}
                 {filteredLeads.filter(l => l.status === col.id).length === 0 && (
@@ -345,6 +347,8 @@ export default function CRMPage() {
                   onRemove={removeLead}
                   onEdit={handleEdit}
                   onViewMessage={() => setSelectedLead(lead)}
+                  customFields={customFields}
+                  teamMembers={teamMembers}
                 />
               ))}
               {filteredLeads.filter(l => l.status === col.id).length === 0 && (
@@ -361,9 +365,70 @@ export default function CRMPage() {
   );
 }
 
-function LeadCard({ lead, onUpdateStatus, onRemove, onEdit, onViewMessage }: { lead: Lead, onUpdateStatus: any, onRemove: any, onEdit: any, onViewMessage: () => void }) {
+function hashHue(input: string) {
+  let h = 0;
+  const s = String(input || '');
+  for (let i = 0; i < s.length; i++) {
+    h = (h * 31 + s.charCodeAt(i)) | 0;
+  }
+  return Math.abs(h) % 360;
+}
+
+function parseExtraData(raw: any): Record<string, any> {
+  if (!raw) return {};
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as any;
+      return {};
+    } catch {
+      return {};
+    }
+  }
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw as any;
+  return {};
+}
+
+function LeadCard({
+  lead,
+  onUpdateStatus,
+  onRemove,
+  onEdit,
+  onViewMessage,
+  customFields,
+  teamMembers,
+}: {
+  lead: Lead;
+  onUpdateStatus: any;
+  onRemove: any;
+  onEdit: any;
+  onViewMessage: () => void;
+  customFields: CustomField[];
+  teamMembers: any[];
+}) {
   const dateStr = new Date(lead.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   const unread = (lead as any).unread_count ? Number((lead as any).unread_count) : 0;
+
+  const extra = parseExtraData((lead as any).extra_data);
+  const selectFields = (customFields || []).filter(f => f.type === 'select');
+  const selectBadges = selectFields
+    .map(f => {
+      const v = extra?.[f.id];
+      const value = typeof v === 'string' ? v.trim() : (v !== undefined && v !== null ? String(v).trim() : '');
+      if (!value) return null;
+      return { id: f.id, label: f.label, value };
+    })
+    .filter(Boolean)
+    .slice(0, 2) as Array<{ id: string; label: string; value: string }>;
+
+  const assigneeId = (lead as any).assignee_id || null;
+  const assignee = assigneeId ? (teamMembers || []).find((u: any) => u.id === assigneeId) : null;
+  const fallbackAdmin = (teamMembers || []).find((u: any) => u.role === 'admin') || null;
+  const assigneeLabel = assignee
+    ? (assignee.display_name || assignee.username || 'Operator')
+    : (fallbackAdmin?.display_name || fallbackAdmin?.username || 'Admin');
+
+  const sourceLabel = lead.source === 'manual' ? 'Manual' : 'WhatsApp';
 
   return (
     <div
@@ -393,6 +458,15 @@ function LeadCard({ lead, onUpdateStatus, onRemove, onEdit, onViewMessage }: { l
               <span className="text-[9px] text-blue-400 bg-blue-950/30 px-1 rounded truncate max-w-[140px]">{lead.name}</span>
             )}
           </div>
+
+          <div className="mt-1 flex flex-wrap items-center gap-1">
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-semibold bg-slate-900/60 text-slate-300 border border-slate-800">
+              <Users className="w-2.5 h-2.5" /> {assigneeLabel}
+            </span>
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-semibold bg-slate-900/60 text-slate-300 border border-slate-800">
+              <Route className="w-2.5 h-2.5" /> {sourceLabel}
+            </span>
+          </div>
         </div>
 
         <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -411,6 +485,29 @@ function LeadCard({ lead, onUpdateStatus, onRemove, onEdit, onViewMessage }: { l
           <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-800 text-slate-300 border border-slate-700">
             <ShoppingBag className="w-2.5 h-2.5" /> {lead.product_name}
           </span>
+        </div>
+      )}
+
+      {selectBadges.length > 0 && (
+        <div className="mb-2 flex flex-wrap gap-1">
+          {selectBadges.map(b => {
+            const hue = hashHue(`${b.id}:${b.value}`);
+            const style: React.CSSProperties = {
+              backgroundColor: `hsla(${hue}, 70%, 22%, 0.45)`,
+              borderColor: `hsla(${hue}, 75%, 55%, 0.55)`,
+              color: `hsl(${hue}, 85%, 78%)`
+            };
+            return (
+              <span
+                key={`${b.id}:${b.value}`}
+                title={`${b.label}: ${b.value}`}
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold border max-w-full"
+                style={style}
+              >
+                <span className="max-w-[180px] truncate">{b.label}: {b.value}</span>
+              </span>
+            );
+          })}
         </div>
       )}
 

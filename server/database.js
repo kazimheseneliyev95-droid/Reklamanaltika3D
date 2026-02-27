@@ -311,8 +311,23 @@ async function createLead(data, tenantId = 'admin') {
             whatsapp_id,
             source = 'whatsapp',
             product_name,
-            extra_data
+            extra_data,
+            assignee_id
         } = data;
+
+        // Default assignee: tenant's first admin (only if not provided)
+        let finalAssigneeId = assignee_id || null;
+        if (!finalAssigneeId) {
+            try {
+                const a = await client.query(
+                    "SELECT id FROM users WHERE tenant_id = $1 AND role = 'admin' ORDER BY created_at ASC LIMIT 1",
+                    [tenantId]
+                );
+                finalAssigneeId = a.rows[0]?.id || null;
+            } catch {
+                finalAssigneeId = null;
+            }
+        }
 
         // Normalize extra_data (JSONB)
         let extraDataObj = {};
@@ -352,8 +367,9 @@ async function createLead(data, tenantId = 'admin') {
                     product_name = COALESCE($7, product_name),
                     status = COALESCE($8, status),
                     extra_data = COALESCE(extra_data, '{}'::jsonb) || COALESCE($9::jsonb, '{}'::jsonb),
+                    assignee_id = COALESCE(assignee_id, $10),
                     updated_at = NOW()
-                WHERE id = $10 AND tenant_id = $11
+                WHERE id = $11 AND tenant_id = $12
                 RETURNING *;
             `;
             const values = [
@@ -366,6 +382,7 @@ async function createLead(data, tenantId = 'admin') {
                 product_name || null,
                 status,
                 extraDataObj,
+                finalAssigneeId,
                 existingLead.id,
                 tenantId
             ];
@@ -380,9 +397,9 @@ async function createLead(data, tenantId = 'admin') {
         const query = `
         INSERT INTO leads (
           phone, name, last_message, source_message, source_contact_name,
-          whatsapp_id, status, source, value, product_name, extra_data, tenant_id
+          whatsapp_id, status, source, value, product_name, extra_data, tenant_id, assignee_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
         ON CONFLICT (phone, tenant_id) 
         DO UPDATE SET
           name = COALESCE(EXCLUDED.name, leads.name),
@@ -394,6 +411,7 @@ async function createLead(data, tenantId = 'admin') {
           product_name = COALESCE(EXCLUDED.product_name, leads.product_name),
           status = COALESCE(EXCLUDED.status, leads.status),
           extra_data = COALESCE(leads.extra_data, '{}'::jsonb) || COALESCE(EXCLUDED.extra_data, '{}'::jsonb),
+          assignee_id = COALESCE(leads.assignee_id, EXCLUDED.assignee_id),
           updated_at = NOW()
         RETURNING *;
       `;
@@ -410,7 +428,8 @@ async function createLead(data, tenantId = 'admin') {
             value,
             product_name || null,
             extraDataObj,
-            tenantId
+            tenantId,
+            finalAssigneeId
         ];
 
         const result = await client.query(query, values);
@@ -484,17 +503,30 @@ async function updateLeadMessage(phone, message, whatsappId, name = null, tenant
 
         const cleanedPhone = validatePhone(phone);
 
+        // Default assignee: tenant's first admin (only if currently unassigned)
+        let defaultAssigneeId = null;
+        try {
+            const a = await client.query(
+                "SELECT id FROM users WHERE tenant_id = $1 AND role = 'admin' ORDER BY created_at ASC LIMIT 1",
+                [tenantId]
+            );
+            defaultAssigneeId = a.rows[0]?.id || null;
+        } catch {
+            defaultAssigneeId = null;
+        }
+
         const query = `
         UPDATE leads
         SET last_message = $1, 
             whatsapp_id = COALESCE($2, whatsapp_id),
             name = COALESCE($3, name),
+            assignee_id = COALESCE(assignee_id, $6),
             updated_at = NOW()
         WHERE phone = $4 AND tenant_id = $5
         RETURNING *;
       `;
 
-        const result = await client.query(query, [message || null, whatsappId || null, name || null, cleanedPhone, tenantId]);
+        const result = await client.query(query, [message || null, whatsappId || null, name || null, cleanedPhone, tenantId, defaultAssigneeId]);
         await client.query('COMMIT');
 
         if (result.rows.length === 0) {
