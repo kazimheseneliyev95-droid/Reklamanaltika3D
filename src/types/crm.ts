@@ -18,6 +18,9 @@ export interface Lead {
   is_fast_emit?: boolean; // For tracking initial vs enriched updates
   assignee_id?: string | null; // Worker assignment
   extra_data?: any; // JSON for custom fields
+  unread_count?: number;
+  last_read_at?: string | null;
+  last_inbound_at?: string | null;
 }
 
 export interface UserPermissions {

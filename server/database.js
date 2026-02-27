@@ -134,7 +134,11 @@ async function initDb() {
                 ALTER TABLE messages ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(50) DEFAULT 'admin';
                 ALTER TABLE leads ADD COLUMN IF NOT EXISTS assignee_id UUID REFERENCES users(id) ON DELETE SET NULL;
                 ALTER TABLE leads ADD COLUMN IF NOT EXISTS extra_data JSONB DEFAULT '{}'::jsonb;
+                ALTER TABLE leads ADD COLUMN IF NOT EXISTS unread_count INTEGER DEFAULT 0;
+                ALTER TABLE leads ADD COLUMN IF NOT EXISTS last_read_at TIMESTAMP;
+                ALTER TABLE leads ADD COLUMN IF NOT EXISTS last_inbound_at TIMESTAMP;
                 ALTER TABLE messages ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'delivered';
+                ALTER TABLE messages ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
                 
                 -- Add missing columns to users table
                 ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(50) DEFAULT 'admin';
@@ -158,6 +162,22 @@ async function initDb() {
             await client.query("ALTER TABLE leads ADD COLUMN IF NOT EXISTS extra_data JSONB DEFAULT '{}'::jsonb;");
         } catch (e) {
             console.error('Migration warning (extra_data):', e.message);
+        }
+
+        // Ensure unread tracking columns exist
+        try {
+            await client.query('ALTER TABLE leads ADD COLUMN IF NOT EXISTS unread_count INTEGER DEFAULT 0;');
+            await client.query('ALTER TABLE leads ADD COLUMN IF NOT EXISTS last_read_at TIMESTAMP;');
+            await client.query('ALTER TABLE leads ADD COLUMN IF NOT EXISTS last_inbound_at TIMESTAMP;');
+        } catch (e) {
+            console.error('Migration warning (unread columns):', e.message);
+        }
+
+        // Ensure messages.metadata exists
+        try {
+            await client.query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;");
+        } catch (e) {
+            console.error('Migration warning (messages.metadata):', e.message);
         }
 
         // Analytics layouts (per-tenant, per-user)
@@ -565,6 +585,17 @@ async function updateLeadFields(id, updates, tenantId = 'admin') {
             const validStatus = validateStatus(updates.status);
             fields.push(`status = $${paramCount++}`);
             values.push(validStatus);
+        }
+
+        if (updates.unread_count !== undefined) {
+            const n = parseInt(String(updates.unread_count), 10);
+            fields.push(`unread_count = $${paramCount++}`);
+            values.push(Number.isFinite(n) && n >= 0 ? n : 0);
+        }
+
+        if (updates.last_read_at !== undefined) {
+            fields.push(`last_read_at = $${paramCount++}`);
+            values.push(updates.last_read_at || null);
         }
 
         if (updates.extra_data !== undefined) {
@@ -1245,6 +1276,28 @@ async function upsertAnalyticsLayout(tenantId, userId, layout) {
     }
 }
 
+async function markLeadRead(leadId, tenantId = 'admin') {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const result = await client.query(
+            `UPDATE leads
+             SET unread_count = 0, last_read_at = NOW(), updated_at = NOW()
+             WHERE id = $1 AND tenant_id = $2
+             RETURNING *`,
+            [leadId, tenantId]
+        );
+        await client.query('COMMIT');
+        return result.rows[0] || null;
+    } catch (e) {
+        await client.query('ROLLBACK');
+        console.error('❌ markLeadRead error:', e.message);
+        throw e;
+    } finally {
+        client.release();
+    }
+}
+
 // NOTE: SIGINT/SIGTERM handlers are NOT registered here.
 // The main entry point (index.cjs) owns the graceful shutdown sequence
 // and calls db.closePool() itself. Having duplicate handlers caused
@@ -1285,5 +1338,6 @@ module.exports = {
     updateCRMSettings,
     getAnalyticsLayout,
     upsertAnalyticsLayout,
+    markLeadRead,
     closePool
 };

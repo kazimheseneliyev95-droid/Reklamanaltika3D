@@ -366,7 +366,17 @@ async function processMessage(tenantId, msg, isFromMe) {
                 showAdAttribution: ad.showAdAttribution || null,
                 containsAutoReply: ad.containsAutoReply || null,
                 automatedGreetingMessageShown: ad.automatedGreetingMessageShown || null,
-                greetingMessageBody: ad.greetingMessageBody || null
+                greetingMessageBody: ad.greetingMessageBody || null,
+                ctaPayload: ad.ctaPayload || null
+            };
+        }
+
+        function pickQuotedAd(qa) {
+            if (!qa || typeof qa !== 'object') return null;
+            return {
+                advertiserName: qa.advertiserName || null,
+                caption: qa.caption || null,
+                mediaType: qa.mediaType || null
             };
         }
 
@@ -428,12 +438,24 @@ async function processMessage(tenantId, msg, isFromMe) {
         var msgType = detectType(unwrapped);
         var contextInfo = extractContextInfo(unwrapped);
         var externalAd = contextInfo && contextInfo.externalAdReply ? pickExternalAd(contextInfo.externalAdReply) : null;
+        var quotedAd = contextInfo && contextInfo.quotedAd ? pickQuotedAd(contextInfo.quotedAd) : null;
+        var ctwaPayloadB64 = null;
+        try {
+            if (contextInfo && contextInfo.ctwaPayload) {
+                ctwaPayloadB64 = Buffer.from(contextInfo.ctwaPayload).toString('base64');
+            }
+        } catch { }
 
         var messageContent = extractText(unwrapped);
 
         // If message has no visible text, but contains ad greeting/body, surface it
         if ((!messageContent || String(messageContent).trim() === '') && externalAd && externalAd.greetingMessageBody) {
             messageContent = String(externalAd.greetingMessageBody);
+        }
+
+        // If still empty, but has quoted ad caption, surface it
+        if ((!messageContent || String(messageContent).trim() === '') && quotedAd && quotedAd.caption) {
+            messageContent = String(quotedAd.caption);
         }
 
         if (!messageContent || String(messageContent).trim() === '') {
@@ -476,6 +498,13 @@ async function processMessage(tenantId, msg, isFromMe) {
             type: msgType,
             links: extractLinks(messageContent),
             ad: externalAd,
+            quotedAd: quotedAd,
+            ctwa: contextInfo ? {
+                ctwaSignals: contextInfo.ctwaSignals || null,
+                ctwaPayloadB64: ctwaPayloadB64,
+                smbClientCampaignId: contextInfo.smbClientCampaignId || null,
+                smbServerCampaignId: contextInfo.smbServerCampaignId || null
+            } : null,
             entry: contextInfo ? {
                 conversionSource: contextInfo.conversionSource || null,
                 entryPointConversionSource: contextInfo.entryPointConversionSource || null,
@@ -502,7 +531,7 @@ async function processMessage(tenantId, msg, isFromMe) {
                 if (existingLead) {
                     // Use the canonical phone from the DB to avoid mismatch
                     var canonicalPhone = existingLead.phone;
-                    await db.updateLeadMessage(canonicalPhone, messageContent, whatsappId, contactName, tenantId);
+                    await db.updateLeadMessage(canonicalPhone, messageContent, whatsappId, contactName, tenantId, isFromMe ? 'out' : 'in');
                     savedLead = existingLead;
                 } else {
                     savedLead = await db.createLead({
@@ -513,6 +542,11 @@ async function processMessage(tenantId, msg, isFromMe) {
                         source: 'whatsapp',
                         status: 'new'
                     }, tenantId);
+                    if (!isFromMe && savedLead && savedLead.id) {
+                        try {
+                            await db.updateLeadFields(savedLead.id, { unread_count: 1 }, tenantId);
+                        } catch { }
+                    }
                     console.log('✨ New lead [' + tenantId + ']: ' + rawNumber);
                 }
 
@@ -529,9 +563,9 @@ async function processMessage(tenantId, msg, isFromMe) {
                     });
 
                     // If this message contains ad attribution, persist it on the lead as well (extra_data.ad)
-                    if (externalAd && savedLead && savedLead.id) {
+                    if ((externalAd || quotedAd) && savedLead && savedLead.id) {
                         try {
-                            await db.updateLeadFields(savedLead.id, { extra_data: JSON.stringify({ ad: externalAd }) }, tenantId);
+                            await db.updateLeadFields(savedLead.id, { extra_data: JSON.stringify({ ad: externalAd, quotedAd: quotedAd, ctwa: metadata.ctwa }) }, tenantId);
                         } catch { }
                     }
                 }

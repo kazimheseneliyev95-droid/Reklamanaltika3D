@@ -130,6 +130,8 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                         const timeStr = new Date(msg.created_at).toLocaleTimeString('az-AZ', { hour: '2-digit', minute: '2-digit' });
                         const dateStr2 = new Date(msg.created_at).toLocaleDateString('az-AZ', { day: '2-digit', month: 'short' });
                         const ad = msg?.metadata?.ad;
+                        const qAd = msg?.metadata?.quotedAd;
+                        const ctwa = msg?.metadata?.ctwa;
                         const adUrl = ad?.sourceUrl || ad?.wtwaWebsiteUrl || ad?.adPreviewUrl || ad?.mediaUrl;
                         return (
                             <div key={msg.id} className={cn('flex', isOut ? 'justify-end' : 'justify-start')}>
@@ -139,7 +141,7 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                                         ? 'bg-blue-600/90 text-white rounded-br-sm'
                                         : 'bg-slate-800 text-slate-200 rounded-bl-sm'
                                 )}>
-                                    {adUrl && (
+                                    {(adUrl || qAd?.advertiserName || qAd?.caption) && (
                                         <div className={cn(
                                             'mb-2 rounded-xl border p-2',
                                             isOut ? 'border-blue-300/30 bg-blue-500/10' : 'border-slate-700 bg-slate-900/30'
@@ -147,19 +149,40 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                                             <p className={cn('text-[10px] font-bold uppercase tracking-wide', isOut ? 'text-blue-100/80' : 'text-slate-400')}>
                                                 Ad / Creative
                                             </p>
-                                            {(ad?.title || ad?.body) && (
-                                                <p className={cn('text-xs mt-1', isOut ? 'text-blue-50' : 'text-slate-200')}>
-                                                    <span className="font-semibold">{ad?.title || 'Reklam'}:</span> {ad?.body || ''}
+                                            {(qAd?.advertiserName || ad?.sourceApp) && (
+                                                <p className={cn('text-[11px] mt-1', isOut ? 'text-blue-50' : 'text-slate-200')}>
+                                                    <span className="font-semibold">Advertiser:</span> {qAd?.advertiserName || ad?.sourceApp}
                                                 </p>
                                             )}
-                                            <a
-                                                href={adUrl}
-                                                target="_blank"
-                                                rel="noreferrer"
-                                                className={cn('mt-1 inline-block text-[11px] underline break-all', isOut ? 'text-blue-100' : 'text-blue-300')}
-                                            >
-                                                {adUrl}
-                                            </a>
+
+                                            {(ad?.title || ad?.body || qAd?.caption) && (
+                                                <p className={cn('text-xs mt-1', isOut ? 'text-blue-50' : 'text-slate-200')}>
+                                                    <span className="font-semibold">{ad?.title || 'Reklam'}:</span> {ad?.body || qAd?.caption || ''}
+                                                </p>
+                                            )}
+
+                                            {adUrl && (
+                                                <a
+                                                    href={adUrl}
+                                                    target="_blank"
+                                                    rel="noreferrer"
+                                                    className={cn('mt-1 inline-block text-[11px] underline break-all', isOut ? 'text-blue-100' : 'text-blue-300')}
+                                                >
+                                                    {adUrl}
+                                                </a>
+                                            )}
+
+                                            {(ad?.sourceId || ad?.ctwaClid) && (
+                                                <p className={cn('mt-1 text-[10px] break-all', isOut ? 'text-blue-100/70' : 'text-slate-500')}>
+                                                    {ad?.sourceId ? `sourceId: ${ad.sourceId}` : ''}{ad?.sourceId && ad?.ctwaClid ? ' · ' : ''}{ad?.ctwaClid ? `clid: ${ad.ctwaClid}` : ''}
+                                                </p>
+                                            )}
+
+                                            {ctwa?.smbClientCampaignId && (
+                                                <p className={cn('mt-1 text-[10px] break-all', isOut ? 'text-blue-100/70' : 'text-slate-500')}>
+                                                    campaign: {ctwa.smbClientCampaignId}
+                                                </p>
+                                            )}
                                         </div>
                                     )}
                                     <p className="whitespace-pre-wrap break-words">{msg.body}</p>
@@ -234,6 +257,13 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
     const [savedOk, setSavedOk] = useState(false);
     const feedRef = useRef<HTMLDivElement>(null);
     const serverUrl = CrmService.getServerUrl();
+
+    // Mark as read when opened
+    useEffect(() => {
+        if (lead?.id) {
+            CrmService.markLeadRead(lead.id).catch(() => { });
+        }
+    }, [lead?.id]);
 
     // App-like modal behavior: prevent background page scroll and hide mobile nav bars
     useEffect(() => {

@@ -427,6 +427,30 @@ class CrmServiceImpl {
       this.notifyLeadDeletedListeners(id);
     });
 
+    this.socket.on('lead_read', (data: any) => {
+      try {
+        const leadId = data?.leadId;
+        if (!leadId) return;
+        const idx = this.leadsCache.findIndex(l => l.id === leadId);
+        if (idx !== -1) {
+          const updated = { ...this.leadsCache[idx], unread_count: 0 } as any;
+          this.leadsCache[idx] = updated;
+
+          const raw = localStorage.getItem(getStorageKey());
+          const allLeads: Lead[] = raw ? JSON.parse(raw) : [];
+          const index = allLeads.findIndex(l => l.id === leadId);
+          if (index !== -1) {
+            allLeads[index] = updated as any;
+            localStorage.setItem(getStorageKey(), JSON.stringify(allLeads));
+          }
+
+          this.notifyLeadUpdateListeners(updated as any);
+        }
+      } catch {
+        // ignore
+      }
+    });
+
     this.socket.on('leads_reset', () => {
       console.log('🌀 SOCKET: leads_reset received');
       this.leadsCache = [];
@@ -608,6 +632,20 @@ class CrmServiceImpl {
     } catch (e) {
       console.error('❌ Error saving analytics layout:', e);
       throw e;
+    }
+  }
+
+  async markLeadRead(leadId: string): Promise<boolean> {
+    const url = this.getServerUrl();
+    if (!url) return false;
+    try {
+      const res = await fetch(`${url}/api/leads/${leadId}/read`, {
+        method: 'POST',
+        headers: this.getAuthHeaders()
+      });
+      return res.ok;
+    } catch {
+      return false;
     }
   }
 

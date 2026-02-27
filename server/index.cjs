@@ -824,6 +824,15 @@ app.get('/api/leads/:id/messages', requireTenantAuth, asyncHandler(async (req, r
   res.json(messages);
 }));
 
+// Mark lead as read (shared across tenant)
+app.post('/api/leads/:id/read', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  const lead = await db.markLeadRead(req.params.id, req.tenantId);
+  if (!lead) return res.status(404).json({ error: 'Lead not found' });
+  io.to(req.tenantId).emit('lead_read', { leadId: req.params.id, timestamp: new Date().toISOString() });
+  res.json({ success: true });
+}));
+
 // ADDED IN PHASE 6: Sending Messages directly to DB Queue
 app.post('/api/leads/:id/messages', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });

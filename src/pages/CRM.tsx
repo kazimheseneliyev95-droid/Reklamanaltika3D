@@ -363,18 +363,27 @@ export default function CRMPage() {
 
 function LeadCard({ lead, onUpdateStatus, onRemove, onEdit, onViewMessage }: { lead: Lead, onUpdateStatus: any, onRemove: any, onEdit: any, onViewMessage: () => void }) {
   const dateStr = new Date(lead.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const unread = (lead as any).unread_count ? Number((lead as any).unread_count) : 0;
 
   return (
     <div
       draggable
       onDragStart={(e) => e.dataTransfer.setData('leadId', lead.id)}
-      className="bg-slate-950 border border-slate-800 p-2.5 rounded-lg shadow-sm hover:border-slate-600 hover:shadow-md transition-all duration-200 group relative cursor-grab active:cursor-grabbing"
+      className={cn(
+        "bg-slate-950 border p-2.5 rounded-lg shadow-sm hover:shadow-md transition-all duration-200 group relative cursor-grab active:cursor-grabbing",
+        unread > 0 ? "border-rose-500/40 hover:border-rose-400/60" : "border-slate-800 hover:border-slate-600"
+      )}
     >
       <div className="flex justify-between items-start mb-1.5">
         <div className="flex flex-col">
           <div className="flex items-center gap-1.5 text-[13px] font-bold text-slate-200">
             <Phone className="w-3 h-3 text-green-500" />
             {lead.phone}
+            {unread > 0 && (
+              <span className="ml-1 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 text-white text-[10px] font-extrabold">
+                {unread > 99 ? '99+' : unread}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <span className="text-[9px] text-slate-500 flex items-center gap-1">
