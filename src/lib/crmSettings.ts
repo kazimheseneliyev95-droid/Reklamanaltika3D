@@ -261,7 +261,13 @@ export function applyRoutingRules(
     if (!rules || rules.length === 0) return null;
 
     const rawMsg = String(message || '');
-    if (!rawMsg.trim()) return null;
+    const trimmed = rawMsg.trim();
+    if (!trimmed) return null;
+
+    // Ignore non-text placeholders emitted by the WhatsApp worker
+    if (/^\[(?:Image|Video|Document|Audio|Sticker|Location|Contact|Reaction|Button|List|Template|Unsupported message)\]$/i.test(trimmed)) {
+        return null;
+    }
 
     // First match wins (rules are ordered)
     for (const rule of rules) {

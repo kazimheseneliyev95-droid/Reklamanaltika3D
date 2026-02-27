@@ -989,34 +989,36 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
 
                                                             <div>
                                                                 <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">
-                                                                    Match Mode
+                                                                    Uyğunluq Rejimi
                                                                 </label>
                                                                 <select
                                                                     value={r.matchMode || 'any'}
                                                                     onChange={(e) => updateRoutingRule(r.id, { matchMode: e.target.value as any })}
                                                                     className="w-full bg-slate-900 border border-slate-700 text-white text-xs rounded-lg px-2 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500 appearance-none"
                                                                 >
-                                                                    <option value="any">ANY (hər hansı)</option>
-                                                                    <option value="all">ALL (hamısı)</option>
+                                                                    <option value="any">Hər hansı (OR)</option>
+                                                                    <option value="all">Hamısı (AND)</option>
                                                                 </select>
+                                                                <p className="mt-1 text-[10px] text-slate-600">"Hər hansı" seçilsə, açar sözlərdən 1-i kifayətdir. "Hamısı" seçilsə, hamısı mesajda olmalıdır.</p>
                                                             </div>
                                                         </div>
 
                                                         <div className="grid grid-cols-2 gap-3">
                                                             <div>
                                                                 <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">
-                                                                    Match Type
+                                                                    Uyğunluq Növü (Match Type)
                                                                 </label>
                                                                 <select
                                                                     value={r.matchType || 'contains'}
                                                                     onChange={(e) => updateRoutingRule(r.id, { matchType: e.target.value as any })}
                                                                     className="w-full bg-slate-900 border border-slate-700 text-white text-xs rounded-lg px-2 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500 appearance-none"
                                                                 >
-                                                                    <option value="contains">Contains</option>
-                                                                    <option value="startsWith">Starts with</option>
-                                                                    <option value="exact">Exact</option>
-                                                                    <option value="regex">Regex</option>
+                                                                    <option value="contains">Mətnin içində keçir</option>
+                                                                    <option value="startsWith">Mətn bununla başlayır</option>
+                                                                    <option value="exact">Tam eynidir</option>
+                                                                    <option value="regex">Regex (qayda)</option>
                                                                 </select>
+                                                                <p className="mt-1 text-[10px] text-slate-600">"Mətnin içində keçir": söz mesajın istənilən yerində ola bilər. "Tam eynidir": mesaj yalnız həmin söz olmalıdır. "Regex": çətin axtarış üçündür.</p>
                                                             </div>
 
                                                             <div>
@@ -1033,7 +1035,7 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
                                                                                 ? 'border-emerald-700/50 bg-emerald-950/20 text-emerald-200'
                                                                                 : 'border-slate-700 bg-slate-950/30 text-slate-400 hover:text-slate-200'
                                                                         )}
-                                                                        title="Case Sensitive"
+                                                                        title="Böyük/kiçik hərf fərqi"
                                                                     >
                                                                         Aa
                                                                     </button>
@@ -1046,12 +1048,12 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
                                                                                 ? 'border-emerald-700/50 bg-emerald-950/20 text-emerald-200'
                                                                                 : 'border-slate-700 bg-slate-950/30 text-slate-400 hover:text-slate-200'
                                                                         )}
-                                                                        title="Bir dəfə tətbiq et (field doludursa toxunma)"
+                                                                        title="Bir dəfə tətbiq et (sahə doludursa toxunma)"
                                                                     >
                                                                         1x Lock
                                                                     </button>
                                                                 </div>
-                                                                <p className="mt-1 text-[10px] text-slate-600">"1x Lock" açıqdırsa, sahə doludursa bu qayda bir daha tətbiq olunmur.</p>
+                                                                <p className="mt-1 text-[10px] text-slate-600">"Aa" açıqdırsa, böyük/kiçik hərf fərqi nəzərə alınır. "1x Lock" açıqdırsa, sahə doludursa bu qayda bir daha tətbiq olunmur.</p>
                                                             </div>
                                                         </div>
 

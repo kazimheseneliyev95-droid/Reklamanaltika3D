@@ -417,17 +417,21 @@ class CrmServiceImpl {
         this.leadsCache.unshift(updatedLead);
       }
 
-      // Update localStorage to match database
+      // Update localStorage to match database (robust to event ordering)
+      // NOTE: lead_updated may arrive before new_message for brand-new leads.
       const raw = localStorage.getItem(getStorageKey());
       const allLeads: Lead[] = raw ? JSON.parse(raw) : [];
-      const index = allLeads.findIndex(l => l.phone === updatedLead.phone);
+      const index = allLeads.findIndex(l => (l.id && updatedLead.id && l.id === updatedLead.id) || l.phone === updatedLead.phone);
 
       if (index !== -1) {
-        allLeads[index] = updatedLead;
-        localStorage.setItem(getStorageKey(), JSON.stringify(allLeads));
-        console.log('✅ Lead synced with database');
-        this.notifyLeadUpdateListeners(updatedLead);
+        allLeads[index] = { ...allLeads[index], ...updatedLead } as any;
+      } else {
+        allLeads.unshift(updatedLead);
       }
+
+      localStorage.setItem(getStorageKey(), JSON.stringify(allLeads));
+      console.log('✅ Lead synced with database');
+      this.notifyLeadUpdateListeners(updatedLead);
     });
 
     this.socket.on('lead_deleted', (id: string) => {

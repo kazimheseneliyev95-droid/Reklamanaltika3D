@@ -295,7 +295,13 @@ function matchRoutingRule(rule, message) {
   const caseSensitive = Boolean(rule.caseSensitive);
 
   const rawMsg = String(message || '');
-  if (!rawMsg.trim()) return false;
+  const trimmed = rawMsg.trim();
+  if (!trimmed) return false;
+
+  // Ignore non-text placeholders emitted by the WhatsApp worker
+  if (/^\[(?:Image|Video|Document|Audio|Sticker|Location|Contact|Reaction|Button|List|Template|Unsupported message)\]$/i.test(trimmed)) {
+    return false;
+  }
   const msg = normalizeText(rawMsg, caseSensitive);
 
   // Excludes: always treated as simple contains
