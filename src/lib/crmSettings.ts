@@ -40,7 +40,11 @@ export interface RoutingRule {
     fieldId: string;      // custom field id (typically select)
     setValue: string;     // value to set when matched
     keywords: string[];   // keywords to match (case-insensitive substring)
+    excludeKeywords?: string[]; // if any matches, rule is NOT applied
     matchMode?: 'any' | 'all';
+    matchType?: 'contains' | 'startsWith' | 'exact' | 'regex';
+    caseSensitive?: boolean;
+    lockFieldAfterMatch?: boolean; // if field already has value, don't re-apply
     targetStage?: string; // optional: also move stage
 }
 
@@ -213,10 +217,11 @@ export function applyAutoRules(
 export function applyRoutingRules(
     message: string,
     rules: RoutingRule[] | undefined
-): { extra: Record<string, string>; targetStage?: string } | null {
+): { ruleId: string; extra: Record<string, string>; targetStage?: string } | null {
     if (!rules || rules.length === 0) return null;
-    const msg = (message || '').toLowerCase();
-    if (!msg.trim()) return null;
+
+    const rawMsg = String(message || '');
+    if (!rawMsg.trim()) return null;
 
     // First match wins (rules are ordered)
     for (const rule of rules) {
@@ -226,13 +231,49 @@ export function applyRoutingRules(
         if (kws.length === 0) continue;
 
         const mode = rule.matchMode || 'any';
+        const type = rule.matchType || 'contains';
+        const caseSensitive = Boolean(rule.caseSensitive);
+        const msg = caseSensitive ? rawMsg : rawMsg.toLowerCase();
+
+        const normalizeKw = (kw: string) => {
+            const trimmed = String(kw || '').trim();
+            return caseSensitive ? trimmed : trimmed.toLowerCase();
+        };
+
+        const matchOne = (kwRaw: string) => {
+            const kw = normalizeKw(kwRaw);
+            if (!kw) return false;
+            if (type === 'contains') return msg.includes(kw);
+            if (type === 'startsWith') return msg.startsWith(kw);
+            if (type === 'exact') return msg === kw;
+            if (type === 'regex') {
+                try {
+                    const re = new RegExp(kwRaw, caseSensitive ? '' : 'i');
+                    return re.test(rawMsg);
+                } catch {
+                    return false;
+                }
+            }
+            return msg.includes(kw);
+        };
+
+        const excludes = (rule.excludeKeywords || []).map(k => String(k || '').trim()).filter(Boolean);
+        if (excludes.length > 0) {
+            const hasExcluded = excludes.some(ex => {
+                const exNorm = caseSensitive ? ex : ex.toLowerCase();
+                return msg.includes(exNorm);
+            });
+            if (hasExcluded) continue;
+        }
+
         const matched = mode === 'all'
-            ? kws.every(k => msg.includes(k.toLowerCase()))
-            : kws.some(k => msg.includes(k.toLowerCase()));
+            ? kws.every(matchOne)
+            : kws.some(matchOne);
 
         if (!matched) continue;
 
         return {
+            ruleId: rule.id,
             extra: { [rule.fieldId]: rule.setValue },
             ...(rule.targetStage ? { targetStage: rule.targetStage } : {})
         };

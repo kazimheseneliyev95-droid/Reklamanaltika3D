@@ -8,7 +8,7 @@ import {
 import { cn } from '../lib/utils';
 import {
     CustomField, CRMSettings, FieldType, PipelineStage, AutoRule, RoutingRule,
-    loadCRMSettings, saveCRMSettings, generateFieldId
+    loadCRMSettings, saveCRMSettings, generateFieldId, applyRoutingRules
 } from '../lib/crmSettings';
 import { CrmService } from '../services/CrmService';
 import { UsersSettings } from './UsersSettings';
@@ -399,6 +399,10 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
 
     const [draggedStageIdx, setDraggedStageIdx] = useState<number | null>(null);
 
+    const [draggedRoutingIdx, setDraggedRoutingIdx] = useState<number | null>(null);
+    const [routingTestText, setRoutingTestText] = useState('');
+    const [routingStats, setRoutingStats] = useState<Record<string, { count: number; last_at?: string }>>({});
+
     // ESC close
     useEffect(() => {
         const fn = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -468,7 +472,11 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
             fieldId: defaultFieldId,
             setValue: defaultValue,
             keywords: [],
+            excludeKeywords: [],
             matchMode: 'any',
+            matchType: 'contains',
+            caseSensitive: false,
+            lockFieldAfterMatch: true,
             targetStage: ''
         };
         setSettings(prev => ({
@@ -490,6 +498,50 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
             routingRules: (prev.routingRules || []).filter(r => r.id !== id)
         }));
     };
+
+    const handleRoutingDragStart = (e: React.DragEvent, idx: number) => {
+        setDraggedRoutingIdx(idx);
+        e.dataTransfer.effectAllowed = 'move';
+    };
+
+    const handleRoutingDragOver = (e: React.DragEvent, idx: number) => {
+        e.preventDefault();
+        if (draggedRoutingIdx === null || draggedRoutingIdx === idx) return;
+
+        const newRules = [...(settings.routingRules || [])];
+        const draggedItem = newRules[draggedRoutingIdx];
+        newRules.splice(draggedRoutingIdx, 1);
+        newRules.splice(idx, 0, draggedItem);
+
+        setDraggedRoutingIdx(idx);
+        setSettings(prev => ({ ...prev, routingRules: newRules }));
+    };
+
+    const handleRoutingDragEnd = () => {
+        setDraggedRoutingIdx(null);
+    };
+
+    // Load routing rule stats when routing tab opens
+    useEffect(() => {
+        if (activeTab !== 'routing') return;
+        if (!canSaveToDb) return;
+        if (!serverUrl) return;
+        let cancelled = false;
+        (async () => {
+            try {
+                const res = await fetch(`${serverUrl}/api/routing-rules/stats?days=7`, {
+                    headers: CrmService['getAuthHeaders']()
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) return;
+                if (cancelled) return;
+                setRoutingStats(data?.stats || {});
+            } catch {
+                // ignore
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [activeTab, canSaveToDb, serverUrl]);
 
     // ─── Pipeline Stage CRUD ───────────────────────────────────────────────────
 
@@ -792,6 +844,46 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
                                 </p>
                             </div>
 
+                            {/* Test box */}
+                            <div className="rounded-xl border border-slate-800 bg-slate-900/30 p-4 space-y-2">
+                                <div className="flex items-center justify-between gap-2">
+                                    <p className="text-xs font-bold text-slate-200">Test Mesaj</p>
+                                    <button
+                                        type="button"
+                                        onClick={() => setRoutingTestText('')}
+                                        className="text-[10px] text-slate-500 hover:text-slate-300"
+                                    >
+                                        Təmizlə
+                                    </button>
+                                </div>
+                                <textarea
+                                    value={routingTestText}
+                                    onChange={(e) => setRoutingTestText(e.target.value)}
+                                    placeholder="Mesaj yazın... (routing qaydalarının hansının işə düşdüyünü görəcəksiniz)"
+                                    rows={3}
+                                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500 placeholder:text-slate-600"
+                                />
+                                {routingTestText.trim() !== '' && (
+                                    <div className="text-[11px] text-slate-400">
+                                        {(() => {
+                                            const match = applyRoutingRules(routingTestText, settings.routingRules || []);
+                                            if (!match) return <span className="text-slate-500">Heç bir qayda uyğun gəlmədi.</span>;
+                                            const fieldId = Object.keys(match.extra || {})[0] || '';
+                                            const field = settings.customFields.find(f => f.id === fieldId);
+                                            const val = match.extra?.[fieldId] || '';
+                                            return (
+                                                <span>
+                                                    Uyğun qayda: <span className="text-emerald-300 font-semibold">{match.ruleId}</span>
+                                                    {' '}→ <span className="text-slate-200 font-semibold">{field?.label || fieldId}</span>
+                                                    {' '}= <span className="text-slate-200 font-semibold">{val}</span>
+                                                    {match.targetStage ? <span className="text-slate-500"> (mərhələ: {match.targetStage})</span> : null}
+                                                </span>
+                                            );
+                                        })()}
+                                    </div>
+                                )}
+                            </div>
+
                             {selectFields.length === 0 ? (
                                 <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4 text-xs text-slate-500">
                                     Select tipli xususi saha yoxdur. Əvvəlcə <strong>Xüsusi Sahələr</strong> bölməsində select field yaradın.
@@ -803,12 +895,27 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
                                             const field = settings.customFields.find(f => f.id === r.fieldId);
                                             const options = (field && field.type === 'select' ? (field.options || []) : []);
 
+                                            const stat = routingStats[r.id];
+
                                             return (
-                                                <div key={r.id} className={cn(
+                                                <div
+                                                    key={r.id}
+                                                    onDragOver={(e) => handleRoutingDragOver(e, idx)}
+                                                    onDragEnd={handleRoutingDragEnd}
+                                                    className={cn(
                                                     'rounded-xl border overflow-hidden',
                                                     r.enabled ? 'border-emerald-900/40 bg-emerald-950/10' : 'border-slate-800 bg-slate-900/40 opacity-60'
                                                 )}>
                                                     <div className="flex items-center gap-2 px-4 py-3">
+                                                        <button
+                                                            type="button"
+                                                            draggable
+                                                            onDragStart={(e) => handleRoutingDragStart(e, idx)}
+                                                            className="p-1 text-slate-600 hover:text-slate-300 cursor-grab active:cursor-grabbing shrink-0"
+                                                            title="Sırala"
+                                                        >
+                                                            <GripVertical className="w-4 h-4" />
+                                                        </button>
                                                         <button
                                                             onClick={() => updateRoutingRule(r.id, { enabled: !r.enabled })}
                                                             className={cn('shrink-0 transition-colors', r.enabled ? 'text-emerald-400' : 'text-slate-600')}
@@ -817,6 +924,12 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
                                                             {r.enabled ? <ToggleRight className="w-6 h-6" /> : <ToggleLeft className="w-6 h-6" />}
                                                         </button>
                                                         <span className="text-slate-500 text-xs font-bold shrink-0">#{idx + 1}</span>
+
+                                                        {typeof stat?.count === 'number' && (
+                                                            <span className="ml-1 inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border border-slate-700 bg-slate-950/40 text-slate-300 shrink-0" title="Son 7 gün">
+                                                                7g: {stat.count}
+                                                            </span>
+                                                        )}
 
                                                         <select
                                                             value={r.fieldId}
@@ -875,6 +988,59 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
                                                             </div>
                                                         </div>
 
+                                                        <div className="grid grid-cols-2 gap-3">
+                                                            <div>
+                                                                <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">
+                                                                    Match Type
+                                                                </label>
+                                                                <select
+                                                                    value={r.matchType || 'contains'}
+                                                                    onChange={(e) => updateRoutingRule(r.id, { matchType: e.target.value as any })}
+                                                                    className="w-full bg-slate-900 border border-slate-700 text-white text-xs rounded-lg px-2 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500 appearance-none"
+                                                                >
+                                                                    <option value="contains">Contains</option>
+                                                                    <option value="startsWith">Starts with</option>
+                                                                    <option value="exact">Exact</option>
+                                                                    <option value="regex">Regex</option>
+                                                                </select>
+                                                            </div>
+
+                                                            <div>
+                                                                <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">
+                                                                    Davranış
+                                                                </label>
+                                                                <div className="flex gap-2">
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => updateRoutingRule(r.id, { caseSensitive: !r.caseSensitive })}
+                                                                        className={cn(
+                                                                            'flex-1 px-2 py-2 rounded-lg border text-[10px] font-bold uppercase tracking-wide transition-colors',
+                                                                            r.caseSensitive
+                                                                                ? 'border-emerald-700/50 bg-emerald-950/20 text-emerald-200'
+                                                                                : 'border-slate-700 bg-slate-950/30 text-slate-400 hover:text-slate-200'
+                                                                        )}
+                                                                        title="Case Sensitive"
+                                                                    >
+                                                                        Aa
+                                                                    </button>
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => updateRoutingRule(r.id, { lockFieldAfterMatch: r.lockFieldAfterMatch === false ? true : false })}
+                                                                        className={cn(
+                                                                            'flex-[1.4] px-2 py-2 rounded-lg border text-[10px] font-bold uppercase tracking-wide transition-colors',
+                                                                            r.lockFieldAfterMatch !== false
+                                                                                ? 'border-emerald-700/50 bg-emerald-950/20 text-emerald-200'
+                                                                                : 'border-slate-700 bg-slate-950/30 text-slate-400 hover:text-slate-200'
+                                                                        )}
+                                                                        title="Bir dəfə tətbiq et (field doludursa toxunma)"
+                                                                    >
+                                                                        1x Lock
+                                                                    </button>
+                                                                </div>
+                                                                <p className="mt-1 text-[10px] text-slate-600">"1x Lock" açıqdırsa, sahə doludursa bu qayda bir daha tətbiq olunmur.</p>
+                                                            </div>
+                                                        </div>
+
                                                         <div>
                                                             <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">
                                                                 Açar Sözlər
@@ -882,9 +1048,21 @@ export function CRMSettingsPanel({ onClose }: CRMSettingsPanelProps) {
                                                             <KeywordChipsInput
                                                                 value={r.keywords || []}
                                                                 onChange={(next) => updateRoutingRule(r.id, { keywords: next })}
-                                                                placeholder="məs: mahmud, dizayn, masterclass (Enter)"
+                                                                placeholder={r.matchType === 'regex' ? 'məs: \\b(dizayn|interyer)\\b (Enter)' : 'məs: mahmud, dizayn, masterclass (Enter)'}
                                                             />
                                                             <p className="mt-1 text-[10px] text-slate-600">Qayda: mesaj mətni bu sözləri ehtiva edərsə dəyər yazılır.</p>
+                                                        </div>
+
+                                                        <div>
+                                                            <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">
+                                                                İstisna Sözlər (olarsa işləməsin)
+                                                            </label>
+                                                            <KeywordChipsInput
+                                                                value={r.excludeKeywords || []}
+                                                                onChange={(next) => updateRoutingRule(r.id, { excludeKeywords: next })}
+                                                                placeholder="məs: spam, test (Enter)"
+                                                            />
+                                                            <p className="mt-1 text-[10px] text-slate-600">Bu sözlərdən biri varsa qayda işə düşməyəcək.</p>
                                                         </div>
 
                                                         <div>

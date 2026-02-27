@@ -277,7 +277,121 @@ io.on('connection', (socket) => {
 // ═══════════════════════════════════════════════════════════════
 // 🪝 INTERNAL WEBHOOK (From WhatsApp Worker to UI)
 // ═══════════════════════════════════════════════════════════════
-app.post('/api/internal/webhook', (req, res) => {
+
+function normalizeText(text, caseSensitive) {
+  const raw = String(text || '');
+  return caseSensitive ? raw : raw.toLowerCase();
+}
+
+function matchRoutingRule(rule, message) {
+  if (!rule || !rule.enabled) return false;
+  if (!rule.fieldId || !rule.setValue) return false;
+  const keywords = Array.isArray(rule.keywords) ? rule.keywords : [];
+  const kws = keywords.map(k => String(k || '').trim()).filter(Boolean);
+  if (kws.length === 0) return false;
+
+  const matchMode = rule.matchMode === 'all' ? 'all' : 'any';
+  const matchType = rule.matchType || 'contains';
+  const caseSensitive = Boolean(rule.caseSensitive);
+
+  const rawMsg = String(message || '');
+  if (!rawMsg.trim()) return false;
+  const msg = normalizeText(rawMsg, caseSensitive);
+
+  // Excludes: always treated as simple contains
+  const excludes = Array.isArray(rule.excludeKeywords) ? rule.excludeKeywords : [];
+  const ex = excludes.map(k => String(k || '').trim()).filter(Boolean);
+  if (ex.length > 0) {
+    const hasExcluded = ex.some(x => msg.includes(normalizeText(x, caseSensitive)));
+    if (hasExcluded) return false;
+  }
+
+  function matchOne(kwRaw) {
+    const kw = String(kwRaw || '').trim();
+    if (!kw) return false;
+
+    if (matchType === 'regex') {
+      try {
+        const re = new RegExp(kw, caseSensitive ? '' : 'i');
+        return re.test(rawMsg);
+      } catch {
+        return false;
+      }
+    }
+
+    const needle = normalizeText(kw, caseSensitive);
+    if (matchType === 'startsWith') return msg.startsWith(needle);
+    if (matchType === 'exact') return msg === needle;
+    // default: contains
+    return msg.includes(needle);
+  }
+
+  const matched = matchMode === 'all'
+    ? kws.every(matchOne)
+    : kws.some(matchOne);
+
+  return Boolean(matched);
+}
+
+async function maybeApplyRoutingRulesToLead(tenantId, lead, message, meta) {
+  if (!process.env.DATABASE_URL) return null;
+  if (!db || typeof db.getCRMSettings !== 'function' || typeof db.updateLeadFields !== 'function') return null;
+  if (!lead || !lead.id) return null;
+
+  const settings = await db.getCRMSettings(tenantId).catch(() => null);
+  const rules = settings && Array.isArray(settings.routingRules) ? settings.routingRules : [];
+  if (!rules || rules.length === 0) return null;
+
+  const extra = (lead.extra_data && typeof lead.extra_data === 'object') ? lead.extra_data : {};
+
+  for (const rule of rules) {
+    if (!rule || !rule.enabled) continue;
+    if (!rule.fieldId || !rule.setValue) continue;
+
+    const fieldAlreadySet = extra && extra[rule.fieldId] !== undefined && String(extra[rule.fieldId] || '').trim() !== '';
+    const lock = rule.lockFieldAfterMatch !== false;
+    if (lock && fieldAlreadySet) {
+      continue; // don't re-apply / don't overwrite
+    }
+
+    if (!matchRoutingRule(rule, message)) continue;
+
+    const updates = {
+      extra_data: { [rule.fieldId]: rule.setValue }
+    };
+    if (rule.targetStage) {
+      updates.status = rule.targetStage;
+    }
+
+    const updated = await db.updateLeadFields(lead.id, updates, tenantId).catch(() => null);
+    if (updated) {
+      // Audit log (system action)
+      if (typeof db.logAuditAction === 'function') {
+        db.logAuditAction({
+          tenantId,
+          userId: null,
+          action: 'ROUTING_MATCH',
+          entityType: 'lead',
+          entityId: lead.id,
+          details: {
+            ruleId: rule.id,
+            fieldId: rule.fieldId,
+            setValue: rule.setValue,
+            targetStage: rule.targetStage || null,
+            whatsapp_id: meta && meta.whatsapp_id ? meta.whatsapp_id : null,
+            fromMe: meta && meta.fromMe ? true : false
+          }
+        });
+      }
+    }
+
+    return updated;
+  }
+
+  return null;
+}
+
+app.post('/api/internal/webhook', async (req, res) => {
   if (INTERNAL_WEBHOOK_SECRET) {
     const incomingSecret = req.headers['x-internal-secret'];
     if (!safeEqual(incomingSecret, INTERNAL_WEBHOOK_SECRET)) {
@@ -289,6 +403,24 @@ app.post('/api/internal/webhook', (req, res) => {
 
   const { tenantId, event, payload } = req.body;
   if (!tenantId || !event) return res.status(400).json({ error: 'Invalid payload' });
+
+  // Apply routing rules server-side (both incoming and outgoing)
+  // This ensures first matching message assigns the field and won't change later.
+  if (event === 'new_message' && process.env.DATABASE_URL && payload && payload.phone && payload.message) {
+    try {
+      const lead = (db && typeof db.findLeadByPhone === 'function')
+        ? await db.findLeadByPhone(payload.phone, tenantId)
+        : null;
+      if (lead) {
+        const updated = await maybeApplyRoutingRulesToLead(tenantId, lead, payload.message, payload);
+        if (updated) {
+          io.to(tenantId).emit('lead_updated', updated);
+        }
+      }
+    } catch (e) {
+      console.warn('⚠️ Routing apply failed (internal webhook):', e.message);
+    }
+  }
 
   // Forward the event to the tenant's WebSocket room
   // Events: 'new_message', 'qr_code', 'ready', 'authenticated', 'auth_failure', 'message_sent'
@@ -897,7 +1029,7 @@ app.post('/api/leads/:id/messages', requireTenantAuth, asyncHandler(async (req, 
   if (!body) return res.status(400).json({ error: 'Message body is required' });
 
   // Get lead to know the phone number
-  const fullLead = await db.pool.query('SELECT phone, name FROM leads WHERE id = $1 AND tenant_id = $2', [leadId, req.tenantId]);
+  const fullLead = await db.pool.query('SELECT id, phone, name, status, extra_data FROM leads WHERE id = $1 AND tenant_id = $2', [leadId, req.tenantId]);
   if (fullLead.rowCount === 0) return res.status(404).json({ error: 'Lead not found' });
   const lead = fullLead.rows[0];
 
@@ -922,6 +1054,16 @@ app.post('/api/leads/:id/messages', requireTenantAuth, asyncHandler(async (req, 
   };
   io.to(req.tenantId).emit('new_message', payload);
 
+  // Apply routing rules immediately for outgoing messages as well
+  try {
+    const updated = await maybeApplyRoutingRulesToLead(req.tenantId, lead, body, payload);
+    if (updated) {
+      io.to(req.tenantId).emit('lead_updated', updated);
+    }
+  } catch (e) {
+    console.warn('⚠️ Routing apply failed (outgoing):', e.message);
+  }
+
   res.status(201).json(newMsg);
 }));
 
@@ -929,6 +1071,40 @@ app.get('/api/stats', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   const stats = await db.getLeadStats(req.tenantId);
   res.json(stats);
+}));
+
+// Routing rules stats (derived from audit_logs)
+app.get('/api/routing-rules/stats', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  const daysRaw = req.query.days;
+  let days = parseInt(String(daysRaw || '7'), 10);
+  if (!Number.isFinite(days) || days <= 0) days = 7;
+  if (days > 90) days = 90;
+
+  const result = await db.pool.query(
+    `SELECT
+       COALESCE(details->>'ruleId', '') AS rule_id,
+       COUNT(*)::int AS count,
+       MAX(created_at) AS last_at
+     FROM audit_logs
+     WHERE tenant_id = $1
+       AND action = 'ROUTING_MATCH'
+       AND created_at >= NOW() - ($2::int * INTERVAL '1 day')
+     GROUP BY COALESCE(details->>'ruleId', '')`,
+    [req.tenantId, days]
+  );
+
+  const stats = {};
+  for (const row of (result.rows || [])) {
+    const ruleId = String(row.rule_id || '').trim();
+    if (!ruleId) continue;
+    stats[ruleId] = {
+      count: Number(row.count || 0),
+      last_at: row.last_at ? new Date(row.last_at).toISOString() : undefined
+    };
+  }
+
+  res.json({ days, stats });
 }));
 
 app.get('/health', requireTenantAuth, asyncHandler(async (req, res) => {

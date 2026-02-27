@@ -376,6 +376,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // Apply routing rules (message -> custom select field)
       const routingMatch = applyRoutingRules(message, settings.routingRules);
       let extraData: Record<string, any> = {};
+      let routingBlockedByLock = false;
       try {
         const raw = (leadData as any).extra_data;
         if (raw) {
@@ -386,15 +387,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
 
       if (routingMatch?.extra) {
-        extraData = { ...(extraData || {}), ...routingMatch.extra };
+        const matchedRule = (settings.routingRules || []).find(r => r.id === (routingMatch as any).ruleId);
+        const lock = matchedRule?.lockFieldAfterMatch !== false;
+
+        const nextExtra: Record<string, any> = { ...(extraData || {}) };
+        for (const [k, v] of Object.entries(routingMatch.extra || {})) {
+          const already = nextExtra[k] !== undefined && String(nextExtra[k] || '').trim() !== '';
+          if (lock && already) {
+            routingBlockedByLock = true;
+            continue;
+          }
+          nextExtra[k] = v;
+        }
+        extraData = nextExtra;
       }
 
       // Optional stage change via routing only if auto-rules didn't set a stage
       if (!ruleMatch && routingMatch?.targetStage) {
         const stageExists = stages.find(s => s.id === routingMatch.targetStage);
         if (stageExists) {
-          status = routingMatch.targetStage as any;
-          console.log(`🧭 Routing matched → stage: ${status}`);
+          if (!routingBlockedByLock) {
+            status = routingMatch.targetStage as any;
+            console.log(`🧭 Routing matched → stage: ${status}`);
+          }
         }
       }
 
