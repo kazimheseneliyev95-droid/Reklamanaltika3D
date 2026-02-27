@@ -252,18 +252,6 @@ export default function CRMPage() {
                   Sıfırla
                 </button>
               )}
-              <button
-                onClick={() => setShowFilters(true)}
-                className="px-2 py-1.5 rounded-lg text-[11px] font-bold border border-slate-800 text-slate-200 hover:bg-slate-800 flex items-center gap-1.5"
-              >
-                <Filter className="w-4 h-4" />
-                Filtrlər
-                {activeFilterCount > 0 && (
-                  <span className="ml-1 inline-flex items-center justify-center min-w-[16px] h-[16px] px-1 rounded-full bg-blue-600/20 text-blue-300 text-[10px] font-extrabold border border-blue-500/20">
-                    {activeFilterCount}
-                  </span>
-                )}
-              </button>
             </div>
           </div>
 

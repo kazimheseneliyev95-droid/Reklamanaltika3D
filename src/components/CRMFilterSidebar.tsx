@@ -118,13 +118,26 @@ export function CRMFilterSidebar({
     return [...arr, id];
   };
 
-  const presetRange = (days: number | 'all') => {
-    if (days === 'all') {
+  const presetRange = (kind: number | 'all' | 'today' | 'yesterday') => {
+    if (kind === 'all') {
       setDateRange({ start: null, end: null });
       return;
     }
+    if (kind === 'today') {
+      const d = new Date();
+      const iso = toLocalISO(d);
+      setDateRange({ start: iso, end: iso });
+      return;
+    }
+    if (kind === 'yesterday') {
+      const d = new Date();
+      d.setDate(d.getDate() - 1);
+      const iso = toLocalISO(d);
+      setDateRange({ start: iso, end: iso });
+      return;
+    }
     const end = new Date();
-    const start = new Date(end.getTime() - (days * 24 * 60 * 60 * 1000));
+    const start = new Date(end.getTime() - (kind * 24 * 60 * 60 * 1000));
     setDateRange({ start: toLocalISO(start), end: toLocalISO(end) });
   };
 
@@ -193,7 +206,19 @@ export function CRMFilterSidebar({
                 <Calendar className="w-4 h-4 text-slate-400" />
                 Tarix (created)
               </div>
-              <div className="flex items-center gap-1">
+              <div className="flex flex-wrap items-center gap-1 justify-end">
+                <button
+                  onClick={() => presetRange('today')}
+                  className="px-2 py-1 rounded-md text-[10px] font-bold border border-slate-800 text-slate-300 hover:bg-slate-800"
+                >
+                  Bugun
+                </button>
+                <button
+                  onClick={() => presetRange('yesterday')}
+                  className="px-2 py-1 rounded-md text-[10px] font-bold border border-slate-800 text-slate-300 hover:bg-slate-800"
+                >
+                  Dun
+                </button>
                 <button
                   onClick={() => presetRange(7)}
                   className="px-2 py-1 rounded-md text-[10px] font-bold border border-slate-800 text-slate-300 hover:bg-slate-800"

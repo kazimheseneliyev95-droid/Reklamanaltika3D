@@ -407,7 +407,7 @@ export default function AnalyticsPage() {
             </div>
           )}
           <Link
-            to="/analytics/settings"
+            to="/settings"
             className="px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 border transition-colors bg-slate-900 border-slate-800 text-slate-200 hover:bg-slate-800"
           >
             <Settings className="w-4 h-4" />

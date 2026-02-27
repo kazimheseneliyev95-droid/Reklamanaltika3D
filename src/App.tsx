@@ -3,7 +3,7 @@ import Layout from './components/Layout';
 import FunnelSimulator from './components/FunnelSimulator';
 import CRMPage from './pages/CRM';
 import AnalyticsPage from './pages/Analytics';
-import AnalyticsSettingsPage from './pages/AnalyticsSettings';
+import SettingsPage from './pages/Settings';
 import { AppProvider, useAppStore } from './context/Store';
 import Login from './pages/Login';
 import SuperAdminDashboard from './pages/SuperAdminDashboard';
@@ -44,7 +44,8 @@ function RoleBasedRouter() {
       <Route path="/" element={<FunnelSimulator />} />
       <Route path="/crm" element={<CRMPage />} />
       <Route path="/analytics" element={<AnalyticsPage />} />
-      <Route path="/analytics/settings" element={<AnalyticsSettingsPage />} />
+      <Route path="/settings" element={<SettingsPage />} />
+      <Route path="/analytics/settings" element={<Navigate to="/settings" replace />} />
       <Route path="/whatsapp" element={<Navigate to="/crm" replace />} />
       <Route path="*" element={<Navigate to="/crm" replace />} />
     </Routes>

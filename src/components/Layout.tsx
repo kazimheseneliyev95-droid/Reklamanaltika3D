@@ -20,6 +20,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       { name: 'Simulator', path: '/', icon: <Calculator className="w-5 h-5" /> },
       { name: 'CRM (Classic)', path: '/crm', icon: <LayoutDashboard className="w-5 h-5" /> },
       { name: 'Analitika', path: '/analytics', icon: <BarChart3 className="w-5 h-5" /> },
+      { name: 'Ayarlar', path: '/settings', icon: <Settings className="w-5 h-5" /> },
     ];
 
   return (
@@ -90,40 +91,20 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         <nav className="p-4 space-y-2 flex-1">
           {navItems.map((item) => {
             const isActive = isActivePath(item.path);
-            const isAnalytics = item.path === '/analytics' && currentUser?.role !== 'superadmin';
-            const showAnalyticsSub = isAnalytics && isActivePath('/analytics');
-
             return (
-              <div key={item.path} className={cn(showAnalyticsSub && 'space-y-1')}
-              >
-                <Link
-                  to={item.path}
-                  className={cn(
-                    "flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors",
-                    isActive
-                      ? "bg-blue-600 text-white shadow-lg shadow-blue-900/20"
-                      : "text-slate-400 hover:text-white hover:bg-slate-800"
-                  )}
-                >
-                  {item.icon}
-                  {item.name}
-                </Link>
-
-                {showAnalyticsSub && (
-                  <Link
-                    to="/analytics/settings"
-                    className={cn(
-                      'ml-10 mr-2 flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold transition-colors border',
-                      location.pathname === '/analytics/settings'
-                        ? 'bg-slate-800 text-white border-slate-700'
-                        : 'text-slate-400 border-transparent hover:border-slate-800 hover:bg-slate-800/50 hover:text-slate-200'
-                    )}
-                  >
-                    <Settings className="w-4 h-4" />
-                    Ayarlar
-                  </Link>
+              <Link
+                key={item.path}
+                to={item.path}
+                className={cn(
+                  "flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors",
+                  isActive
+                    ? "bg-blue-600 text-white shadow-lg shadow-blue-900/20"
+                    : "text-slate-400 hover:text-white hover:bg-slate-800"
                 )}
-              </div>
+              >
+                {item.icon}
+                {item.name}
+              </Link>
             );
           })}
         </nav>
