@@ -11,6 +11,9 @@ interface AppContextType {
   currentUser: User | null;
   teamMembers: User[];
 
+  // Settings revision (forces UI re-read from localStorage after server sync)
+  crmSettingsRev: number;
+
   // Auth State
   isAuthenticated: boolean;
   isLoadingAuth: boolean;
@@ -47,6 +50,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isWhatsAppConnected, setIsWhatsAppConnected] = useState(false);
+
+  const [crmSettingsRev, setCrmSettingsRev] = useState(0);
 
   // 🆕 Ref for tracking leads to prevent stale closures
   const leadsRef = useRef<Lead[]>([]);
@@ -101,12 +106,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
           // 🆕 Automatically restore WhatsApp Socket if there is a saved server URL
           CrmService.autoConnect();
 
-          // Sync settings from server
-          try {
-            await syncCRMSettingsFromServer();
-          } catch (e) {
-            console.error('Failed to sync settings on load', e);
-          }
+           // Sync settings from server (then bump rev so pages rerender with latest pipeline stages)
+           try {
+             await syncCRMSettingsFromServer();
+             setCrmSettingsRev((v) => v + 1);
+           } catch (e) {
+             console.error('Failed to sync settings on load', e);
+           }
 
           // If token didn't include display name (older tokens), fetch tenant profile
           try {
@@ -277,9 +283,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     // Listen for settings updates from other clients
     const cleanupSettingsUpdated = CrmService.onSettingsUpdated(async () => {
-      console.log('⚙️ SETTINGS UPDATED: Syncing from server and reloading...');
-      await syncCRMSettingsFromServer();
-      window.location.reload();
+      console.log('⚙️ SETTINGS UPDATED: Syncing from server...');
+      try {
+        await syncCRMSettingsFromServer();
+        setCrmSettingsRev((v) => v + 1);
+      } catch (e) {
+        console.error('Settings sync failed', e);
+      }
     });
     cleanupFunctions.push(cleanupSettingsUpdated);
 
@@ -566,6 +576,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
           display_name: data.displayName || null
         });
         setIsAuthenticated(true);
+
+        // Restore socket + sync settings so mobile/desktop get same stages immediately
+        CrmService.autoConnect();
+        try {
+          await syncCRMSettingsFromServer();
+          setCrmSettingsRev((v) => v + 1);
+        } catch { }
       } else {
         setError(data.error || 'İstifadəçi adı və ya şifrə yanlışdır');
       }
@@ -600,6 +617,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
           display_name: data.displayName || null
         });
         setIsAuthenticated(true);
+
+        CrmService.autoConnect();
+        try {
+          await syncCRMSettingsFromServer();
+          setCrmSettingsRev((v) => v + 1);
+        } catch { }
       } else {
         throw new Error(data.error || 'İmpersonasiya xətası');
       }
@@ -627,6 +650,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       dateRange,
       currentUser,
       teamMembers,
+
+      crmSettingsRev,
 
       isAuthenticated,
       isLoadingAuth,

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { Lead, LeadStatus } from '../types/crm';
 import {
@@ -299,7 +299,7 @@ interface LeadDetailsPanelProps {
 export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: LeadDetailsPanelProps) {
 
     // LOCAL STATE (mirrors lead props - updated on save)
-    const { teamMembers, currentUser } = useAppStore();
+    const { teamMembers, currentUser, crmSettingsRev } = useAppStore();
     const [localStatus, setLocalStatus] = useState<LeadStatus>(lead.status);
     const [formData, setFormData] = useState({
         name: lead.name || '',
@@ -312,6 +312,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
     const [isSaving, setIsSaving] = useState(false);
     const [savedOk, setSavedOk] = useState(false);
     const feedRef = useRef<HTMLDivElement>(null);
+    const drawerRef = useRef<HTMLDivElement>(null);
     const serverUrl = CrmService.getServerUrl();
 
     const markReadLockRef = useRef(false);
@@ -351,20 +352,59 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
         };
     }, [lead?.id, lead.phone, markRead]);
 
-    // App-like modal behavior: prevent background page scroll and hide mobile nav bars
+    // App-like modal behavior: prevent background page scroll (iOS-safe)
     useEffect(() => {
-        const prevOverflow = document.body.style.overflow;
+        const scrollY = window.scrollY;
+        const prevBody = {
+            overflow: document.body.style.overflow,
+            position: document.body.style.position,
+            top: document.body.style.top,
+            width: document.body.style.width,
+        };
+        const prevHtmlOverflow = document.documentElement.style.overflow;
+
         document.body.classList.add('lead-panel-open');
+        document.documentElement.style.overflow = 'hidden';
         document.body.style.overflow = 'hidden';
+        document.body.style.position = 'fixed';
+        document.body.style.top = `-${scrollY}px`;
+        document.body.style.width = '100%';
+
         return () => {
             document.body.classList.remove('lead-panel-open');
-            document.body.style.overflow = prevOverflow;
+            document.documentElement.style.overflow = prevHtmlOverflow;
+            document.body.style.overflow = prevBody.overflow;
+            document.body.style.position = prevBody.position;
+            document.body.style.top = prevBody.top;
+            document.body.style.width = prevBody.width;
+            window.scrollTo(0, scrollY);
+        };
+    }, []);
+
+    // Keep drawer height aligned to the visual viewport (mobile keyboard-safe)
+    useEffect(() => {
+        const vv = window.visualViewport;
+        const el = drawerRef.current;
+        if (!vv || !el) return;
+
+        const apply = () => {
+            const h = Math.max(320, Math.round(vv.height));
+            el.style.height = `${h}px`;
+            el.style.maxHeight = `${h}px`;
+        };
+
+        apply();
+        vv.addEventListener('resize', apply);
+        vv.addEventListener('scroll', apply);
+        return () => {
+            vv.removeEventListener('resize', apply);
+            vv.removeEventListener('scroll', apply);
         };
     }, []);
 
 
     // ─── Custom fields from CRM settings ─────────────────────────────────────
-    const [crmSettings] = useState(() => loadCRMSettings());
+    const crmSettings = useMemo(() => loadCRMSettings(), [crmSettingsRev, lead.id]);
     const customFields = crmSettings.customFields;
     const pipelineStages = crmSettings.pipelineStages;
 
@@ -460,11 +500,12 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
     return createPortal(
         // OVERLAY
         <div
-            className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-[2px] flex justify-end"
+            className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-[2px] flex justify-end overflow-hidden"
             onClick={onClose}
         >
             {/* DRAWER — stops propagation so clicks inside don't close */}
             <div
+                ref={drawerRef}
                 className="relative h-screen h-[100dvh] w-full sm:w-[96%] md:w-[88%] lg:w-[78%] xl:w-[72%] max-w-5xl bg-[#0d1117] border-l border-white/5 shadow-2xl flex flex-col overflow-hidden"
                 style={{ paddingTop: 'env(safe-area-inset-top)', animation: 'slideInRight 0.22s cubic-bezier(0.22,1,0.36,1)' }}
                 onClick={e => e.stopPropagation()}
@@ -561,7 +602,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
 
                     {/* ───── LEFT SIDEBAR ───── */}
                     <aside className={cn(
-                        "w-full md:w-72 lg:w-80 shrink-0 min-h-0 border-r border-white/5 bg-[#111827]/60 flex-col overflow-y-auto overscroll-contain relative",
+                        "w-full md:w-72 lg:w-80 shrink-0 min-h-0 border-r border-white/5 bg-[#111827]/60 flex flex-col overflow-hidden overscroll-contain relative",
                         ['feed', 'chat', 'stats'].includes(activeTab) ? "hidden md:flex" : "flex"
                     )}>
 
@@ -579,8 +620,12 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                             <div className={cn('w-2 h-2 rounded-full shrink-0', activeStatus.bg)} title={activeStatus.label} />
                         </div>
 
-                        {/* Fields */}
-                        <div className="p-4 space-y-4 flex-1">
+                        {/* Fields (scrollable) */}
+                        <div
+                            className="flex-1 min-h-0 overflow-y-auto overscroll-contain touch-pan-y"
+                            style={{ WebkitOverflowScrolling: 'touch' }}
+                        >
+                            <div className="p-4 space-y-4">
 
                             {/* Məsul Şəxs (Assignee) */}
                             <FieldGroup label="Məsul Şəxs" icon={<User className="w-3 h-3" />}>
@@ -713,6 +758,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                 </span>
                             </FieldGroup>
                         </div>
+                        </div>
 
                         {/* Save button */}
                         <div className="p-4 border-t border-white/5 bg-[#0d1117]/80 shrink-0">
@@ -769,7 +815,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
 
                             {/* ── TAB: FEED ── */}
                             {activeTab === 'feed' && (
-                                <div className="h-full overflow-y-auto overscroll-contain">
+                                <div className="h-full overflow-y-auto overscroll-contain touch-pan-y" style={{ WebkitOverflowScrolling: 'touch' }}>
                                     <div className="p-4 sm:p-6 space-y-4 max-w-2xl mx-auto w-full">
 
                                     {/* Date separator */}
@@ -851,7 +897,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
 
                             {/* ── TAB: STATS ── */}
                             {activeTab === 'stats' && (
-                                <div className="h-full overflow-y-auto overscroll-contain">
+                                <div className="h-full overflow-y-auto overscroll-contain touch-pan-y" style={{ WebkitOverflowScrolling: 'touch' }}>
                                     <div className="p-4 sm:p-6 max-w-2xl mx-auto w-full space-y-4">
                                     <h3 className="text-sm font-semibold text-slate-300 mb-4">Statistika</h3>
 

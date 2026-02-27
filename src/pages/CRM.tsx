@@ -27,9 +27,36 @@ export default function CRMPage() {
   const { pipelineStages, customFields, ui } = loadCRMSettings();
   const leadCardUi = ui?.leadCard;
 
+  const pipelineSig = useMemo(() => (pipelineStages || []).map(s => s.id).join('|'), [pipelineStages]);
+
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [filters, setFilters] = useState<CRMFilters>(() => makeDefaultCRMFilters(pipelineStages));
+
+  // When settings sync updates pipeline stages, keep mobile tab + stage filters valid
+  useEffect(() => {
+    if (!pipelineStages || pipelineStages.length === 0) return;
+
+    if (!pipelineStages.some(s => s.id === activeMobileTab)) {
+      setActiveMobileTab(pipelineStages[0].id);
+    }
+
+    setFilters((prev) => {
+      const allowed = new Set(pipelineStages.map(s => s.id));
+      const kept = (prev.stageIds || []).filter(id => allowed.has(id));
+
+      // If user had nothing selected (or everything became invalid), default to all stages
+      const base = kept.length === 0 ? pipelineStages.map(s => s.id) : kept;
+
+      // Include any newly-added stages by default
+      const missing = pipelineStages.map(s => s.id).filter(id => !base.includes(id));
+      const nextStageIds = [...base, ...missing];
+
+      return nextStageIds.join('|') === (prev.stageIds || []).join('|')
+        ? prev
+        : { ...prev, stageIds: nextStageIds };
+    });
+  }, [pipelineSig]);
 
   const activeFilterCount = useMemo(() => countActiveFilters(filters, pipelineStages), [filters, pipelineStages]);
 

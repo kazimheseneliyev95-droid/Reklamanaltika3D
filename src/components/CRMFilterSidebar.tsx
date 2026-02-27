@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import { X, Filter, Calendar, CheckSquare, Square, Users, Database, DollarSign, Tag, MessageSquare, ShoppingBag } from 'lucide-react';
 import { cn } from '../lib/utils';
 import type { DateRange, User } from '../types/crm';
@@ -110,6 +110,34 @@ export function CRMFilterSidebar({
   const numberFields = useMemo(() => (customFields || []).filter(f => f.type === 'number'), [customFields]);
 
   const activeCount = useMemo(() => countActiveFilters(filters, pipelineStages), [filters, pipelineStages]);
+
+  // Lock background scroll on mobile (iOS-safe)
+  useEffect(() => {
+    if (!open) return;
+    const scrollY = window.scrollY;
+    const prevBody = {
+      overflow: document.body.style.overflow,
+      position: document.body.style.position,
+      top: document.body.style.top,
+      width: document.body.style.width,
+    };
+    const prevHtmlOverflow = document.documentElement.style.overflow;
+
+    document.documentElement.style.overflow = 'hidden';
+    document.body.style.overflow = 'hidden';
+    document.body.style.position = 'fixed';
+    document.body.style.top = `-${scrollY}px`;
+    document.body.style.width = '100%';
+
+    return () => {
+      document.documentElement.style.overflow = prevHtmlOverflow;
+      document.body.style.overflow = prevBody.overflow;
+      document.body.style.position = prevBody.position;
+      document.body.style.top = prevBody.top;
+      document.body.style.width = prevBody.width;
+      window.scrollTo(0, scrollY);
+    };
+  }, [open]);
 
   if (!open) return null;
 
