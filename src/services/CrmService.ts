@@ -93,23 +93,47 @@ class CrmServiceImpl {
         transports: ['websocket', 'polling'],
         auth: { token: localStorage.getItem('crm_auth_token') },
         reconnection: true,
-        reconnectionAttempts: 10,
-        reconnectionDelay: 2000,
-        reconnectionDelayMax: 10000,
-        timeout: 60000,
+        reconnectionAttempts: Infinity,
+        reconnectionDelay: 800,
+        reconnectionDelayMax: 8000,
+        timeout: 20000,
         forceNew: true
       });
+
+      let hasConnectedOnce = false;
+
+      // Always re-attach app listeners on (re)connect.
+      this.socket.on('connect', () => {
+        console.log('✅ Connected to backend:', this.socket?.id);
+        // Ensure we don't accumulate duplicate listeners after reconnect
+        this.cleanupSocketListeners();
+        this.setupSocketListeners();
+
+        if (hasConnectedOnce) {
+          console.log('🔁 Socket reconnected — triggering data refresh...');
+          this.notifyReconnectListeners();
+        }
+        hasConnectedOnce = true;
+      });
+
+      // Manager-level reconnect events (socket.io-client)
+      try {
+        (this.socket as any).io?.on('reconnect', () => {
+          console.log('🔁 Manager reconnect event');
+          this.notifyReconnectListeners();
+        });
+      } catch {
+        // ignore
+      }
 
       return new Promise((resolve) => {
         let timeoutId: ReturnType<typeof setTimeout> | null = null;
         let resolved = false;
 
         this.socket?.on('connect', () => {
-          console.log('✅ Connected to backend successfully!');
           if (timeoutId) clearTimeout(timeoutId);
           if (!resolved) {
             resolved = true;
-            this.setupSocketListeners();
             resolve(true);
           }
         });
@@ -125,14 +149,7 @@ class CrmServiceImpl {
 
         this.socket?.on('disconnect', (reason) => {
           console.warn('🔌 Socket disconnected:', reason);
-          this.cleanupSocketListeners();
-        });
-
-        // 🆕 When socket automatically reconnects (e.g. after tab sleep/idle screen),
-        // trigger a leads reload to pick up any messages that arrived while offline.
-        this.socket?.on('reconnect', () => {
-          console.log('🔁 Socket reconnected — triggering data refresh...');
-          this.notifyReconnectListeners();
+          // Do NOT clean up app listeners here; they are re-attached on next connect.
         });
 
         timeoutId = setTimeout(() => {
@@ -253,11 +270,9 @@ class CrmServiceImpl {
     this.socket.off('new_message');
     this.socket.off('lead_updated');
     this.socket.off('lead_deleted');
-    this.socket.off('connect');
-    this.socket.off('connect_error');
-    this.socket.off('disconnect');
-    this.socket.off('reconnect');
     this.socket.off('settings_updated');
+    this.socket.off('leads_reset');
+    this.socket.off('lead_read');
 
     console.log('🧹 Socket listeners cleaned up');
   }
