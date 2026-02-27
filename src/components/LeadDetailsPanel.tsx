@@ -735,7 +735,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                         </div>
 
                         {/* Tab Content */}
-                        <div className="flex-1 min-h-0 overflow-hidden" ref={feedRef}>
+                        <div className="flex-1 min-h-0 overflow-hidden flex flex-col" ref={feedRef}>
 
                             {/* ── TAB: FEED ── */}
                             {activeTab === 'feed' && (
