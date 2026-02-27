@@ -10,7 +10,7 @@ export interface Lead {
   value?: number;
   created_at: string; // ISO Date String
   updated_at: string;
-  source: 'whatsapp' | 'manual';
+  source: 'whatsapp' | 'facebook' | 'instagram' | 'manual';
   // WhatsApp Metadata
   whatsapp_id?: string;
   source_contact_name?: string;

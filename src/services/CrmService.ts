@@ -354,16 +354,31 @@ class CrmServiceImpl {
         }
       }
 
-      // Fuzzy phone-based dedup (last 9 digits)
-      const incomingPhone = String(data.phone || '').replace(/\D/g, '');
-      const incomingSuffix9 = incomingPhone.slice(-9);
+      const incomingRawPhone = String(data.phone || '').trim();
+      const incomingLower = incomingRawPhone.toLowerCase();
+      const incomingIsExternal = incomingLower.startsWith('fb:') || incomingLower.startsWith('ig:') || incomingLower.startsWith('meta:');
+
+      // Fuzzy phone-based dedup (last 9 digits) — WhatsApp only
+      const incomingDigits = incomingRawPhone.replace(/\D/g, '');
+      const incomingSuffix9 = incomingIsExternal ? '' : incomingDigits.slice(-9);
 
       const cachedLead = this.leadsCache.find(l => {
-        const cachedPhone = String(l.phone || '').replace(/\D/g, '');
-        const cachedSuffix9 = cachedPhone.slice(-9);
-        // Match by whatsapp_id OR fuzzy phone suffix
-        return (l as any).whatsapp_id === data.whatsapp_id ||
-          (incomingSuffix9.length >= 7 && cachedSuffix9 === incomingSuffix9);
+        const cachedRaw = String(l.phone || '').trim();
+        const cachedLower = cachedRaw.toLowerCase();
+        const cachedIsExternal = cachedLower.startsWith('fb:') || cachedLower.startsWith('ig:') || cachedLower.startsWith('meta:');
+
+        // Match by whatsapp_id first
+        if ((l as any).whatsapp_id && data.whatsapp_id && (l as any).whatsapp_id === data.whatsapp_id) return true;
+
+        // External IDs: exact match only
+        if (incomingIsExternal || cachedIsExternal) {
+          return cachedLower !== '' && cachedLower === incomingLower;
+        }
+
+        // WhatsApp: fuzzy last-9 match
+        const cachedDigits = cachedRaw.replace(/\D/g, '');
+        const cachedSuffix9 = cachedDigits.slice(-9);
+        return (incomingSuffix9.length >= 7 && cachedSuffix9 === incomingSuffix9);
       });
 
       if (cachedLead && (cachedLead as any).whatsapp_id === data.whatsapp_id && data.is_fast_emit === false && (cachedLead as any).is_fast_emit) {
@@ -377,13 +392,25 @@ class CrmServiceImpl {
       const existingValue = cachedLead?.value ?? 0;
       const existingStatus = cachedLead?.status ?? 'new';
 
+      const source = (data.source === 'facebook' || data.source === 'instagram' || data.source === 'manual' || data.source === 'whatsapp')
+        ? data.source
+        : 'whatsapp';
+
+      const defaultName = source === 'facebook'
+        ? 'Facebook User'
+        : source === 'instagram'
+          ? 'Instagram User'
+          : source === 'manual'
+            ? 'Manual'
+            : 'WhatsApp User';
+
       const newLead: Omit<Lead, 'id' | 'created_at' | 'updated_at'> = {
         phone: data.phone,
-        name: data.name || 'WhatsApp User',
+        name: data.name || defaultName,
         last_message: data.message,
         // Preserve existing status — let auto-rules in Store.tsx override if needed
         status: existingStatus as any,
-        source: 'whatsapp',
+        source: source,
         // NEVER clear a previously-set value: keep the larger of the two
         value: existingValue,
         whatsapp_id: data.whatsapp_id,

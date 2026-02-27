@@ -24,6 +24,10 @@ const NODE_ENV = process.env.NODE_ENV || 'development';
 const INTERNAL_WEBHOOK_SECRET = process.env.INTERNAL_WEBHOOK_SECRET || '';
 const ALLOW_LEGACY_TOKEN = process.env.ALLOW_LEGACY_TOKEN !== 'false';
 
+// Meta (Facebook/Instagram) Webhooks
+const META_APP_SECRET = process.env.META_APP_SECRET || '';
+const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || '';
+
 if (!process.env.DATABASE_URL) {
   console.warn('⚠️ DATABASE_URL is missing. The app will run in file-based fallback mode.');
 }
@@ -121,7 +125,21 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   credentials: true
 }));
-app.use(express.json({ limit: '10mb' }));
+
+// JSON parser with optional raw-body capture for Meta webhook signature checks.
+app.use(express.json({
+  limit: '10mb',
+  verify: (req, res, buf) => {
+    try {
+      // Meta requires verifying signature against the exact raw bytes.
+      if (req.originalUrl && String(req.originalUrl).startsWith('/api/webhooks/meta')) {
+        req.rawBody = buf;
+      }
+    } catch {
+      // ignore
+    }
+  }
+}));
 
 // Socket.IO Setup
 const io = new Server(server, {
@@ -149,6 +167,272 @@ if (!process.env.DATABASE_URL) {
   console.log('ℹ️  No DATABASE_URL found, switching to FILE-BASED STORAGE (leads.json)');
   db = require('./simple_db');
 }
+
+// ═══════════════════════════════════════════════════════════════
+// META (FACEBOOK/INSTAGRAM) WEBHOOKS
+// ═══════════════════════════════════════════════════════════════
+
+function computeMetaSignature(rawBodyBuffer) {
+  if (!META_APP_SECRET) return null;
+  const h = crypto.createHmac('sha256', META_APP_SECRET);
+  h.update(rawBodyBuffer);
+  return 'sha256=' + h.digest('hex');
+}
+
+function parseMetaBody(req) {
+  // For signature checks we need the raw bytes (captured by express.json verify).
+  const buf = Buffer.isBuffer(req.rawBody)
+    ? req.rawBody
+    : Buffer.from(JSON.stringify(req.body || {}));
+
+  const json = (req.body && typeof req.body === 'object') ? req.body : {};
+  return { buf, json };
+}
+
+function toIsoFromMetaTimestamp(ts) {
+  // Messenger webhooks: ms epoch
+  const n = Number(ts);
+  if (!Number.isFinite(n) || n <= 0) return new Date().toISOString();
+  // heuristic: seconds vs ms
+  const ms = n < 5e11 ? n * 1000 : n;
+  return new Date(ms).toISOString();
+}
+
+async function upsertMetaInbound({ tenantId, source, contactKey, displayName, text, msgId, direction, createdAtIso, meta }) {
+  if (!process.env.DATABASE_URL || !db || typeof db.createLead !== 'function') {
+    return;
+  }
+
+  const safeText = String(text || '').trim() || '[Unsupported message]';
+  const safeKey = String(contactKey || '').trim();
+  if (!safeKey) return;
+
+  const metaId = String(msgId || '').trim() || `${source}:${Date.now()}`;
+  const dir = direction === 'out' ? 'out' : 'in';
+
+  const lead = await db.createLead({
+    phone: safeKey,
+    name: displayName || safeKey,
+    last_message: safeText,
+    whatsapp_id: metaId,
+    source: source,
+    status: 'new',
+    extra_data: { meta: meta || {} }
+  }, tenantId);
+
+  const updatedLead = await db.updateLeadMessage(lead.phone, safeText, metaId, displayName || null, tenantId, dir).catch(() => null);
+  const finalLead = updatedLead || lead;
+
+  await db.appendMessage({
+    leadId: finalLead.id,
+    phone: finalLead.phone,
+    body: safeText,
+    direction: dir,
+    whatsappId: metaId,
+    metadata: meta || {},
+    createdAt: createdAtIso ? Math.floor(Date.parse(createdAtIso) / 1000) : null,
+    tenantId
+  });
+
+  // Apply routing rules for inbound only
+  if (dir === 'in') {
+    try {
+      const routed = await maybeApplyRoutingRulesToLead(tenantId, finalLead, safeText, { whatsapp_id: metaId, fromMe: false });
+      if (routed) {
+        io.to(tenantId).emit('lead_updated', routed);
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  io.to(tenantId).emit('new_message', {
+    phone: finalLead.phone,
+    name: finalLead.name || displayName || safeKey,
+    message: safeText,
+    whatsapp_id: metaId,
+    fromMe: dir === 'out',
+    timestamp: createdAtIso || new Date().toISOString(),
+    source
+  });
+}
+
+app.get('/api/webhooks/meta', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  if (mode === 'subscribe' && META_VERIFY_TOKEN && token === META_VERIFY_TOKEN) {
+    return res.status(200).send(String(challenge || ''));
+  }
+  return res.sendStatus(403);
+});
+
+app.post('/api/webhooks/meta', (req, res) => {
+  try {
+    if (!META_APP_SECRET) {
+      console.warn('⚠️ META_APP_SECRET missing; refusing to accept Meta webhooks.');
+      return res.sendStatus(500);
+    }
+
+    const headerSig = req.headers['x-hub-signature-256'];
+    const { buf, json } = parseMetaBody(req);
+    const expected = computeMetaSignature(buf);
+
+    if (!expected || !safeEqual(String(headerSig || ''), expected)) {
+      return res.sendStatus(401);
+    }
+
+    // Respond fast; process async
+    res.status(200).send('EVENT_RECEIVED');
+
+    setImmediate(async () => {
+      const payload = json || {};
+      const objectType = String(payload.object || '').toLowerCase();
+      const entries = Array.isArray(payload.entry) ? payload.entry : [];
+      if (!objectType || entries.length === 0) return;
+
+      for (const entry of entries) {
+        const entryId = entry && entry.id ? String(entry.id) : '';
+        if (!entryId) continue;
+
+        // Resolve tenant + token by page_id or ig_business_id
+        let integration = null;
+        try {
+          if (!process.env.DATABASE_URL || !db || !db.pool) continue;
+          if (objectType === 'page' && typeof db.getMetaPageByPageId === 'function') {
+            integration = await db.getMetaPageByPageId(entryId);
+          } else if (objectType === 'instagram' && typeof db.getMetaPageByIgBusinessId === 'function') {
+            integration = await db.getMetaPageByIgBusinessId(entryId);
+          }
+        } catch (e) {
+          console.warn('⚠️ Meta integration lookup failed:', e.message);
+        }
+        if (!integration || !integration.tenant_id || !integration.page_access_token) continue;
+
+        const tenantId = integration.tenant_id;
+        const pageId = integration.page_id;
+        const pageToken = integration.page_access_token;
+        const igBusinessId = integration.ig_business_id || null;
+
+        const source = objectType === 'instagram' ? 'instagram' : 'facebook';
+
+        // Messaging (DM)
+        const messaging = Array.isArray(entry.messaging) ? entry.messaging : [];
+        for (const ev of messaging) {
+          const senderId = ev?.sender?.id ? String(ev.sender.id) : '';
+          const recipientId = ev?.recipient?.id ? String(ev.recipient.id) : '';
+          const isFromPage = senderId && pageId && senderId === String(pageId);
+
+          const contactId = isFromPage ? recipientId : senderId;
+          if (!contactId) continue;
+
+          const contactKey = (source === 'instagram' ? 'ig:' : 'fb:') + contactId;
+          const text = ev?.message?.text || '';
+          const mid = ev?.message?.mid ? String(ev.message.mid) : '';
+          const msgId = (source === 'instagram' ? 'igmid:' : 'fbmid:') + (mid || (String(ev?.timestamp || '') || String(Date.now())));
+          const createdAtIso = toIsoFromMetaTimestamp(ev?.timestamp || Date.now());
+          const direction = isFromPage ? 'out' : 'in';
+
+          await upsertMetaInbound({
+            tenantId,
+            source,
+            contactKey,
+            displayName: null,
+            text,
+            msgId,
+            direction,
+            createdAtIso,
+            meta: {
+              platform: source,
+              kind: 'dm',
+              page_id: pageId,
+              ig_business_id: igBusinessId,
+              sender_id: senderId || null,
+              recipient_id: recipientId || null
+            }
+          });
+        }
+
+        // Comments / feed changes
+        const changes = Array.isArray(entry.changes) ? entry.changes : [];
+        for (const ch of changes) {
+          const value = ch && ch.value ? ch.value : {};
+          const verb = String(value.verb || '').toLowerCase();
+          if (verb && verb !== 'add') continue;
+
+          const commentId = value.comment_id || value.id || null;
+          const postId = value.post_id || value.post_id || value.post || null;
+          const messageText = value.message || value.text || '';
+
+          if (!commentId && !messageText) continue;
+
+          let fromId = null;
+          let fromName = null;
+
+          // Try to enrich comment via Graph API when possible
+          let finalText = String(messageText || '').trim();
+          let permalink = null;
+          if (!finalText && commentId) {
+            try {
+              const fields = source === 'instagram'
+                ? 'text,username,timestamp,media{id,permalink}'
+                : 'message,from,created_time,permalink_url';
+              const url = `https://graph.facebook.com/v19.0/${commentId}?fields=${encodeURIComponent(fields)}&access_token=${encodeURIComponent(pageToken)}`;
+              const data = await fetchJsonWithRetry(url, {}, { retries: 0, timeoutMs: 4000 }).catch(() => null);
+              if (data) {
+                if (source === 'instagram') {
+                  finalText = String(data.text || '').trim();
+                  fromName = data.username || null;
+                  permalink = data?.media?.permalink || null;
+                } else {
+                  finalText = String(data.message || '').trim();
+                  fromId = data?.from?.id || null;
+                  fromName = data?.from?.name || null;
+                  permalink = data?.permalink_url || null;
+                }
+              }
+            } catch {
+              // ignore
+            }
+          }
+
+          if (!finalText) finalText = '[Comment]';
+          const contactKey = (source === 'instagram'
+            ? `ig:${fromName || (commentId ? String(commentId) : 'comment')}`
+            : `fb:${fromId || (commentId ? String(commentId) : 'comment')}`
+          );
+
+          const msgId = (source === 'instagram' ? 'igcmt:' : 'fbcmt:') + (commentId ? String(commentId) : String(Date.now()));
+          const createdAtIso = new Date().toISOString();
+
+          await upsertMetaInbound({
+            tenantId,
+            source,
+            contactKey,
+            displayName: fromName,
+            text: finalText,
+            msgId,
+            direction: 'in',
+            createdAtIso,
+            meta: {
+              platform: source,
+              kind: 'comment',
+              page_id: pageId,
+              ig_business_id: igBusinessId,
+              comment_id: commentId ? String(commentId) : null,
+              post_id: postId ? String(postId) : null,
+              permalink: permalink
+            }
+          });
+        }
+      }
+    });
+  } catch (e) {
+    console.error('Meta webhook handler error:', e.message);
+    return res.sendStatus(400);
+  }
+});
 
 db.initDb()
   .then(() => {
@@ -1103,7 +1387,15 @@ app.post('/api/leads/cleanup-duplicates', requireTenantAuth, asyncHandler(async 
   const seenSuffixes = new Map(); // suffix -> lead_id
 
   for (const lead of leads) {
-    const phone = String(lead.phone).replace(/\D/g, '');
+    const rawPhone = String(lead.phone || '').trim();
+    const lower = rawPhone.toLowerCase();
+    // Only merge WhatsApp-style numeric leads; skip external IDs like fb:/ig:
+    if (lower.startsWith('fb:') || lower.startsWith('ig:') || lower.startsWith('meta:')) {
+      continue;
+    }
+    const phone = rawPhone.replace(/\D/g, '');
+    if (!phone || phone.length < 7 || phone.length > 15) continue;
+
     const suffix = phone.length >= 9 ? phone.slice(-9) : phone;
 
     if (seenSuffixes.has(suffix)) {
@@ -1213,9 +1505,16 @@ app.post('/api/leads/:id/messages', requireTenantAuth, asyncHandler(async (req, 
   if (!body) return res.status(400).json({ error: 'Message body is required' });
 
   // Get lead to know the phone number
-  const fullLead = await db.pool.query('SELECT id, phone, name, status, extra_data FROM leads WHERE id = $1 AND tenant_id = $2', [leadId, req.tenantId]);
+  const fullLead = await db.pool.query('SELECT id, phone, name, status, source, extra_data FROM leads WHERE id = $1 AND tenant_id = $2', [leadId, req.tenantId]);
   if (fullLead.rowCount === 0) return res.status(404).json({ error: 'Lead not found' });
   const lead = fullLead.rows[0];
+
+  // Outgoing send is currently supported only for WhatsApp leads (Baileys worker).
+  const phoneDigits = String(lead.phone || '').replace(/\D/g, '');
+  const isWhatsAppLead = String(lead.source || '').toLowerCase() === 'whatsapp' && /^\d{7,15}$/.test(phoneDigits);
+  if (!isWhatsAppLead) {
+    return res.status(400).json({ error: 'Only WhatsApp leads can be messaged from CRM right now' });
+  }
 
   // Insert into messages as pending
   const insertResult = await db.pool.query(`
@@ -1395,6 +1694,47 @@ app.post('/api/settings', requireTenantAuth, requireAdmin, asyncHandler(async (r
   io.to(req.tenantId).emit('settings_updated', updatedSettings);
 
   res.json({ success: true, settings: updatedSettings });
+}));
+
+// ═══════════════════════════════════════════════════════════════
+// META (FACEBOOK/INSTAGRAM) CONNECTION API
+// ═══════════════════════════════════════════════════════════════
+
+app.get('/api/meta/pages', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  if (!db || typeof db.getMetaPages !== 'function') return res.status(501).json({ error: 'Meta integration is unavailable' });
+  const pages = await db.getMetaPages(req.tenantId);
+  res.json({ pages });
+}));
+
+app.post('/api/meta/pages', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  if (!db || typeof db.upsertMetaPage !== 'function') return res.status(501).json({ error: 'Meta integration is unavailable' });
+
+  const pageId = String(req.body?.pageId || '').trim();
+  const pageAccessToken = String(req.body?.pageAccessToken || '').trim();
+  const pageName = String(req.body?.pageName || '').trim();
+  const igBusinessId = String(req.body?.igBusinessId || '').trim();
+
+  if (!pageId || !pageAccessToken) {
+    return res.status(400).json({ error: 'pageId and pageAccessToken are required' });
+  }
+
+  const saved = await db.upsertMetaPage(req.tenantId, {
+    page_id: pageId,
+    page_name: pageName || null,
+    page_access_token: pageAccessToken,
+    ig_business_id: igBusinessId || null
+  });
+
+  res.status(201).json({ success: true, page: saved });
+}));
+
+app.delete('/api/meta/pages/:pageId', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  if (!db || typeof db.deleteMetaPage !== 'function') return res.status(501).json({ error: 'Meta integration is unavailable' });
+  const ok = await db.deleteMetaPage(req.tenantId, req.params.pageId);
+  res.json({ success: ok });
 }));
 
 // ═══════════════════════════════════════════════════════════════

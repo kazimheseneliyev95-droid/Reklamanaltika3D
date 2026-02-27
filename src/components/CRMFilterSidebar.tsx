@@ -7,7 +7,7 @@ import type { CustomField, PipelineStage } from '../lib/crmSettings';
 export type CRMFilters = {
   query: string;
   product: string;
-  source: 'all' | 'whatsapp' | 'manual';
+  source: 'all' | 'whatsapp' | 'facebook' | 'instagram' | 'manual';
   stageIds: string[];
   assigneeIds: string[]; // empty = all
   valueMin: string;
@@ -308,6 +308,8 @@ export function CRMFilterSidebar({
                 {([
                   { id: 'all', label: 'Hamısı' },
                   { id: 'whatsapp', label: 'WA' },
+                  { id: 'facebook', label: 'FB' },
+                  { id: 'instagram', label: 'IG' },
                   { id: 'manual', label: 'Manual' },
                 ] as const).map(opt => (
                   <button

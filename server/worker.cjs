@@ -600,7 +600,8 @@ async function processMessage(tenantId, msg, isFromMe) {
             message: messageContent,
             whatsapp_id: whatsappId,
             fromMe: isFromMe,
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
+            source: 'whatsapp'
         });
 
     } catch (error) {

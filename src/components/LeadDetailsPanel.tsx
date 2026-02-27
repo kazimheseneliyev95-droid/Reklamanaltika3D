@@ -53,6 +53,8 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
     const prevLenRef = useRef(0);
     const [showJump, setShowJump] = useState(false);
 
+    const canSend = lead.source === 'whatsapp';
+
     const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
         const el = listRef.current;
         if (!el) return;
@@ -128,6 +130,7 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
 
     const handleSend = async (e: React.FormEvent) => {
         e.preventDefault();
+        if (!canSend) return;
         const outgoing = replyText.trim();
         if (!outgoing || isSending) return;
         setIsSending(true);
@@ -280,20 +283,25 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
 
             {/* Reply Input Area */}
             <div className="shrink-0 p-2 sm:p-3 border-t border-slate-800 bg-[#111827]" style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 0.75rem)' }}>
+                {!canSend ? (
+                    <div className="mb-2 rounded-lg border border-amber-900/40 bg-amber-950/10 px-3 py-2 text-[11px] text-amber-300">
+                        Bu lead WhatsApp deyil (FB/IG). Mesaj gonderme hələ aktiv deyil.
+                    </div>
+                ) : null}
                 <form onSubmit={handleSend} className="flex gap-2">
                     <input
                         type="text"
                         value={replyText}
                         onChange={(e) => setReplyText(e.target.value)}
-                        placeholder="Mesaj yazın..."
-                        disabled={isSending}
+                        placeholder={canSend ? 'Mesaj yazın...' : 'Yalniz WhatsApp ucun'}
+                        disabled={isSending || !canSend}
                         enterKeyHint="send"
                         autoComplete="off"
                         className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-50"
                     />
                     <button
                         type="submit"
-                        disabled={!replyText.trim() || isSending}
+                        disabled={!canSend || !replyText.trim() || isSending}
                         className="bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 disabled:text-slate-500 text-white rounded-lg px-3 sm:px-4 py-2 text-sm font-semibold transition-colors flex items-center justify-center min-w-[70px] sm:min-w-[80px]"
                     >
                         {isSending ? <span className="animate-spin">⌛</span> : 'Göndər'}
@@ -899,9 +907,19 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                     'text-[10px] font-bold uppercase px-2 py-0.5 rounded',
                                     lead.source === 'whatsapp'
                                         ? 'bg-green-900/50 text-green-400 border border-green-900'
-                                        : 'bg-slate-800 text-slate-400 border border-slate-700'
+                                        : lead.source === 'facebook'
+                                            ? 'bg-blue-900/40 text-blue-300 border border-blue-900/60'
+                                            : lead.source === 'instagram'
+                                                ? 'bg-pink-900/30 text-pink-300 border border-pink-900/60'
+                                                : 'bg-slate-800 text-slate-400 border border-slate-700'
                                 )}>
-                                    {lead.source === 'whatsapp' ? '📱 WhatsApp' : '✍️ Manual'}
+                                    {lead.source === 'whatsapp'
+                                        ? '📱 WhatsApp'
+                                        : lead.source === 'facebook'
+                                            ? 'Facebook'
+                                            : lead.source === 'instagram'
+                                                ? 'Instagram'
+                                                : '✍️ Manual'}
                                 </span>
                             </FieldGroup>
                         </div>
@@ -1185,7 +1203,11 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                         {currentUser?.permissions?.view_budget !== false && (
                                             <StatCard label="Büdcə" value={`₼ ${formData.value} `} accent="text-green-400" />
                                         )}
-                                        <StatCard label="Mənbə" value={lead.source === 'whatsapp' ? 'WhatsApp' : 'Manual'} accent="text-sky-400" />
+                                        <StatCard
+                                            label="Mənbə"
+                                            value={lead.source === 'whatsapp' ? 'WhatsApp' : lead.source === 'facebook' ? 'Facebook' : lead.source === 'instagram' ? 'Instagram' : 'Manual'}
+                                            accent="text-sky-400"
+                                        />
                                         <StatCard label="Yaradılma" value={new Date(lead.created_at).toLocaleDateString()} accent="text-slate-400" />
                                         {lead.product_name && (
                                             <StatCard label="Məhsul" value={lead.product_name} accent="text-purple-400" className="col-span-2" />

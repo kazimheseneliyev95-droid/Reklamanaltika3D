@@ -85,14 +85,14 @@ async function initDb() {
 
         CREATE TABLE IF NOT EXISTS leads (
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-          phone VARCHAR(20) NOT NULL,
+          phone VARCHAR(80) NOT NULL,
           name VARCHAR(255),
           last_message TEXT,
           source_message TEXT,
           source_contact_name VARCHAR(255),
           whatsapp_id VARCHAR(255),
           status VARCHAR(50) DEFAULT 'new',
-          source VARCHAR(50) DEFAULT 'whatsapp' CHECK (source IN ('whatsapp', 'manual')),
+          source VARCHAR(50) DEFAULT 'whatsapp',
           value DECIMAL(10, 2) DEFAULT 0 CHECK (value >= 0),
           product_name VARCHAR(255),
           extra_data JSONB DEFAULT '{}'::jsonb,
@@ -109,7 +109,7 @@ async function initDb() {
         CREATE TABLE IF NOT EXISTS messages (
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
           lead_id UUID NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
-          phone VARCHAR(30) NOT NULL,
+          phone VARCHAR(80) NOT NULL,
           body TEXT NOT NULL,
           direction VARCHAR(10) NOT NULL CHECK (direction IN ('in', 'out')),
           whatsapp_id VARCHAR(255),
@@ -118,6 +118,17 @@ async function initDb() {
           status VARCHAR(50) DEFAULT 'delivered',
           created_at TIMESTAMP DEFAULT NOW(),
           CONSTRAINT messages_wa_tenant_unique UNIQUE (whatsapp_id, tenant_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS meta_pages (
+          tenant_id VARCHAR(50) NOT NULL,
+          page_id VARCHAR(64) NOT NULL,
+          page_name TEXT,
+          page_access_token TEXT NOT NULL,
+          ig_business_id VARCHAR(64),
+          connected_at TIMESTAMP DEFAULT NOW(),
+          updated_at TIMESTAMP DEFAULT NOW(),
+          PRIMARY KEY (tenant_id, page_id)
         );
       `;
 
@@ -132,6 +143,9 @@ async function initDb() {
                 -- Drop old single-tenant unique constraints if they exist
                 ALTER TABLE leads DROP CONSTRAINT IF EXISTS leads_phone_key CASCADE;
                 ALTER TABLE leads DROP CONSTRAINT IF EXISTS leads_whatsapp_id_key CASCADE;
+
+                -- Allow additional lead sources (facebook/instagram/etc.)
+                ALTER TABLE leads DROP CONSTRAINT IF EXISTS leads_source_check;
                 
                 -- Add tenant_id columns if they don't exist
                 ALTER TABLE leads ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(50) DEFAULT 'admin';
@@ -156,9 +170,29 @@ async function initDb() {
                     settings JSONB NOT NULL DEFAULT '{}',
                     updated_at TIMESTAMP DEFAULT NOW()
                 );
+
+                -- Meta (Facebook/Instagram) integrations
+                CREATE TABLE IF NOT EXISTS meta_pages (
+                    tenant_id VARCHAR(50) NOT NULL,
+                    page_id VARCHAR(64) NOT NULL,
+                    page_name TEXT,
+                    page_access_token TEXT NOT NULL,
+                    ig_business_id VARCHAR(64),
+                    connected_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW(),
+                    PRIMARY KEY (tenant_id, page_id)
+                );
             `);
         } catch (e) {
             console.error("Migration warning (can be ignored on fresh install):", e.message);
+        }
+
+        // Ensure phone column can store non-phone external IDs (fb:/ig:)
+        try {
+            await client.query('ALTER TABLE leads ALTER COLUMN phone TYPE VARCHAR(80);');
+            await client.query('ALTER TABLE messages ALTER COLUMN phone TYPE VARCHAR(80);');
+        } catch (e) {
+            console.error('Migration warning (phone type):', e.message);
         }
 
         // Ensure extra_data exists even if the big migration query partially failed
@@ -218,6 +252,7 @@ async function initDb() {
             CREATE INDEX IF NOT EXISTS idx_messages_lead_id ON messages(lead_id);
             CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at ASC);
             CREATE INDEX IF NOT EXISTS idx_messages_polling ON messages(direction, status);
+            CREATE INDEX IF NOT EXISTS idx_meta_pages_tenant ON meta_pages(tenant_id);
         `);
 
         // Ensure multi-tenant UNIQUE constraints exist for ON CONFLICT clauses.
@@ -233,6 +268,18 @@ async function initDb() {
             `);
         } catch (e) {
             console.warn('⚠️ Constraint migration warning:', e.message);
+        }
+
+        try {
+            await client.query(`
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_meta_pages_page_unique
+                    ON meta_pages(page_id);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_meta_pages_ig_unique
+                    ON meta_pages(ig_business_id)
+                    WHERE ig_business_id IS NOT NULL;
+            `);
+        } catch (e) {
+            console.warn('⚠️ Constraint migration warning (meta_pages):', e.message);
         }
 
         await client.query('COMMIT');
@@ -251,16 +298,36 @@ async function initDb() {
 // ═══════════════════════════════════════════════════════════════
 
 function normalizePhone(phone) {
-    if (!phone) throw new Error('Phone number is required');
+    // Backward-compat note:
+    // This project historically used `phone` as the unique lead key.
+    // For WhatsApp it's a numeric phone. For Meta (FB/IG) we store external IDs
+    // as a prefixed key like: "fb:PSID", "ig:USER_ID", or "meta:fb:...".
+    if (!phone) throw new Error('Phone/contact key is required');
+
+    const raw = String(phone).trim();
+    if (!raw) throw new Error('Phone/contact key is required');
+
+    const lower = raw.toLowerCase();
+    if (lower.startsWith('fb:') || lower.startsWith('ig:') || lower.startsWith('meta:')) {
+        if (raw.length < 4 || raw.length > 80) {
+            throw new Error(`Invalid contact key length: ${raw.length}`);
+        }
+        return raw;
+    }
+
+    // WhatsApp numeric phone flow
     // Step 1: Strip Baileys device-ID suffix BEFORE removing non-digits
-    // e.g. "994776069606:12" -> "994776069606:12" split(':')[0] -> "994776069606"
-    const withoutSuffix = String(phone).split(':')[0];
+    const withoutSuffix = raw.split(':')[0];
     // Step 2: Remove all remaining non-digit characters (+/-/spaces)
     const cleaned = withoutSuffix.replace(/\D/g, '');
     if (!cleaned || cleaned.length < 7 || cleaned.length > 15) {
         throw new Error(`Invalid phone: ${phone} (normalized: ${cleaned})`);
     }
     return cleaned;
+}
+
+function isNumericPhoneKey(normalizedPhoneOrKey) {
+    return typeof normalizedPhoneOrKey === 'string' && /^\d{7,15}$/.test(normalizedPhoneOrKey);
 }
 
 // Backward compat alias
@@ -456,6 +523,11 @@ async function findLeadByPhone(phone, tenantId = 'admin') {
         // 1. Exact match first
         const exact = await pool.query('SELECT * FROM leads WHERE phone = $1 AND tenant_id = $2', [cleanedPhone, tenantId]);
         if (exact.rows[0]) return exact.rows[0];
+
+        // Non-numeric keys (fb:/ig:) should not use fuzzy matching
+        if (!isNumericPhoneKey(cleanedPhone)) {
+            return null;
+        }
 
         // 2. Fuzzy: last 9 digits covers local number without country code variants
         if (cleanedPhone.length >= 9) {
@@ -1344,6 +1416,67 @@ async function markLeadRead(leadId, tenantId = 'admin') {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════
+// META (FACEBOOK/INSTAGRAM) INTEGRATIONS
+// ═══════════════════════════════════════════════════════════════
+
+async function upsertMetaPage(tenantId, { page_id, page_name, page_access_token, ig_business_id }) {
+    if (!tenantId) throw new Error('tenantId is required');
+    if (!page_id) throw new Error('page_id is required');
+    if (!page_access_token) throw new Error('page_access_token is required');
+
+    const res = await pool.query(
+        `INSERT INTO meta_pages (tenant_id, page_id, page_name, page_access_token, ig_business_id, updated_at)
+         VALUES ($1, $2, $3, $4, $5, NOW())
+         ON CONFLICT (tenant_id, page_id)
+         DO UPDATE SET
+           page_name = EXCLUDED.page_name,
+           page_access_token = EXCLUDED.page_access_token,
+           ig_business_id = EXCLUDED.ig_business_id,
+           updated_at = NOW()
+         RETURNING tenant_id, page_id, page_name, ig_business_id, connected_at, updated_at`,
+        [tenantId, String(page_id), page_name || null, String(page_access_token), ig_business_id ? String(ig_business_id) : null]
+    );
+    return res.rows[0] || null;
+}
+
+async function getMetaPages(tenantId) {
+    if (!tenantId) throw new Error('tenantId is required');
+    const res = await pool.query(
+        'SELECT tenant_id, page_id, page_name, ig_business_id, connected_at, updated_at FROM meta_pages WHERE tenant_id = $1 ORDER BY updated_at DESC',
+        [tenantId]
+    );
+    return res.rows || [];
+}
+
+async function getMetaPageByPageId(pageId) {
+    if (!pageId) return null;
+    const res = await pool.query(
+        'SELECT tenant_id, page_id, page_name, page_access_token, ig_business_id FROM meta_pages WHERE page_id = $1 LIMIT 1',
+        [String(pageId)]
+    );
+    return res.rows[0] || null;
+}
+
+async function getMetaPageByIgBusinessId(igBusinessId) {
+    if (!igBusinessId) return null;
+    const res = await pool.query(
+        'SELECT tenant_id, page_id, page_name, page_access_token, ig_business_id FROM meta_pages WHERE ig_business_id = $1 LIMIT 1',
+        [String(igBusinessId)]
+    );
+    return res.rows[0] || null;
+}
+
+async function deleteMetaPage(tenantId, pageId) {
+    if (!tenantId) throw new Error('tenantId is required');
+    if (!pageId) throw new Error('pageId is required');
+    const res = await pool.query(
+        'DELETE FROM meta_pages WHERE tenant_id = $1 AND page_id = $2 RETURNING page_id',
+        [tenantId, String(pageId)]
+    );
+    return res.rowCount > 0;
+}
+
 // NOTE: SIGINT/SIGTERM handlers are NOT registered here.
 // The main entry point (index.cjs) owns the graceful shutdown sequence
 // and calls db.closePool() itself. Having duplicate handlers caused
@@ -1385,5 +1518,10 @@ module.exports = {
     getAnalyticsLayout,
     upsertAnalyticsLayout,
     markLeadRead,
+    upsertMetaPage,
+    getMetaPages,
+    getMetaPageByPageId,
+    getMetaPageByIgBusinessId,
+    deleteMetaPage,
     closePool
 };
