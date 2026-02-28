@@ -126,9 +126,38 @@ async function initDb() {
           page_name TEXT,
           page_access_token TEXT NOT NULL,
           ig_business_id VARCHAR(64),
+          status VARCHAR(20) DEFAULT 'connected',
+          token_expires_at TIMESTAMP,
+          last_checked_at TIMESTAMP,
+          last_error TEXT,
           connected_at TIMESTAMP DEFAULT NOW(),
           updated_at TIMESTAMP DEFAULT NOW(),
           PRIMARY KEY (tenant_id, page_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS meta_webhook_events (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          received_at TIMESTAMP DEFAULT NOW(),
+          object_type VARCHAR(32),
+          payload JSONB NOT NULL,
+          signature VARCHAR(255),
+          signature_ok BOOLEAN DEFAULT true,
+          attempts INTEGER DEFAULT 0,
+          next_attempt_at TIMESTAMP,
+          processed_at TIMESTAMP,
+          locked_at TIMESTAMP,
+          lock_owner TEXT,
+          last_error TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS meta_user_tokens (
+          tenant_id VARCHAR(50) PRIMARY KEY,
+          user_access_token TEXT NOT NULL,
+          expires_at TIMESTAMP,
+          debug_info JSONB DEFAULT '{}'::jsonb,
+          status VARCHAR(20) DEFAULT 'active',
+          last_error TEXT,
+          updated_at TIMESTAMP DEFAULT NOW()
         );
       `;
 
@@ -157,6 +186,9 @@ async function initDb() {
                 ALTER TABLE leads ADD COLUMN IF NOT EXISTS last_inbound_at TIMESTAMP;
                 ALTER TABLE messages ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'delivered';
                 ALTER TABLE messages ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
+                ALTER TABLE messages ADD COLUMN IF NOT EXISTS attempts INTEGER DEFAULT 0;
+                ALTER TABLE messages ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMP;
+                ALTER TABLE messages ADD COLUMN IF NOT EXISTS last_error TEXT;
                 
                 -- Add missing columns to users table
                 ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(50) DEFAULT 'admin';
@@ -178,13 +210,52 @@ async function initDb() {
                     page_name TEXT,
                     page_access_token TEXT NOT NULL,
                     ig_business_id VARCHAR(64),
+                    status VARCHAR(20) DEFAULT 'connected',
+                    token_expires_at TIMESTAMP,
+                    last_checked_at TIMESTAMP,
+                    last_error TEXT,
                     connected_at TIMESTAMP DEFAULT NOW(),
                     updated_at TIMESTAMP DEFAULT NOW(),
                     PRIMARY KEY (tenant_id, page_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS meta_webhook_events (
+                  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                  received_at TIMESTAMP DEFAULT NOW(),
+                  object_type VARCHAR(32),
+                  payload JSONB NOT NULL,
+                  signature VARCHAR(255),
+                  signature_ok BOOLEAN DEFAULT true,
+                  attempts INTEGER DEFAULT 0,
+                  next_attempt_at TIMESTAMP,
+                  processed_at TIMESTAMP,
+                  locked_at TIMESTAMP,
+                  lock_owner TEXT,
+                  last_error TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS meta_user_tokens (
+                  tenant_id VARCHAR(50) PRIMARY KEY,
+                  user_access_token TEXT NOT NULL,
+                  expires_at TIMESTAMP,
+                  debug_info JSONB DEFAULT '{}'::jsonb,
+                  status VARCHAR(20) DEFAULT 'active',
+                  last_error TEXT,
+                  updated_at TIMESTAMP DEFAULT NOW()
+                );
             `);
         } catch (e) {
             console.error("Migration warning (can be ignored on fresh install):", e.message);
+        }
+
+        // Meta pages: ensure new columns exist on older installs
+        try {
+            await client.query("ALTER TABLE meta_pages ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'connected';");
+            await client.query('ALTER TABLE meta_pages ADD COLUMN IF NOT EXISTS token_expires_at TIMESTAMP;');
+            await client.query('ALTER TABLE meta_pages ADD COLUMN IF NOT EXISTS last_checked_at TIMESTAMP;');
+            await client.query('ALTER TABLE meta_pages ADD COLUMN IF NOT EXISTS last_error TEXT;');
+        } catch (e) {
+            console.warn('⚠️ Migration warning (meta_pages columns):', e.message);
         }
 
         // Ensure phone column can store non-phone external IDs (fb:/ig:)
@@ -216,6 +287,15 @@ async function initDb() {
             await client.query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;");
         } catch (e) {
             console.error('Migration warning (messages.metadata):', e.message);
+        }
+
+        // Ensure outbox retry columns exist
+        try {
+            await client.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS attempts INTEGER DEFAULT 0;');
+            await client.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMP;');
+            await client.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS last_error TEXT;');
+        } catch (e) {
+            console.warn('⚠️ Migration warning (messages outbox columns):', e.message);
         }
 
         // Analytics layouts (per-tenant, per-user)
@@ -252,8 +332,25 @@ async function initDb() {
             CREATE INDEX IF NOT EXISTS idx_messages_lead_id ON messages(lead_id);
             CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at ASC);
             CREATE INDEX IF NOT EXISTS idx_messages_polling ON messages(direction, status);
+            CREATE INDEX IF NOT EXISTS idx_messages_next_attempt_at ON messages(next_attempt_at);
             CREATE INDEX IF NOT EXISTS idx_meta_pages_tenant ON meta_pages(tenant_id);
+            CREATE INDEX IF NOT EXISTS idx_meta_webhook_received_at ON meta_webhook_events(received_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_meta_webhook_processed_at ON meta_webhook_events(processed_at);
+            CREATE INDEX IF NOT EXISTS idx_meta_webhook_next_attempt_at ON meta_webhook_events(next_attempt_at);
         `);
+
+        try {
+            await client.query(`
+                CREATE INDEX IF NOT EXISTS idx_meta_webhook_unprocessed
+                    ON meta_webhook_events(received_at ASC)
+                    WHERE processed_at IS NULL;
+                CREATE INDEX IF NOT EXISTS idx_meta_webhook_retry
+                    ON meta_webhook_events(next_attempt_at ASC)
+                    WHERE processed_at IS NULL AND next_attempt_at IS NOT NULL;
+            `);
+        } catch (e) {
+            console.warn('⚠️ Migration warning (meta_webhook_events indexes):', e.message);
+        }
 
         // Ensure multi-tenant UNIQUE constraints exist for ON CONFLICT clauses.
         // CREATE TABLE IF NOT EXISTS is skipped for existing tables, so the constraints
@@ -991,6 +1088,109 @@ async function appendMessage({ leadId, phone, body, direction, whatsappId, metad
     }
 }
 
+async function messageExists(whatsappId, tenantId = 'admin') {
+    try {
+        if (!whatsappId) return false;
+        const res = await pool.query(
+            'SELECT 1 FROM messages WHERE whatsapp_id = $1 AND tenant_id = $2 LIMIT 1',
+            [String(whatsappId), tenantId]
+        );
+        return res.rowCount > 0;
+    } catch {
+        return false;
+    }
+}
+
+async function insertMetaWebhookEvent({ objectType, payload, signature, signatureOk }) {
+    const res = await pool.query(
+        `INSERT INTO meta_webhook_events (object_type, payload, signature, signature_ok, received_at)
+         VALUES ($1, $2::jsonb, $3, $4, NOW())
+         RETURNING id, received_at`,
+        [objectType ? String(objectType) : null, payload || {}, signature ? String(signature) : null, signatureOk !== false]
+    );
+    return res.rows[0] || null;
+}
+
+async function claimMetaWebhookEvents(limit = 10, lockOwner = 'worker') {
+    const n = Number(limit);
+    const safeLimit = Number.isFinite(n) && n > 0 ? Math.min(n, 100) : 10;
+    const owner = String(lockOwner || 'worker').slice(0, 120);
+
+    const res = await pool.query(
+        `UPDATE meta_webhook_events
+         SET locked_at = NOW(), lock_owner = $2
+         WHERE id IN (
+            SELECT id
+            FROM meta_webhook_events
+            WHERE processed_at IS NULL
+              AND (next_attempt_at IS NULL OR next_attempt_at <= NOW())
+            ORDER BY received_at ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT $1
+         )
+         RETURNING id, object_type, payload, received_at, attempts`,
+        [safeLimit, owner]
+    );
+    return res.rows || [];
+}
+
+async function completeMetaWebhookEvent(id) {
+    if (!id) return false;
+    const res = await pool.query(
+        `UPDATE meta_webhook_events
+         SET processed_at = NOW(), last_error = NULL, locked_at = NULL, lock_owner = NULL
+         WHERE id = $1`,
+        [String(id)]
+    );
+    return res.rowCount > 0;
+}
+
+async function failMetaWebhookEvent(id, errorMessage, backoffSeconds = 10) {
+    if (!id) return false;
+    const secs = Number(backoffSeconds);
+    const safeSecs = Number.isFinite(secs) && secs > 0 ? Math.min(secs, 3600) : 10;
+    const msg = String(errorMessage || 'processing_error').slice(0, 1200);
+    const res = await pool.query(
+        `UPDATE meta_webhook_events
+         SET attempts = attempts + 1,
+             last_error = $2,
+             next_attempt_at = NOW() + ($3::int * INTERVAL '1 second'),
+             locked_at = NULL,
+             lock_owner = NULL
+         WHERE id = $1`,
+        [String(id), msg, safeSecs]
+    );
+    return res.rowCount > 0;
+}
+
+async function upsertMetaUserToken(tenantId, { user_access_token, expires_at, debug_info, status, last_error }) {
+    if (!tenantId) throw new Error('tenantId is required');
+    if (!user_access_token) throw new Error('user_access_token is required');
+    const dbg = (debug_info && typeof debug_info === 'object') ? debug_info : {};
+    const res = await pool.query(
+        `INSERT INTO meta_user_tokens (tenant_id, user_access_token, expires_at, debug_info, status, last_error, updated_at)
+         VALUES ($1, $2, $3, $4::jsonb, $5, $6, NOW())
+         ON CONFLICT (tenant_id)
+         DO UPDATE SET
+           user_access_token = EXCLUDED.user_access_token,
+           expires_at = EXCLUDED.expires_at,
+           debug_info = EXCLUDED.debug_info,
+           status = EXCLUDED.status,
+           last_error = EXCLUDED.last_error,
+           updated_at = NOW()
+         RETURNING tenant_id, expires_at, status, updated_at`,
+        [
+            String(tenantId),
+            String(user_access_token),
+            expires_at ? new Date(expires_at) : null,
+            dbg,
+            status ? String(status) : 'active',
+            last_error ? String(last_error) : null
+        ]
+    );
+    return res.rows[0] || null;
+}
+
 /**
  * Get all messages for a lead, oldest first
  */
@@ -1443,7 +1643,7 @@ async function upsertMetaPage(tenantId, { page_id, page_name, page_access_token,
 async function getMetaPages(tenantId) {
     if (!tenantId) throw new Error('tenantId is required');
     const res = await pool.query(
-        'SELECT tenant_id, page_id, page_name, ig_business_id, connected_at, updated_at FROM meta_pages WHERE tenant_id = $1 ORDER BY updated_at DESC',
+        'SELECT tenant_id, page_id, page_name, ig_business_id, status, token_expires_at, last_checked_at, last_error, connected_at, updated_at FROM meta_pages WHERE tenant_id = $1 ORDER BY updated_at DESC',
         [tenantId]
     );
     return res.rows || [];
@@ -1495,6 +1695,7 @@ module.exports = {
     getLeads,
     getMessages,
     appendMessage,
+    messageExists,
     getRecentLeadsWithLatestMessage,
     deleteLead,
     deleteAllLeads,
@@ -1523,5 +1724,10 @@ module.exports = {
     getMetaPageByPageId,
     getMetaPageByIgBusinessId,
     deleteMetaPage,
+    insertMetaWebhookEvent,
+    claimMetaWebhookEvents,
+    completeMetaWebhookEvent,
+    failMetaWebhookEvent,
+    upsertMetaUserToken,
     closePool
 };

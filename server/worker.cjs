@@ -742,7 +742,13 @@ async function pollOutgoingMessages() {
     if (Date.now() < outgoingPollPauseUntil) return;
     try {
         var result = await db.pool.query(
-            "SELECT id, tenant_id, phone, body FROM messages WHERE direction = 'out' AND status = 'pending' ORDER BY created_at ASC"
+            "SELECT m.id, m.tenant_id, m.phone, m.body " +
+            "FROM messages m " +
+            "JOIN leads l ON l.id = m.lead_id AND l.tenant_id = m.tenant_id " +
+            "WHERE m.direction = 'out' AND m.status = 'pending' " +
+            "  AND COALESCE(l.source, '') = 'whatsapp' " +
+            "  AND m.phone ~ '^[0-9]{7,15}$' " +
+            "ORDER BY m.created_at ASC"
         );
 
         for (var i = 0; i < result.rows.length; i++) {

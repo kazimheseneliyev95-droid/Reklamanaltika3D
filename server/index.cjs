@@ -26,8 +26,17 @@ const ALLOW_LEGACY_TOKEN = process.env.ALLOW_LEGACY_TOKEN !== 'false';
 
 // Meta (Facebook/Instagram) Webhooks
 const META_APP_SECRET = process.env.META_APP_SECRET || '';
+const META_APP_ID = process.env.META_APP_ID || '';
 const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || '';
 const META_WEBHOOK_DEBUG = process.env.META_WEBHOOK_DEBUG === 'true';
+const META_EVENT_PROCESSOR_ENABLED = process.env.META_EVENT_PROCESSOR_ENABLED !== 'false';
+const META_EVENT_PROCESSOR_BATCH = parseInt(process.env.META_EVENT_PROCESSOR_BATCH || '20', 10);
+const META_EVENT_PROCESSOR_INTERVAL_MS = parseInt(process.env.META_EVENT_PROCESSOR_INTERVAL_MS || '1500', 10);
+
+const META_OUTBOX_ENABLED = process.env.META_OUTBOX_ENABLED !== 'false';
+const META_OUTBOX_BATCH = parseInt(process.env.META_OUTBOX_BATCH || '15', 10);
+const META_OUTBOX_INTERVAL_MS = parseInt(process.env.META_OUTBOX_INTERVAL_MS || '1200', 10);
+const META_OUTBOX_MAX_ATTEMPTS = parseInt(process.env.META_OUTBOX_MAX_ATTEMPTS || '8', 10);
 
 if (!process.env.DATABASE_URL) {
   console.warn('⚠️ DATABASE_URL is missing. The app will run in file-based fallback mode.');
@@ -150,8 +159,11 @@ app.use(express.json({
   verify: (req, res, buf) => {
     try {
       // Meta requires verifying signature against the exact raw bytes.
-      if (req.originalUrl && String(req.originalUrl).startsWith('/api/webhooks/meta')) {
-        req.rawBody = buf;
+      if (req.originalUrl) {
+        const p = String(req.originalUrl);
+        if (p.startsWith('/api/webhooks/meta') || p.startsWith('/webhooks/meta')) {
+          req.rawBody = buf;
+        }
       }
     } catch {
       // ignore
@@ -194,6 +206,10 @@ const metaWebhookStats = {
   total: 0,
   accepted: 0,
   rejected: 0,
+  queued: 0,
+  processed_ok: 0,
+  processed_failed: 0,
+  last_processed_at: null,
   last_at: null,
   last_error: null,
   by_source: { facebook: 0, instagram: 0 },
@@ -243,6 +259,19 @@ async function upsertMetaInbound({ tenantId, source, contactKey, displayName, te
   const metaId = String(msgId || '').trim() || `${source}:${Date.now()}`;
   const dir = direction === 'out' ? 'out' : 'in';
 
+  // Idempotency: if this external message id already exists, don't bump unread_count or update lead.
+  try {
+    if (typeof db.messageExists === 'function') {
+      const exists = await db.messageExists(metaId, tenantId);
+      if (exists) return;
+    } else if (db.pool) {
+      const ex = await db.pool.query('SELECT 1 FROM messages WHERE whatsapp_id = $1 AND tenant_id = $2 LIMIT 1', [metaId, tenantId]);
+      if (ex.rowCount > 0) return;
+    }
+  } catch {
+    // If the check fails, continue (better to accept than to drop).
+  }
+
   const lead = await db.createLead({
     phone: safeKey,
     name: displayName || safeKey,
@@ -290,18 +319,446 @@ async function upsertMetaInbound({ tenantId, source, contactKey, displayName, te
   });
 }
 
-app.get('/api/webhooks/meta', (req, res) => {
+function handleMetaWebhookVerify(req, res) {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
 
-  if (mode === 'subscribe' && META_VERIFY_TOKEN && token === META_VERIFY_TOKEN) {
+  if (mode === 'subscribe' && META_VERIFY_TOKEN && safeEqual(String(token || ''), String(META_VERIFY_TOKEN))) {
     return res.status(200).send(String(challenge || ''));
   }
   return res.sendStatus(403);
-});
+}
 
-app.post('/api/webhooks/meta', (req, res) => {
+async function processMetaWebhookPayload(json) {
+  const payload = json || {};
+  const objectType = String(payload.object || '').toLowerCase();
+  const entries = Array.isArray(payload.entry) ? payload.entry : [];
+  if (!objectType || entries.length === 0) {
+    metaDebugLog('Webhook payload missing object/entry');
+    return { processed: 0 };
+  }
+
+  let processed = 0;
+
+  for (const entry of entries) {
+    const entryId = entry && entry.id ? String(entry.id) : '';
+    if (!entryId) continue;
+
+    // Resolve tenant + token by page_id or ig_business_id
+    let integration = null;
+    try {
+      if (!process.env.DATABASE_URL || !db || !db.pool) continue;
+      if (objectType === 'page' && typeof db.getMetaPageByPageId === 'function') {
+        integration = await db.getMetaPageByPageId(entryId);
+      } else if (objectType === 'instagram' && typeof db.getMetaPageByIgBusinessId === 'function') {
+        integration = await db.getMetaPageByIgBusinessId(entryId);
+      }
+    } catch (e) {
+      console.warn('⚠️ Meta integration lookup failed:', e.message);
+    }
+    if (!integration || !integration.tenant_id || !integration.page_access_token) {
+      metaDebugLog('No integration match', { objectType, entryId });
+      continue;
+    }
+
+    const tenantId = integration.tenant_id;
+    const pageId = integration.page_id;
+    const pageToken = integration.page_access_token;
+    const igBusinessId = integration.ig_business_id || null;
+
+    const source = objectType === 'instagram' ? 'instagram' : 'facebook';
+    if (source === 'instagram' || source === 'facebook') {
+      metaWebhookStats.by_source[source] = (metaWebhookStats.by_source[source] || 0) + 1;
+    }
+    metaDebugLog('Webhook processing', { objectType, entryId, tenantId, pageId, igBusinessId });
+
+    // Messaging (DM)
+    const messaging = Array.isArray(entry.messaging) ? entry.messaging : [];
+    for (const ev of messaging) {
+      const senderId = ev?.sender?.id ? String(ev.sender.id) : '';
+      const recipientId = ev?.recipient?.id ? String(ev.recipient.id) : '';
+      // Facebook: entry.id is Page ID. Instagram: entry.id is IG Business Account ID.
+      const threadOwnerId = source === 'instagram'
+        ? (igBusinessId ? String(igBusinessId) : entryId)
+        : String(pageId);
+      const isFromPage = senderId && threadOwnerId && senderId === String(threadOwnerId);
+
+      const contactId = isFromPage ? recipientId : senderId;
+      if (!contactId) continue;
+
+      const contactKey = (source === 'instagram' ? 'ig:' : 'fb:') + contactId;
+      const text = ev?.message?.text || '';
+
+      const attachments = Array.isArray(ev?.message?.attachments) ? ev.message.attachments : [];
+      let safeText = String(text || '').trim();
+      if (!safeText && attachments.length > 0) {
+        safeText = '[Attachment]';
+      }
+
+      const mid = ev?.message?.mid ? String(ev.message.mid) : '';
+      const msgId = (source === 'instagram' ? 'igmid:' : 'fbmid:') + (mid || (String(ev?.timestamp || '') || String(Date.now())));
+      const createdAtIso = toIsoFromMetaTimestamp(ev?.timestamp || Date.now());
+      const direction = isFromPage ? 'out' : 'in';
+
+      await upsertMetaInbound({
+        tenantId,
+        source,
+        contactKey,
+        displayName: null,
+        text: safeText,
+        msgId,
+        direction,
+        createdAtIso,
+        meta: {
+          platform: source,
+          kind: 'dm',
+          page_id: pageId,
+          ig_business_id: igBusinessId,
+          sender_id: senderId || null,
+          recipient_id: recipientId || null,
+          attachments: attachments.length > 0 ? attachments : null
+        }
+      });
+
+      metaWebhookStats.by_kind.dm = (metaWebhookStats.by_kind.dm || 0) + 1;
+      processed++;
+    }
+
+    // Comments / feed changes
+    const changes = Array.isArray(entry.changes) ? entry.changes : [];
+    for (const ch of changes) {
+      const value = ch && ch.value ? ch.value : {};
+      const verb = String(value.verb || '').toLowerCase();
+      if (verb && verb !== 'add') continue;
+
+      const commentId = value.comment_id || value.id || null;
+      const postId = value.post_id || value.post || null;
+      const messageText = value.message || value.text || '';
+
+      if (!commentId && !messageText) continue;
+
+      let fromId = value?.from?.id ? String(value.from.id) : null;
+      let fromName = value?.from?.name ? String(value.from.name) : null;
+      if (!fromName && value?.from?.username) fromName = String(value.from.username);
+
+      // Try to enrich comment via Graph API when possible
+      let finalText = String(messageText || '').trim();
+      let permalink = null;
+      let createdAtIso = new Date().toISOString();
+      if (commentId) {
+        try {
+          const fields = source === 'instagram'
+            ? 'text,username,timestamp,media{id,permalink},user{id,username}'
+            : 'message,from,created_time,permalink_url';
+          const url = `https://graph.facebook.com/v19.0/${commentId}?fields=${encodeURIComponent(fields)}&access_token=${encodeURIComponent(pageToken)}`;
+          const data = await fetchJsonWithRetry(url, {}, { retries: 0, timeoutMs: 4000 }).catch(() => null);
+          if (data) {
+            if (source === 'instagram') {
+              if (!finalText) finalText = String(data.text || '').trim();
+              fromName = fromName || data.username || null;
+              // Prefer stable author id if available
+              if (!fromId) fromId = data?.user?.id ? String(data.user.id) : null;
+              permalink = data?.media?.permalink || null;
+              if (data.timestamp) createdAtIso = new Date(String(data.timestamp)).toISOString();
+            } else {
+              if (!finalText) finalText = String(data.message || '').trim();
+              fromId = fromId || (data?.from?.id ? String(data.from.id) : null);
+              fromName = fromName || (data?.from?.name ? String(data.from.name) : null);
+              permalink = data?.permalink_url || null;
+              if (data.created_time) createdAtIso = new Date(String(data.created_time)).toISOString();
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      if (!finalText) finalText = '[Comment]';
+
+      // Lead key: platform + author id (preferred). Fallback to comment id to avoid collisions.
+      const authorKey = fromId ? String(fromId) : (commentId ? `comment:${String(commentId)}` : (fromName || 'comment'));
+      const contactKey = (source === 'instagram' ? 'ig:' : 'fb:') + authorKey;
+
+      const msgId = (source === 'instagram' ? 'igcmt:' : 'fbcmt:') + (commentId ? String(commentId) : String(Date.now()));
+
+      await upsertMetaInbound({
+        tenantId,
+        source,
+        contactKey,
+        displayName: fromName,
+        text: finalText,
+        msgId,
+        direction: 'in',
+        createdAtIso,
+        meta: {
+          platform: source,
+          kind: 'comment',
+          page_id: pageId,
+          ig_business_id: igBusinessId,
+          comment_id: commentId ? String(commentId) : null,
+          post_id: postId ? String(postId) : null,
+          permalink: permalink
+        }
+      });
+
+      metaWebhookStats.by_kind.comment = (metaWebhookStats.by_kind.comment || 0) + 1;
+      processed++;
+    }
+  }
+
+  return { processed };
+}
+
+function computeMetaBackoffSeconds(attempts) {
+  const a = Number(attempts || 0);
+  const exp = Math.min(7, Math.max(0, a));
+  const base = 3 * (2 ** exp);
+  const jitter = Math.floor(Math.random() * 3);
+  return Math.min(300, base + jitter);
+}
+
+function computeMetaOutboxBackoffSeconds(attempts, errMsg) {
+  const msg = String(errMsg || '').toLowerCase();
+  if (msg.includes('http 429') || msg.includes('rate limit') || msg.includes('code 4')) {
+    return 60 + Math.floor(Math.random() * 10);
+  }
+  const a = Number(attempts || 0);
+  const exp = Math.min(7, Math.max(0, a));
+  const base = 5 * (2 ** exp);
+  const jitter = Math.floor(Math.random() * 5);
+  return Math.min(600, base + jitter);
+}
+
+async function pollMetaOutbox() {
+  if (!META_OUTBOX_ENABLED) return;
+  if (!process.env.DATABASE_URL) return;
+  if (!db || !db.pool) return;
+
+  const batchSize = Number.isFinite(META_OUTBOX_BATCH) ? Math.max(1, Math.min(META_OUTBOX_BATCH, 50)) : 15;
+  const owner = `meta-outbox:${process.pid}`;
+
+  // Claim pending meta outbound messages and mark as sending
+  const claimRes = await db.pool.query(
+    `UPDATE messages
+     SET status = 'sending'
+     WHERE id IN (
+       SELECT m.id
+       FROM messages m
+       WHERE m.direction = 'out'
+         AND m.status = 'pending'
+         AND (m.next_attempt_at IS NULL OR m.next_attempt_at <= NOW())
+         AND (m.metadata->>'platform') IN ('facebook', 'instagram')
+         AND (m.metadata->'dispatch') IS NOT NULL
+       ORDER BY m.created_at ASC
+       FOR UPDATE SKIP LOCKED
+       LIMIT $1
+     )
+     RETURNING id, tenant_id, lead_id, phone, body, whatsapp_id, metadata, attempts`,
+    [batchSize]
+  );
+
+  const rows = claimRes.rows || [];
+  if (rows.length === 0) return;
+
+  for (const row of rows) {
+    const tenantId = row.tenant_id;
+    const leadId = row.lead_id;
+    const platform = String(row?.metadata?.platform || '').toLowerCase();
+    const dispatch = row?.metadata?.dispatch || {};
+    const mode = String(dispatch?.mode || '');
+    const pageId = String(row?.metadata?.page_id || '');
+
+    if (!tenantId || !leadId || (platform !== 'facebook' && platform !== 'instagram') || !mode || !pageId) {
+      await db.pool.query(
+        "UPDATE messages SET status = 'failed', last_error = $1 WHERE id = $2 AND tenant_id = $3",
+        ['invalid_dispatch', row.id, tenantId]
+      ).catch(() => null);
+      continue;
+    }
+
+    // Load integration token scoped to tenant
+    let integration = null;
+    try {
+      const r = await db.pool.query(
+        'SELECT tenant_id, page_id, page_access_token, ig_business_id, status FROM meta_pages WHERE tenant_id = $1 AND page_id = $2 LIMIT 1',
+        [tenantId, pageId]
+      );
+      integration = r.rows[0] || null;
+    } catch {
+      integration = null;
+    }
+
+    if (!integration || !integration.page_access_token || String(integration.status || 'connected') === 'disconnected') {
+      await db.pool.query(
+        "UPDATE messages SET status = 'failed', last_error = $1 WHERE id = $2 AND tenant_id = $3",
+        ['integration_missing_or_disconnected', row.id, tenantId]
+      ).catch(() => null);
+      continue;
+    }
+
+    const pageToken = integration.page_access_token;
+    const igBusinessId = integration.ig_business_id || null;
+
+    let graphResult = null;
+    let outId = null;
+    let sendError = null;
+
+    try {
+      if (mode === 'comment') {
+        const commentId = dispatch?.comment_id ? String(dispatch.comment_id) : '';
+        if (!commentId) throw new Error('Missing comment_id');
+        if (platform === 'instagram') {
+          graphResult = await postGraphForm(`${commentId}/replies`, { message: row.body, access_token: pageToken });
+          outId = graphResult?.id || null;
+        } else {
+          graphResult = await postGraphForm(`${commentId}/comments`, { message: row.body, access_token: pageToken });
+          outId = graphResult?.id || null;
+        }
+      } else if (mode === 'private') {
+        const commentId = dispatch?.comment_id ? String(dispatch.comment_id) : '';
+        if (!commentId) throw new Error('Missing comment_id');
+        graphResult = await postGraphForm(`${commentId}/private_replies`, { message: row.body, access_token: pageToken });
+        outId = graphResult?.id || graphResult?.message_id || null;
+      } else if (mode === 'dm') {
+        const userId = dispatch?.user_id ? String(dispatch.user_id) : '';
+        if (!userId) throw new Error('Missing user_id');
+        if (platform === 'instagram') {
+          const igId = dispatch?.ig_id ? String(dispatch.ig_id) : (igBusinessId ? String(igBusinessId) : '');
+          if (!igId) throw new Error('Missing ig_id');
+          graphResult = await postGraphJson(`${igId}/messages`, { recipient: { id: userId }, message: { text: row.body } }, pageToken);
+          outId = graphResult?.message_id || graphResult?.id || null;
+        } else {
+          graphResult = await postGraphJson(`me/messages`, { recipient: { id: userId }, message: { text: row.body } }, pageToken);
+          outId = graphResult?.message_id || graphResult?.id || null;
+        }
+      } else {
+        throw new Error('Invalid mode');
+      }
+    } catch (e) {
+      sendError = e;
+    }
+
+    if (sendError) {
+      const errMsg = String(sendError?.message || 'Send failed').slice(0, 800);
+      const attemptNow = Number(row.attempts || 0) + 1;
+
+      // Token/permission errors -> disconnect integration
+      try {
+        const lower = errMsg.toLowerCase();
+        if (lower.includes('code 190') || lower.includes('oauth') || lower.includes('access token')) {
+          await db.pool.query(
+            "UPDATE meta_pages SET status = 'disconnected', last_error = $1, last_checked_at = NOW(), updated_at = NOW() WHERE tenant_id = $2 AND page_id = $3",
+            [errMsg.slice(0, 240), tenantId, pageId]
+          );
+        }
+      } catch {
+        // ignore
+      }
+
+      if (attemptNow >= Math.max(1, META_OUTBOX_MAX_ATTEMPTS || 8)) {
+        await db.pool.query(
+          "UPDATE messages SET status = 'failed', attempts = $1, last_error = $2, next_attempt_at = NULL WHERE id = $3 AND tenant_id = $4",
+          [attemptNow, errMsg, row.id, tenantId]
+        ).catch(() => null);
+      } else {
+        const backoff = computeMetaOutboxBackoffSeconds(attemptNow, errMsg);
+        await db.pool.query(
+          "UPDATE messages SET status = 'pending', attempts = $1, last_error = $2, next_attempt_at = NOW() + ($3::int * INTERVAL '1 second') WHERE id = $4 AND tenant_id = $5",
+          [attemptNow, errMsg, backoff, row.id, tenantId]
+        ).catch(() => null);
+      }
+
+      await db.logAuditAction({
+        tenantId,
+        userId: row?.metadata?.operator_id || null,
+        action: 'SEND_META_FAILED',
+        entityType: 'lead',
+        entityId: leadId,
+        details: { mode, error: errMsg }
+      }).catch(() => null);
+
+      continue;
+    }
+
+    const finalKey = outId ? `metaout:${outId}` : String(row.whatsapp_id || '');
+    const nowIso = new Date().toISOString();
+
+    await db.pool.query(
+      "UPDATE messages SET status = 'sent', whatsapp_id = $1, metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb, next_attempt_at = NULL, last_error = NULL WHERE id = $3 AND tenant_id = $4",
+      [finalKey, { graph: graphResult || null, sent_at: nowIso }, row.id, tenantId]
+    ).catch(() => null);
+
+    await db.updateLeadMessage(row.phone, row.body, finalKey, null, tenantId, 'out').catch(() => null);
+
+    // Notify UI so chat can reload
+    try {
+      io.to(tenantId).emit('new_message', {
+        phone: row.phone,
+        name: null,
+        message: row.body,
+        whatsapp_id: finalKey,
+        fromMe: true,
+        timestamp: nowIso,
+        source: platform
+      });
+    } catch {
+      // ignore
+    }
+
+    await db.logAuditAction({
+      tenantId,
+      userId: row?.metadata?.operator_id || null,
+      action: 'SEND_META',
+      entityType: 'lead',
+      entityId: leadId,
+      details: { mode, id: outId || null, platform }
+    }).catch(() => null);
+  }
+}
+
+let metaQueueTimer = null;
+let metaOutboxTimer = null;
+async function pollMetaWebhookQueue() {
+  if (!META_EVENT_PROCESSOR_ENABLED) return;
+  if (!process.env.DATABASE_URL) return;
+  if (!db || typeof db.claimMetaWebhookEvents !== 'function') return;
+
+  const batchSize = Number.isFinite(META_EVENT_PROCESSOR_BATCH) ? META_EVENT_PROCESSOR_BATCH : 20;
+  const lockOwner = `api:${process.pid}`;
+
+  let rows = [];
+  try {
+    rows = await db.claimMetaWebhookEvents(batchSize, lockOwner);
+  } catch (e) {
+    metaWebhookStats.last_error = e?.message || 'queue_claim_failed';
+    return;
+  }
+
+  if (!rows || rows.length === 0) return;
+
+  for (const r of rows) {
+    try {
+      await processMetaWebhookPayload(r.payload);
+      if (typeof db.completeMetaWebhookEvent === 'function') {
+        await db.completeMetaWebhookEvent(r.id);
+      }
+      metaWebhookStats.processed_ok++;
+      metaWebhookStats.last_processed_at = new Date().toISOString();
+    } catch (e) {
+      metaWebhookStats.processed_failed++;
+      metaWebhookStats.last_error = e?.message || 'processing_error';
+      if (typeof db.failMetaWebhookEvent === 'function') {
+        await db.failMetaWebhookEvent(r.id, metaWebhookStats.last_error, computeMetaBackoffSeconds(r.attempts));
+      }
+    }
+  }
+}
+
+app.get('/api/webhooks/meta', handleMetaWebhookVerify);
+app.get('/webhooks/meta', handleMetaWebhookVerify);
+
+function handleMetaWebhookPost(req, res) {
   try {
     if (!META_APP_SECRET) {
       console.warn('⚠️ META_APP_SECRET missing; refusing to accept Meta webhooks.');
@@ -329,7 +786,7 @@ app.post('/api/webhooks/meta', (req, res) => {
       return res.sendStatus(401);
     }
 
-    // Respond fast; process async
+    // Respond fast; queue/process async
     res.status(200).send('EVENT_RECEIVED');
 
     metaWebhookStats.total++;
@@ -339,168 +796,28 @@ app.post('/api/webhooks/meta', (req, res) => {
 
     setImmediate(async () => {
       try {
-        const payload = json || {};
-        const objectType = String(payload.object || '').toLowerCase();
-        const entries = Array.isArray(payload.entry) ? payload.entry : [];
-        if (!objectType || entries.length === 0) {
-          metaDebugLog('Webhook payload missing object/entry');
+        if (process.env.DATABASE_URL && db && typeof db.insertMetaWebhookEvent === 'function') {
+          await db.insertMetaWebhookEvent({
+            objectType: String((json && json.object) || ''),
+            payload: json || {},
+            signature: String(headerSig || ''),
+            signatureOk: true
+          });
+          metaWebhookStats.queued++;
           return;
         }
-
-        for (const entry of entries) {
-          const entryId = entry && entry.id ? String(entry.id) : '';
-          if (!entryId) continue;
-
-          // Resolve tenant + token by page_id or ig_business_id
-          let integration = null;
-          try {
-            if (!process.env.DATABASE_URL || !db || !db.pool) continue;
-            if (objectType === 'page' && typeof db.getMetaPageByPageId === 'function') {
-              integration = await db.getMetaPageByPageId(entryId);
-            } else if (objectType === 'instagram' && typeof db.getMetaPageByIgBusinessId === 'function') {
-              integration = await db.getMetaPageByIgBusinessId(entryId);
-            }
-          } catch (e) {
-            console.warn('⚠️ Meta integration lookup failed:', e.message);
-          }
-          if (!integration || !integration.tenant_id || !integration.page_access_token) {
-            metaDebugLog('No integration match', { objectType, entryId });
-            continue;
-          }
-
-          const tenantId = integration.tenant_id;
-          const pageId = integration.page_id;
-          const pageToken = integration.page_access_token;
-          const igBusinessId = integration.ig_business_id || null;
-
-          const source = objectType === 'instagram' ? 'instagram' : 'facebook';
-          if (source === 'instagram' || source === 'facebook') {
-            metaWebhookStats.by_source[source] = (metaWebhookStats.by_source[source] || 0) + 1;
-          }
-          metaDebugLog('Webhook accepted', { objectType, entryId, tenantId, pageId, igBusinessId });
-
-          // Messaging (DM)
-          const messaging = Array.isArray(entry.messaging) ? entry.messaging : [];
-          for (const ev of messaging) {
-            const senderId = ev?.sender?.id ? String(ev.sender.id) : '';
-            const recipientId = ev?.recipient?.id ? String(ev.recipient.id) : '';
-            // Facebook: entry.id is Page ID. Instagram: entry.id is IG Business Account ID.
-            const threadOwnerId = source === 'instagram'
-              ? (igBusinessId ? String(igBusinessId) : entryId)
-              : String(pageId);
-            const isFromPage = senderId && threadOwnerId && senderId === String(threadOwnerId);
-
-            const contactId = isFromPage ? recipientId : senderId;
-            if (!contactId) continue;
-
-            const contactKey = (source === 'instagram' ? 'ig:' : 'fb:') + contactId;
-            const text = ev?.message?.text || '';
-            const mid = ev?.message?.mid ? String(ev.message.mid) : '';
-            const msgId = (source === 'instagram' ? 'igmid:' : 'fbmid:') + (mid || (String(ev?.timestamp || '') || String(Date.now())));
-            const createdAtIso = toIsoFromMetaTimestamp(ev?.timestamp || Date.now());
-            const direction = isFromPage ? 'out' : 'in';
-
-            await upsertMetaInbound({
-              tenantId,
-              source,
-              contactKey,
-              displayName: null,
-              text,
-              msgId,
-              direction,
-              createdAtIso,
-              meta: {
-                platform: source,
-                kind: 'dm',
-                page_id: pageId,
-                ig_business_id: igBusinessId,
-                sender_id: senderId || null,
-                recipient_id: recipientId || null
-              }
-            });
-
-            metaWebhookStats.by_kind.dm = (metaWebhookStats.by_kind.dm || 0) + 1;
-          }
-
-          // Comments / feed changes
-          const changes = Array.isArray(entry.changes) ? entry.changes : [];
-          for (const ch of changes) {
-            const value = ch && ch.value ? ch.value : {};
-            const verb = String(value.verb || '').toLowerCase();
-            if (verb && verb !== 'add') continue;
-
-            const commentId = value.comment_id || value.id || null;
-            const postId = value.post_id || value.post_id || value.post || null;
-            const messageText = value.message || value.text || '';
-
-            if (!commentId && !messageText) continue;
-
-            let fromId = value?.from?.id ? String(value.from.id) : null;
-            let fromName = value?.from?.name ? String(value.from.name) : null;
-            if (!fromName && value?.from?.username) fromName = String(value.from.username);
-
-            // Try to enrich comment via Graph API when possible
-            let finalText = String(messageText || '').trim();
-            let permalink = null;
-            if (!finalText && commentId) {
-              try {
-                const fields = source === 'instagram'
-                  ? 'text,username,timestamp,media{id,permalink}'
-                  : 'message,from,created_time,permalink_url';
-                const url = `https://graph.facebook.com/v19.0/${commentId}?fields=${encodeURIComponent(fields)}&access_token=${encodeURIComponent(pageToken)}`;
-                const data = await fetchJsonWithRetry(url, {}, { retries: 0, timeoutMs: 4000 }).catch(() => null);
-                if (data) {
-                  if (source === 'instagram') {
-                    finalText = String(data.text || '').trim();
-                    fromName = fromName || data.username || null;
-                    permalink = data?.media?.permalink || null;
-                  } else {
-                    finalText = String(data.message || '').trim();
-                    fromId = fromId || data?.from?.id || null;
-                    fromName = fromName || data?.from?.name || null;
-                    permalink = data?.permalink_url || null;
-                  }
-                }
-              } catch {
-                // ignore
-              }
-            }
-
-            if (!finalText) finalText = '[Comment]';
-            const contactKey = (source === 'instagram'
-              ? `ig:${fromId || fromName || (commentId ? String(commentId) : 'comment')}`
-              : `fb:${fromId || (commentId ? String(commentId) : 'comment')}`
-            );
-
-            const msgId = (source === 'instagram' ? 'igcmt:' : 'fbcmt:') + (commentId ? String(commentId) : String(Date.now()));
-            const createdAtIso = new Date().toISOString();
-
-            await upsertMetaInbound({
-              tenantId,
-              source,
-              contactKey,
-              displayName: fromName,
-              text: finalText,
-              msgId,
-              direction: 'in',
-              createdAtIso,
-              meta: {
-                platform: source,
-                kind: 'comment',
-                page_id: pageId,
-                ig_business_id: igBusinessId,
-                comment_id: commentId ? String(commentId) : null,
-                post_id: postId ? String(postId) : null,
-                permalink: permalink
-              }
-            });
-
-            metaWebhookStats.by_kind.comment = (metaWebhookStats.by_kind.comment || 0) + 1;
-          }
-        }
       } catch (err) {
+        metaDebugLog('Queue insert failed, falling back to inline processing:', err?.message);
+      }
+
+      // Fallback: process inline (dev/no-db)
+      try {
+        await processMetaWebhookPayload(json || {});
+        metaWebhookStats.processed_ok++;
+        metaWebhookStats.last_processed_at = new Date().toISOString();
+      } catch (err) {
+        metaWebhookStats.processed_failed++;
         metaWebhookStats.last_error = err?.message || 'processing_error';
-        metaDebugLog('Webhook processing error', metaWebhookStats.last_error);
       }
     });
   } catch (e) {
@@ -511,7 +828,10 @@ app.post('/api/webhooks/meta', (req, res) => {
     metaWebhookStats.last_error = e?.message || 'handler_error';
     return res.sendStatus(400);
   }
-});
+}
+
+app.post('/api/webhooks/meta', handleMetaWebhookPost);
+app.post('/webhooks/meta', handleMetaWebhookPost);
 
 db.initDb()
   .then(() => {
@@ -535,6 +855,45 @@ db.initDb()
       } catch (err) {
         console.error('Boot err', err);
       }
+
+      // Start Meta webhook queue processor (durable; survives restarts)
+      try {
+        if (META_EVENT_PROCESSOR_ENABLED && process.env.DATABASE_URL && db && typeof db.claimMetaWebhookEvents === 'function') {
+          if (!metaQueueTimer) {
+            metaQueueTimer = setInterval(() => {
+              pollMetaWebhookQueue().catch(() => { /* handled inside */ });
+            }, Math.max(500, META_EVENT_PROCESSOR_INTERVAL_MS || 1500));
+            // kick once
+            setTimeout(() => {
+              pollMetaWebhookQueue().catch(() => { /* ignore */ });
+            }, 800);
+            console.log('🤖 Meta webhook processor: enabled');
+          }
+        } else {
+          console.log('ℹ️ Meta webhook processor: disabled (no DB or META_EVENT_PROCESSOR_ENABLED=false)');
+        }
+      } catch (e) {
+        console.warn('⚠️ Failed to start Meta webhook processor:', e.message);
+      }
+
+      // Start Meta outbox sender (reliable outbound with retries)
+      try {
+        if (META_OUTBOX_ENABLED && process.env.DATABASE_URL && db && db.pool) {
+          if (!metaOutboxTimer) {
+            metaOutboxTimer = setInterval(() => {
+              pollMetaOutbox().catch(() => { /* handled inside */ });
+            }, Math.max(500, META_OUTBOX_INTERVAL_MS || 1200));
+            setTimeout(() => {
+              pollMetaOutbox().catch(() => { /* ignore */ });
+            }, 1000);
+            console.log('📤 Meta outbox: enabled');
+          }
+        } else {
+          console.log('ℹ️ Meta outbox: disabled (no DB or META_OUTBOX_ENABLED=false)');
+        }
+      } catch (e) {
+        console.warn('⚠️ Failed to start Meta outbox:', e.message);
+      }
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     });
   });
@@ -556,10 +915,28 @@ process.on('unhandledRejection', (reason, promise) => {
 async function gracefulShutdown(signal) {
   console.log(`\n🛑 Received ${signal}, starting graceful shutdown...`);
 
-  try {
-    server.close(() => {
-      console.log('✅ HTTP server closed');
-    });
+    try {
+      try {
+        if (metaQueueTimer) {
+          clearInterval(metaQueueTimer);
+          metaQueueTimer = null;
+        }
+      } catch {
+        // ignore
+      }
+
+      try {
+        if (metaOutboxTimer) {
+          clearInterval(metaOutboxTimer);
+          metaOutboxTimer = null;
+        }
+      } catch {
+        // ignore
+      }
+
+      server.close(() => {
+        console.log('✅ HTTP server closed');
+      });
 
     if (db.closePool) {
       await db.closePool();
@@ -1779,6 +2156,26 @@ app.post('/api/settings', requireTenantAuth, requireAdmin, asyncHandler(async (r
 // META (FACEBOOK/INSTAGRAM) CONNECTION API
 // ═══════════════════════════════════════════════════════════════
 
+async function exchangeForLongLivedUserToken(userAccessToken) {
+  const token = String(userAccessToken || '').trim();
+  if (!token) throw new Error('Token is required');
+  if (!META_APP_ID || !META_APP_SECRET) {
+    return { access_token: token, expires_in: null, exchanged: false };
+  }
+
+  // https://developers.facebook.com/docs/facebook-login/access-tokens/refreshing
+  const url = `https://graph.facebook.com/v19.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${encodeURIComponent(String(META_APP_ID))}&client_secret=${encodeURIComponent(String(META_APP_SECRET))}&fb_exchange_token=${encodeURIComponent(token)}`;
+  const data = await fetchJsonWithRetry(url, {}, { retries: 0, timeoutMs: 6000 }).catch((e) => {
+    throw new Error(e?.message || 'Token exchange failed');
+  });
+  const outToken = data?.access_token ? String(data.access_token) : '';
+  const expiresIn = data?.expires_in ? Number(data.expires_in) : null;
+  if (!outToken) {
+    return { access_token: token, expires_in: null, exchanged: false };
+  }
+  return { access_token: outToken, expires_in: Number.isFinite(expiresIn) ? expiresIn : null, exchanged: true };
+}
+
 async function fetchMetaPagesForToken(userAccessToken) {
   const token = String(userAccessToken || '').trim();
   if (!token) throw new Error('Token is required');
@@ -1850,8 +2247,9 @@ async function subscribeMetaWebhooks({ pageId, pageAccessToken, igBusinessId }) 
 app.post('/api/meta/discover', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
   const token = String(req.body?.token || '').trim();
   if (!token) return res.status(400).json({ error: 'token is required' });
-  const pages = await fetchMetaPagesForToken(token);
-  res.json({ pages });
+  const ex = await exchangeForLongLivedUserToken(token).catch(() => ({ access_token: token, expires_in: null, exchanged: false }));
+  const pages = await fetchMetaPagesForToken(ex.access_token);
+  res.json({ pages, exchanged: Boolean(ex.exchanged), expires_in: ex.expires_in });
 }));
 
 app.post('/api/meta/connect', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
@@ -1863,7 +2261,28 @@ app.post('/api/meta/connect', requireTenantAuth, requireAdmin, asyncHandler(asyn
   if (!token) return res.status(400).json({ error: 'token is required' });
   if (pageIds.length === 0) return res.status(400).json({ error: 'pageIds is required' });
 
-  const discovered = await fetchMetaPagesForToken(token);
+  const ex = await exchangeForLongLivedUserToken(token).catch((e) => ({ access_token: token, expires_in: null, exchanged: false, error: e?.message }));
+  const effectiveToken = ex && ex.access_token ? ex.access_token : token;
+
+  // Persist user token for this tenant (used for later re-connect/debug flows)
+  try {
+    if (typeof db.upsertMetaUserToken === 'function') {
+      const expiresAt = (ex && ex.expires_in && Number.isFinite(ex.expires_in))
+        ? new Date(Date.now() + (Number(ex.expires_in) * 1000))
+        : null;
+      await db.upsertMetaUserToken(req.tenantId, {
+        user_access_token: effectiveToken,
+        expires_at: expiresAt,
+        debug_info: { exchanged: Boolean(ex.exchanged), source: 'connect' },
+        status: 'active',
+        last_error: ex?.error || null
+      });
+    }
+  } catch {
+    // non-fatal
+  }
+
+  const discovered = await fetchMetaPagesForToken(effectiveToken);
   const byId = new Map(discovered.map((p) => [p.pageId, p]));
 
   const saved = [];
@@ -1888,7 +2307,7 @@ app.post('/api/meta/connect', requireTenantAuth, requireAdmin, asyncHandler(asyn
     subscribe.push({ pageId: p.pageId, igBusinessId: p.igBusinessId || null, result: sub });
   }
 
-  res.status(201).json({ success: true, savedCount: saved.length, pages: saved, subscribe });
+  res.status(201).json({ success: true, savedCount: saved.length, pages: saved, subscribe, exchanged: Boolean(ex.exchanged), expires_in: ex.expires_in || null });
 }));
 
 app.post('/api/meta/pages/:pageId/subscribe', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
@@ -1910,6 +2329,36 @@ app.post('/api/meta/pages/:pageId/subscribe', requireTenantAuth, requireAdmin, a
   res.json({ success: true, result });
 }));
 
+// Manual retry for failed Meta outbound messages
+app.post('/api/meta/messages/:id/retry', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  if (req.userPermissions && req.userPermissions.send_messages === false) {
+    return res.status(403).json({ error: 'Sizə mesaj göndərmək icazəsi verilməyib' });
+  }
+
+  const id = String(req.params.id || '').trim();
+  if (!id) return res.status(400).json({ error: 'id is required' });
+
+  const r = await db.pool.query(
+    "SELECT id, tenant_id, status, direction, metadata FROM messages WHERE id = $1 AND tenant_id = $2 LIMIT 1",
+    [id, req.tenantId]
+  );
+  if (r.rowCount === 0) return res.status(404).json({ error: 'Message not found' });
+
+  const msg = r.rows[0];
+  const platform = String(msg?.metadata?.platform || '').toLowerCase();
+  if (msg.direction !== 'out' || (platform !== 'facebook' && platform !== 'instagram')) {
+    return res.status(400).json({ error: 'Not a Meta outbound message' });
+  }
+
+  await db.pool.query(
+    "UPDATE messages SET status = 'pending', attempts = 0, last_error = NULL, next_attempt_at = NULL WHERE id = $1 AND tenant_id = $2",
+    [id, req.tenantId]
+  );
+
+  res.json({ success: true });
+}));
+
 app.get('/api/meta/pages', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   if (!db || typeof db.getMetaPages !== 'function') return res.status(501).json({ error: 'Meta integration is unavailable' });
@@ -1919,6 +2368,7 @@ app.get('/api/meta/pages', requireTenantAuth, requireAdmin, asyncHandler(async (
 
 app.get('/api/meta/config', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
   res.json({
+    hasAppId: Boolean(META_APP_ID),
     hasAppSecret: Boolean(META_APP_SECRET),
     hasVerifyToken: Boolean(META_VERIFY_TOKEN),
     dbEnabled: Boolean(process.env.DATABASE_URL),
@@ -1927,7 +2377,23 @@ app.get('/api/meta/config', requireTenantAuth, requireAdmin, asyncHandler(async 
 }));
 
 app.get('/api/meta/webhook/status', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
-  res.json({ stats: metaWebhookStats });
+  let backlog = null;
+  let outboxPending = null;
+  try {
+    if (process.env.DATABASE_URL && db && db.pool) {
+      const r = await db.pool.query('SELECT COUNT(*)::int AS n FROM meta_webhook_events WHERE processed_at IS NULL');
+      backlog = r.rows[0]?.n ?? null;
+
+      const o = await db.pool.query(
+        "SELECT COUNT(*)::int AS n FROM messages WHERE direction = 'out' AND status = 'pending' AND (metadata->>'platform') IN ('facebook','instagram')"
+      );
+      outboxPending = o.rows[0]?.n ?? null;
+    }
+  } catch {
+    backlog = null;
+    outboxPending = null;
+  }
+  res.json({ stats: { ...metaWebhookStats, backlog, outbox_pending: outboxPending } });
 }));
 
 async function postGraphForm(path, form, timeoutMs = 7000) {
@@ -1958,6 +2424,10 @@ app.post('/api/meta/leads/:id/reply', requireTenantAuth, asyncHandler(async (req
   const mode = String(req.body?.mode || '').trim(); // dm | comment | private
   if (!leadId) return res.status(400).json({ error: 'lead id is required' });
   if (!bodyText) return res.status(400).json({ error: 'body is required' });
+
+  if (req.userPermissions && req.userPermissions.send_messages === false) {
+    return res.status(403).json({ error: 'Sizə mesaj göndərmək icazəsi verilməyib' });
+  }
 
   const leadRes = await db.pool.query('SELECT id, phone, name, source FROM leads WHERE id = $1 AND tenant_id = $2', [leadId, req.tenantId]);
   if (leadRes.rowCount === 0) return res.status(404).json({ error: 'Lead not found' });
@@ -2001,82 +2471,70 @@ app.post('/api/meta/leads/:id/reply', requireTenantAuth, asyncHandler(async (req
   const igBusinessId = integration.ig_business_id || null;
   const pageId = integration.page_id;
 
-  let graphResult = null;
-  let outId = null;
+
+  const nowIso = new Date().toISOString();
+  let commentId = null;
+  let userId = null;
+  let igId = null;
 
   if (mode === 'comment') {
-    const commentId = commentMeta?.comment_id;
+    commentId = commentMeta?.comment_id ? String(commentMeta.comment_id) : '';
     if (!commentId) return res.status(400).json({ error: 'No comment_id found to reply' });
-
-    if (src === 'instagram') {
-      graphResult = await postGraphForm(`${commentId}/replies`, { message: bodyText, access_token: pageToken });
-      outId = graphResult?.id || null;
-    } else {
-      graphResult = await postGraphForm(`${commentId}/comments`, { message: bodyText, access_token: pageToken });
-      outId = graphResult?.id || null;
-    }
   } else if (mode === 'private') {
-    const commentId = commentMeta?.comment_id;
+    commentId = commentMeta?.comment_id ? String(commentMeta.comment_id) : '';
     if (!commentId) return res.status(400).json({ error: 'No comment_id found for private reply' });
-
-    // Private reply to a comment (DM) - availability depends on permissions/platform.
-    graphResult = await postGraphForm(`${commentId}/private_replies`, { message: bodyText, access_token: pageToken });
-    outId = graphResult?.id || graphResult?.message_id || null;
   } else if (mode === 'dm') {
     if (!dmMeta) return res.status(400).json({ error: 'No DM thread found for this lead yet' });
-
     const senderId = dmMeta?.sender_id ? String(dmMeta.sender_id) : '';
     const recipientId = dmMeta?.recipient_id ? String(dmMeta.recipient_id) : '';
-    const userId = (dmDirection === 'in') ? senderId : recipientId;
+    userId = (dmDirection === 'in') ? senderId : recipientId;
     if (!userId) return res.status(400).json({ error: 'No recipient id found for DM' });
-
     if (src === 'instagram') {
-      const igId = igBusinessId ? String(igBusinessId) : (igFromMeta ? String(igFromMeta) : '');
+      igId = igBusinessId ? String(igBusinessId) : (igFromMeta ? String(igFromMeta) : '');
       if (!igId) return res.status(400).json({ error: 'IG business id is missing for DM send' });
-      graphResult = await postGraphJson(`${igId}/messages`, { recipient: { id: userId }, message: { text: bodyText } }, pageToken);
-      outId = graphResult?.message_id || graphResult?.id || null;
-    } else {
-      // Messenger Send API uses Page access token
-      graphResult = await postGraphJson(`me/messages`, { recipient: { id: userId }, message: { text: bodyText } }, pageToken);
-      outId = graphResult?.message_id || graphResult?.id || null;
     }
   } else {
     return res.status(400).json({ error: "mode must be one of: 'dm', 'comment', 'private'" });
   }
 
-  // Persist outgoing message
-  const outKey = outId ? `metaout:${outId}` : `metaout:${Date.now()}`;
-  await db.appendMessage({
-    leadId: lead.id,
-    phone: lead.phone,
-    body: bodyText,
-    direction: 'out',
-    whatsappId: outKey,
-    metadata: {
-      platform: src,
-      kind: mode === 'comment' ? 'comment_reply' : mode === 'private' ? 'private_reply' : 'dm_out',
-      page_id: pageId,
-      ig_business_id: igBusinessId,
-      graph: graphResult || null,
-    },
-    createdAt: Math.floor(Date.now() / 1000),
-    tenantId: req.tenantId
-  });
+  const pendingKey = `metaout:pending:${crypto.randomUUID ? crypto.randomUUID() : (Date.now() + '-' + Math.random().toString(16).slice(2))}`;
 
-  await db.updateLeadMessage(lead.phone, bodyText, outKey, lead.name || null, req.tenantId, 'out').catch(() => null);
+  const baseMeta = {
+    platform: src,
+    kind: mode === 'comment' ? 'comment_reply' : mode === 'private' ? 'private_reply' : 'dm_out',
+    page_id: pageId,
+    ig_business_id: igBusinessId,
+    operator_id: req.userId || null,
+    dispatch: {
+      mode,
+      comment_id: commentId || null,
+      user_id: userId || null,
+      ig_id: igId || null
+    }
+  };
 
-  // Fast UI update
+  const insertRes = await db.pool.query(
+    `INSERT INTO messages (lead_id, phone, body, direction, whatsapp_id, metadata, status, created_at, tenant_id)
+     VALUES ($1, $2, $3, 'out', $4, $5::jsonb, 'pending', NOW(), $6)
+     RETURNING id, created_at`,
+    [lead.id, lead.phone, bodyText, pendingKey, baseMeta, req.tenantId]
+  );
+  const rowId = insertRes.rows[0]?.id;
+
+  // Instant UI feedback: show the outgoing message as "sending"
   io.to(req.tenantId).emit('new_message', {
     phone: lead.phone,
     name: lead.name,
     message: bodyText,
-    whatsapp_id: outKey,
+    whatsapp_id: pendingKey,
     fromMe: true,
     timestamp: new Date().toISOString(),
-    source: src
+    source: src,
+    is_fast_emit: true
   });
 
-  res.status(201).json({ success: true, id: outId || outKey, graph: graphResult });
+  // Queue-only: a background outbox worker will send to Graph API.
+  res.status(201).json({ success: true, queued: true, messageId: rowId, whatsapp_id: pendingKey });
 }));
 
 app.post('/api/meta/pages', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
