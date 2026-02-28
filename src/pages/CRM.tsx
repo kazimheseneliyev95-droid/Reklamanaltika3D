@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useAppStore } from '../context/Store';
 import { Lead, LeadStatus } from '../types/crm';
 import { Badge } from '../components/ui/Badge';
-import { Trash2, Calendar, Filter, RefreshCcw, Pencil, ShoppingBag, DollarSign, TrendingUp, Users, MessageSquare, UserPlus, CheckCircle, XCircle, Phone, Route } from 'lucide-react';
+import { Trash2, Calendar, Filter, RefreshCcw, Pencil, ShoppingBag, DollarSign, TrendingUp, Users, MessageSquare, UserPlus, CheckCircle, XCircle, Phone, Route, Bell } from 'lucide-react';
 import { cn, formatCurrency } from '../lib/utils';
 import { LeadDetailsPanel } from '../components/LeadDetailsPanel';
 import { loadCRMSettings, CustomField, LeadCardUISettings } from '../lib/crmSettings';
@@ -32,6 +32,7 @@ export default function CRMPage() {
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [filters, setFilters] = useState<CRMFilters>(() => makeDefaultCRMFilters(pipelineStages));
+  const [showNotif, setShowNotif] = useState(false);
 
   // When settings sync updates pipeline stages, keep mobile tab + stage filters valid
   useEffect(() => {
@@ -207,6 +208,36 @@ export default function CRMPage() {
 
   const kanbanMinWidth = Math.max(1000, columns.length * 290);
 
+  const unreadTotal = useMemo(() => {
+    return (leads || []).reduce((sum, l) => sum + (Number(l.unread_count || 0) > 0 ? Number(l.unread_count || 0) : 0), 0);
+  }, [leads]);
+
+  const topUnread = useMemo(() => {
+    const rows = (leads || []).filter(l => Number(l.unread_count || 0) > 0).slice();
+    rows.sort((a, b) => {
+      const au = Number(a.unread_count || 0);
+      const bu = Number(b.unread_count || 0);
+      if (bu !== au) return bu - au;
+      const at = new Date(a.last_inbound_at || a.updated_at || a.created_at).getTime();
+      const bt = new Date(b.last_inbound_at || b.updated_at || b.created_at).getTime();
+      return bt - at;
+    });
+    return rows.slice(0, 8);
+  }, [leads]);
+
+  useEffect(() => {
+    if (!showNotif) return;
+    const onDoc = (e: any) => {
+      const target = e?.target as HTMLElement;
+      if (!target) return;
+      const root = document.getElementById('crm-notif-root');
+      if (root && root.contains(target)) return;
+      setShowNotif(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [showNotif]);
+
   return (
     <div className="p-2 sm:p-6 max-w-[1600px] mx-auto h-full flex flex-col font-sans space-y-2 sm:space-y-6">
 
@@ -233,6 +264,86 @@ export default function CRMPage() {
           </div>
 
           <div className="flex flex-wrap items-center gap-1 sm:gap-2 justify-end">
+            <div id="crm-notif-root" className="relative">
+              <button
+                type="button"
+                onClick={() => setShowNotif(v => !v)}
+                className={cn(
+                  'relative inline-flex items-center gap-1.5 sm:gap-2 p-1.5 sm:px-3 sm:py-2 rounded-lg border text-xs sm:text-sm font-semibold transition-colors',
+                  unreadTotal > 0
+                    ? 'bg-amber-950/20 border-amber-900/40 text-amber-200 hover:bg-amber-950/30'
+                    : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700'
+                )}
+                title="Unread messages"
+              >
+                <Bell className={cn('w-3.5 h-3.5 sm:w-4 sm:h-4', unreadTotal > 0 ? 'text-amber-300' : 'text-slate-300')} />
+                <span className="hidden sm:inline">Unread</span>
+                <span className={cn(
+                  'inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-extrabold border',
+                  unreadTotal > 0
+                    ? 'bg-amber-500/20 text-amber-200 border-amber-500/20'
+                    : 'bg-slate-900/40 text-slate-300 border-slate-600/40'
+                )}>
+                  {unreadTotal}
+                </span>
+              </button>
+
+              {showNotif ? (
+                <div className="absolute right-0 mt-2 w-[320px] max-w-[92vw] rounded-xl border border-slate-800 bg-slate-950/95 shadow-2xl backdrop-blur p-2 z-50">
+                  <div className="px-2 py-1.5 flex items-center justify-between">
+                    <div className="text-[11px] uppercase font-bold text-slate-500">Unread messages</div>
+                    <button
+                      className="text-[10px] font-bold text-slate-400 hover:text-slate-200"
+                      onClick={() => setShowNotif(false)}
+                      type="button"
+                    >
+                      Close
+                    </button>
+                  </div>
+
+                  {topUnread.length === 0 ? (
+                    <div className="px-2 py-3 text-[12px] text-slate-500">No unread messages</div>
+                  ) : (
+                    <div className="max-h-[320px] overflow-auto pr-1 custom-scrollbar">
+                      {topUnread.map((l) => {
+                        const u = Number(l.unread_count || 0);
+                        const label = l.name || l.phone;
+                        const last = l.last_message || '';
+                        return (
+                          <button
+                            key={l.id}
+                            onClick={() => {
+                              setSelectedLead(l);
+                              setActiveMobileTab(l.status);
+                              setShowNotif(false);
+                            }}
+                            className="w-full text-left px-2 py-2 rounded-lg hover:bg-slate-900/50 border border-transparent hover:border-slate-800 transition-colors"
+                            type="button"
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0">
+                                <div className="text-[12px] font-semibold text-slate-200 truncate">{label}</div>
+                                <div className="text-[11px] text-slate-500 truncate">{last}</div>
+                              </div>
+                              <div className="shrink-0">
+                                <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-extrabold bg-amber-500/20 text-amber-200 border border-amber-500/20">
+                                  {u}
+                                </span>
+                              </div>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  <div className="mt-2 px-2 pb-1 text-[10px] text-slate-600">
+                    Lead açanda unread avtomatik 0 olur.
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
             <button
               onClick={syncLeadsFromWhatsApp}
               disabled={isLoading}

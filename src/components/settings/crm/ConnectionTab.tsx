@@ -116,7 +116,7 @@ export function ConnectionTab() {
   const webhookHelp = (err: any) => {
     const e = String(err || '').toLowerCase();
     if (!e) return '';
-    if (e.includes('meta_app_secret missing')) return 'Server env-də META_APP_SECRET yoxdur (Render -> Environment).';
+    if (e.includes('meta_app_secret missing')) return 'Server env-də META_APP_SECRET yoxdur (Render → Environment).';
     if (e.includes('signature_mismatch')) return 'META_APP_SECRET yanlışdır (Meta App Secret ilə eyni olmalıdır).';
     if (e.includes('handler_error')) return 'Server webhook payload-ı parse edə bilmədi (logs-a baxın).';
     return '';
@@ -442,7 +442,7 @@ export function ConnectionTab() {
             {webhookStats?.last_error ? (
               <div className="rounded-lg border border-slate-800 bg-slate-950/20 px-3 py-2 text-[11px] text-slate-400">
                 <span className="text-slate-200 font-semibold">Diaqnoz:</span>{' '}
-                {webhookHelp(webhookStats.last_error) || 'Meta Developer -> Webhooks -> Delivery log-a baxın (status code görsənəcək).'}
+                {webhookHelp(webhookStats.last_error) || 'Meta Developer → Webhooks → Delivery log-a baxın (status code görsənəcək).'}
               </div>
             ) : null}
 
@@ -455,10 +455,10 @@ export function ConnectionTab() {
             <div className="rounded-lg border border-slate-800 bg-slate-950/20 px-3 py-2 text-[11px] text-slate-400">
               <div className="text-slate-200 font-semibold">Sıfırdan quraşdırma (qısa)</div>
               <div className="mt-1">
-                1) Render -> Environment: <span className="text-slate-200 font-semibold">META_APP_SECRET</span>, <span className="text-slate-200 font-semibold">META_VERIFY_TOKEN</span>, (opsional) <span className="text-slate-200 font-semibold">META_APP_ID</span> əlavə et → deploy/restart.
+                1) Render → Environment: <span className="text-slate-200 font-semibold">META_APP_SECRET</span>, <span className="text-slate-200 font-semibold">META_VERIFY_TOKEN</span>, (opsional) <span className="text-slate-200 font-semibold">META_APP_ID</span> əlavə et → deploy/restart.
               </div>
               <div className="mt-1">
-                2) Meta Developers -> Webhooks: Callback URL = <span className="text-slate-200 font-semibold break-all">{callbackUrl}</span> → Verify Token = META_VERIFY_TOKEN → “Verify and Save”.
+                2) Meta Developers → Webhooks: Callback URL = <span className="text-slate-200 font-semibold break-all">{callbackUrl}</span> → Verify Token = META_VERIFY_TOKEN → “Verify and Save”.
               </div>
               <div className="mt-1">
                 3) Burada token yaz → “Səhifələri gətir” → seç → “Qoş” → “zil” (subscribe) bas.

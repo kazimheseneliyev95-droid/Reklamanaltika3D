@@ -38,6 +38,69 @@ const META_OUTBOX_BATCH = parseInt(process.env.META_OUTBOX_BATCH || '15', 10);
 const META_OUTBOX_INTERVAL_MS = parseInt(process.env.META_OUTBOX_INTERVAL_MS || '1200', 10);
 const META_OUTBOX_MAX_ATTEMPTS = parseInt(process.env.META_OUTBOX_MAX_ATTEMPTS || '8', 10);
 
+// Telegram notifications (optional)
+const TELEGRAM_NOTIFICATIONS_ENABLED = process.env.TELEGRAM_NOTIFICATIONS_ENABLED !== 'false';
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
+
+const telegramDedup = new Map();
+function shouldSendTelegramDedup(key, ttlMs = 60000) {
+  const now = Date.now();
+  const prev = telegramDedup.get(key);
+  if (prev && (now - prev) < ttlMs) return false;
+  telegramDedup.set(key, now);
+  // opportunistic cleanup
+  if (telegramDedup.size > 2000) {
+    for (const [k, t] of telegramDedup.entries()) {
+      if ((now - t) > ttlMs) telegramDedup.delete(k);
+    }
+  }
+  return true;
+}
+
+async function sendTelegramText(text) {
+  if (!TELEGRAM_NOTIFICATIONS_ENABLED) return { ok: false, skipped: 'disabled' };
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return { ok: false, skipped: 'missing_env' };
+  const url = `https://api.telegram.org/bot${encodeURIComponent(TELEGRAM_BOT_TOKEN)}/sendMessage`;
+  const payload = {
+    chat_id: TELEGRAM_CHAT_ID,
+    text: String(text || '').slice(0, 3500),
+    disable_web_page_preview: true
+  };
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) {
+    const raw = await res.text().catch(() => '');
+    throw new Error(`Telegram send failed (${res.status}): ${raw.slice(0, 200)}`);
+  }
+  return { ok: true };
+}
+
+async function notifyTelegramInbound({ tenantId, source, phone, name, message, externalId }) {
+  try {
+    if (!TELEGRAM_NOTIFICATIONS_ENABLED) return;
+    const t = String(tenantId || '').trim() || 'admin';
+    const src = String(source || '').trim() || 'unknown';
+    const p = String(phone || '').trim();
+    const m = String(message || '').trim();
+    if (!p || !m) return;
+
+    const dedupKey = `tg:${t}:${externalId || p}:${m.slice(0, 40)}`;
+    if (!shouldSendTelegramDedup(dedupKey, 60000)) return;
+
+    const header = `📩 New ${src} message [${t}]`;
+    const who = name ? `${name} (${p})` : p;
+    const body = m.length > 900 ? (m.slice(0, 900) + '…') : m;
+    await sendTelegramText(`${header}\nFrom: ${who}\n\n${body}`);
+  } catch (e) {
+    // never throw from alerts
+    try { console.warn('⚠️ Telegram notify failed:', e.message); } catch { }
+  }
+}
+
 if (!process.env.DATABASE_URL) {
   console.warn('⚠️ DATABASE_URL is missing. The app will run in file-based fallback mode.');
 }
@@ -295,6 +358,18 @@ async function upsertMetaInbound({ tenantId, source, contactKey, displayName, te
     createdAt: createdAtIso ? Math.floor(Date.parse(createdAtIso) / 1000) : null,
     tenantId
   });
+
+  // Optional: Telegram notifications for inbound only
+  if (dir === 'in') {
+    notifyTelegramInbound({
+      tenantId,
+      source,
+      phone: finalLead.phone,
+      name: finalLead.name || displayName || null,
+      message: safeText,
+      externalId: metaId
+    });
+  }
 
   // Apply routing rules for inbound only
   if (dir === 'in') {
@@ -1165,6 +1240,22 @@ app.post('/api/internal/webhook', async (req, res) => {
       }
     } catch (e) {
       console.warn('⚠️ Routing apply failed (internal webhook):', e.message);
+    }
+
+    // Telegram notifications for inbound WhatsApp messages
+    try {
+      if (payload && payload.fromMe === false) {
+        notifyTelegramInbound({
+          tenantId,
+          source: payload.source || 'whatsapp',
+          phone: payload.phone,
+          name: payload.name || null,
+          message: payload.message,
+          externalId: payload.whatsapp_id || null
+        });
+      }
+    } catch {
+      // ignore
     }
   }
 
