@@ -57,25 +57,32 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const leadsRef = useRef<Lead[]>([]);
   leadsRef.current = leads;
 
-  // Initialize Date Range to Current Month (Local Time - FIXED)
-  const [dateRange, setDateRange] = useState<DateRange>(() => {
-    const now = new Date();
-    const start = new Date(now.getFullYear(), now.getMonth(), 1);
-    const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  const DATE_RANGE_STORAGE_KEY = 'crm_date_range';
 
-    // 🆕 FIXED: Use local date methods instead of timezone offset
-    const toLocalISO = (date: Date) => {
-      const year = date.getFullYear();
-      const month = String(date.getMonth() + 1).padStart(2, '0');
-      const day = String(date.getDate()).padStart(2, '0');
-      return `${year}-${month}-${day}`;
-    };
+  const readStoredDateRange = (): DateRange => {
+    try {
+      const raw = localStorage.getItem(DATE_RANGE_STORAGE_KEY);
+      if (!raw) return { start: null, end: null };
+      const parsed = JSON.parse(raw);
+      const start = parsed?.start ? String(parsed.start) : null;
+      const end = parsed?.end ? String(parsed.end) : null;
+      const ok = (v: string | null) => !v || /^\d{4}-\d{2}-\d{2}$/.test(v);
+      return (ok(start) && ok(end)) ? { start, end } : { start: null, end: null };
+    } catch {
+      return { start: null, end: null };
+    }
+  };
 
-    return {
-      start: toLocalISO(start),
-      end: toLocalISO(end)
-    };
-  });
+  // Default: show ALL TIME (no date filter). Persist selection in localStorage.
+  const [dateRange, setDateRange] = useState<DateRange>(() => readStoredDateRange());
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(DATE_RANGE_STORAGE_KEY, JSON.stringify({ start: dateRange.start || null, end: dateRange.end || null }));
+    } catch {
+      // ignore
+    }
+  }, [dateRange.start, dateRange.end]);
 
   // 🆕 Initial Load & Auth Verify Effect
   useEffect(() => {

@@ -402,7 +402,9 @@ export default function CRMPage() {
           <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-900 p-2 rounded-lg border border-slate-800">
             <div className="flex items-center gap-2 text-[11px] text-slate-400">
               <Calendar className="w-4 h-4 text-slate-500" />
-              <span className="tabular-nums">{dateRange.start || '...'} - {dateRange.end || '...'}</span>
+              <span className="tabular-nums">
+                {(!dateRange.start && !dateRange.end) ? 'Tüm zamanlar' : `${dateRange.start || '...'} - ${dateRange.end || '...'}`}
+              </span>
             </div>
             <div className="flex items-center gap-2">
               {activeFilterCount > 0 && (
