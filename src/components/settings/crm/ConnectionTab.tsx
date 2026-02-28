@@ -113,6 +113,15 @@ export function ConnectionTab() {
     }
   };
 
+  const webhookHelp = (err: any) => {
+    const e = String(err || '').toLowerCase();
+    if (!e) return '';
+    if (e.includes('meta_app_secret missing')) return 'Server env-də META_APP_SECRET yoxdur (Render -> Environment).';
+    if (e.includes('signature_mismatch')) return 'META_APP_SECRET yanlışdır (Meta App Secret ilə eyni olmalıdır).';
+    if (e.includes('handler_error')) return 'Server webhook payload-ı parse edə bilmədi (logs-a baxın).';
+    return '';
+  };
+
   const discoverPages = async () => {
     setMetaBusy(true);
     setMetaError('');
@@ -270,6 +279,9 @@ export function ConnectionTab() {
   const waStatus = health?.whatsapp || (isWhatsAppConnected ? 'CONNECTED' : 'OFFLINE');
   const waOk = waStatus === 'CONNECTED';
 
+  const callbackPath = metaConfig?.callbackPath || '/api/webhooks/meta';
+  const callbackUrl = info?.serverUrl ? `${String(info.serverUrl).replace(/\/$/, '')}${callbackPath}` : callbackPath;
+
   return (
     <SettingsGrid>
       <SettingsMain>
@@ -401,6 +413,20 @@ export function ConnectionTab() {
                 <span className="text-slate-600"> · </span>
                 <span className="text-slate-200 font-semibold">{webhookStats?.rejected ?? 0}</span>
                 <span className="text-slate-600"> rej</span>
+                {typeof webhookStats?.backlog === 'number' ? (
+                  <>
+                    <span className="text-slate-600"> · </span>
+                    <span className="text-slate-200 font-semibold">{webhookStats.backlog}</span>
+                    <span className="text-slate-600"> queue</span>
+                  </>
+                ) : null}
+                {typeof webhookStats?.outbox_pending === 'number' ? (
+                  <>
+                    <span className="text-slate-600"> · </span>
+                    <span className="text-slate-200 font-semibold">{webhookStats.outbox_pending}</span>
+                    <span className="text-slate-600"> outbox</span>
+                  </>
+                ) : null}
                 {webhookStats?.last_at ? <span className="text-slate-600"> · last: {new Date(webhookStats.last_at).toLocaleString()}</span> : null}
                 {webhookStats?.last_error ? <span className="text-red-300"> · err: {String(webhookStats.last_error)}</span> : null}
               </div>
@@ -413,11 +439,34 @@ export function ConnectionTab() {
               </button>
             </div>
 
-            {metaConfig && (!metaConfig.hasAppSecret || !metaConfig.hasVerifyToken) ? (
-              <div className="rounded-lg border border-amber-900/40 bg-amber-950/10 px-3 py-2 text-[11px] text-amber-300">
-                Meta env eksik: {!metaConfig.hasAppSecret ? 'META_APP_SECRET ' : ''}{!metaConfig.hasVerifyToken ? 'META_VERIFY_TOKEN' : ''}
+            {webhookStats?.last_error ? (
+              <div className="rounded-lg border border-slate-800 bg-slate-950/20 px-3 py-2 text-[11px] text-slate-400">
+                <span className="text-slate-200 font-semibold">Diaqnoz:</span>{' '}
+                {webhookHelp(webhookStats.last_error) || 'Meta Developer -> Webhooks -> Delivery log-a baxın (status code görsənəcək).'}
               </div>
             ) : null}
+
+            {metaConfig && (!metaConfig.hasAppSecret || !metaConfig.hasVerifyToken || !metaConfig.hasAppId) ? (
+              <div className="rounded-lg border border-amber-900/40 bg-amber-950/10 px-3 py-2 text-[11px] text-amber-300">
+                Meta env eksik: {!metaConfig.hasAppSecret ? 'META_APP_SECRET ' : ''}{!metaConfig.hasVerifyToken ? 'META_VERIFY_TOKEN ' : ''}{!metaConfig.hasAppId ? 'META_APP_ID' : ''}
+              </div>
+            ) : null}
+
+            <div className="rounded-lg border border-slate-800 bg-slate-950/20 px-3 py-2 text-[11px] text-slate-400">
+              <div className="text-slate-200 font-semibold">Sıfırdan quraşdırma (qısa)</div>
+              <div className="mt-1">
+                1) Render -> Environment: <span className="text-slate-200 font-semibold">META_APP_SECRET</span>, <span className="text-slate-200 font-semibold">META_VERIFY_TOKEN</span>, (opsional) <span className="text-slate-200 font-semibold">META_APP_ID</span> əlavə et → deploy/restart.
+              </div>
+              <div className="mt-1">
+                2) Meta Developers -> Webhooks: Callback URL = <span className="text-slate-200 font-semibold break-all">{callbackUrl}</span> → Verify Token = META_VERIFY_TOKEN → “Verify and Save”.
+              </div>
+              <div className="mt-1">
+                3) Burada token yaz → “Səhifələri gətir” → seç → “Qoş” → “zil” (subscribe) bas.
+              </div>
+              <div className="mt-1 text-slate-500">
+                Qayda: Webhook <span className="text-slate-200 font-semibold">ok</span> artmadan trigger işləməyəcək.
+              </div>
+            </div>
 
             {metaPages.some(p => !p.ig_business_id) ? (
               <div className="rounded-lg border border-slate-800 bg-slate-950/20 px-3 py-2 text-[11px] text-slate-400">
