@@ -107,48 +107,85 @@ function valueLabel(value: number, total: number, mode: DisplayMode, isMoney: bo
   return `${v} · ${p}`;
 }
 
-function BreakdownTable({ rows, stageLegend }: { rows: BreakdownRow[]; stageLegend: { id: string; label: string; color: string }[] }) {
+function BreakdownTable({
+  rows,
+  stageLegend,
+  mode
+}: {
+  rows: BreakdownRow[];
+  stageLegend: { id: string; label: string; color: string }[];
+  mode: DisplayMode;
+}) {
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="text-[10px] uppercase tracking-wide font-bold text-slate-500 mr-1">Kanban</div>
         {stageLegend.map(s => (
-          <div key={s.id} className="flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full" style={{ background: s.color }} />
-            <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wide">{s.label}</span>
+          <div key={s.id} className="flex items-center gap-2 rounded-full border border-slate-800 bg-slate-950/30 px-2 py-1">
+            <span className="w-2 h-2 rounded-full" style={{ background: s.color }} />
+            <span className="text-[10px] text-slate-300 font-semibold whitespace-nowrap">{s.label}</span>
           </div>
         ))}
       </div>
 
       <div className="space-y-3">
         {rows.map((r) => (
-          <div key={r.label} className="rounded-xl border border-slate-800 bg-slate-950/25 px-3 py-2">
+          <div key={r.label} className="group rounded-2xl border border-slate-800 bg-slate-950/20 px-3 py-3 shadow-sm">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <div className="text-[12px] font-semibold text-slate-200 truncate" title={r.label}>{r.label}</div>
-                <div className="mt-0.5 text-[10px] text-slate-500">Toplam: <span className="text-slate-300 font-semibold tabular-nums">{formatNumber(r.total)}</span></div>
+                <div className="text-[12px] sm:text-[13px] font-bold text-slate-100 truncate" title={r.label}>{r.label}</div>
+                <div className="mt-0.5 text-[10px] text-slate-500">
+                  Toplam: <span className="text-slate-200 font-semibold tabular-nums">{formatNumber(r.total)}</span>
+                </div>
               </div>
             </div>
 
-            <div className="mt-2 h-3 rounded-full overflow-hidden border border-slate-800 bg-slate-900 flex">
-              {r.stages.filter(s => s.value > 0).map((s) => (
-                <div
-                  key={s.id}
-                  className="h-full"
-                  style={{ flex: `${s.value} ${s.value} 0%`, background: s.color, minWidth: 2 }}
-                  title={`${s.label}: ${formatNumber(s.value)} (${s.pct.toFixed(0)}%)`}
-                />
-              ))}
-              {r.total === 0 ? <div className="h-full w-full bg-slate-900" /> : null}
+            <div className="mt-2 rounded-full border border-slate-800 bg-slate-950/60 p-[2px]">
+              <div className="h-3.5 rounded-full overflow-hidden bg-slate-900 flex">
+                {r.stages.filter(s => s.value > 0).map((s) => (
+                  <div
+                    key={s.id}
+                    className="h-full"
+                    style={{ flex: `${s.value} ${s.value} 0%`, background: s.color, minWidth: 2, boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.25)' }}
+                    title={`${s.label}: ${formatNumber(s.value)} (${s.pct.toFixed(0)}%)`}
+                  />
+                ))}
+                {r.total === 0 ? <div className="h-full w-full bg-slate-900" /> : null}
+              </div>
             </div>
 
-            <div className="mt-2 text-[11px] text-slate-400 leading-relaxed">
-              {r.stages.filter(s => s.value > 0).map((s) => (
-                <span key={s.id} className="mr-3">
-                  <span className="font-semibold" style={{ color: s.color }}>{s.label}</span>{' '}
-                  <span className="tabular-nums text-slate-200">{formatNumber(s.value)}</span>{' '}
-                  <span className="tabular-nums text-slate-500">({s.pct.toFixed(0)}%)</span>
-                </span>
-              ))}
+            <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-1.5">
+              {r.stages.map((s) => {
+                const isZero = s.value === 0;
+                const label = mode === 'percent'
+                  ? `${s.pct.toFixed(0)}%`
+                  : mode === 'value'
+                    ? `${formatNumber(s.value)}`
+                    : `${formatNumber(s.value)} · ${s.pct.toFixed(0)}%`;
+
+                return (
+                  <div
+                    key={s.id}
+                    className={cn(
+                      'flex items-center justify-between gap-2 rounded-xl border px-2.5 py-1.5',
+                      isZero
+                        ? 'border-slate-800 bg-slate-950/10 text-slate-600'
+                        : 'border-slate-800 bg-slate-950/35 text-slate-200'
+                    )}
+                    title={`${s.label}: ${formatNumber(s.value)} (${s.pct.toFixed(0)}%)`}
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className={cn('w-2 h-2 rounded-full shrink-0', isZero && 'opacity-35')} style={{ background: s.color }} />
+                      <span className={cn('text-[10px] font-semibold truncate', isZero ? 'text-slate-500' : 'text-slate-300')}>
+                        {s.label}
+                      </span>
+                    </div>
+                    <span className={cn('text-[10px] tabular-nums font-semibold', isZero ? 'text-slate-600' : 'text-slate-100')}>
+                      {label}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           </div>
         ))}
@@ -701,7 +738,7 @@ export default function AnalyticsPage() {
                   (() => {
                     const b = getSelectPipelineBreakdown(w as any);
                     if (!b.rows || b.rows.length === 0) return <div className="text-xs text-slate-500">Data yoxdur.</div>;
-                    return <BreakdownTable rows={b.rows} stageLegend={b.legend} />;
+                    return <BreakdownTable rows={b.rows} stageLegend={b.legend} mode={w.display} />;
                   })()
                 ) : info.data.length === 0 ? (
                   <div className="text-xs text-slate-500">Data yoxdur.</div>
