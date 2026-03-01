@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useAppStore } from '../context/Store';
 import { Lead, LeadStatus } from '../types/crm';
 import { Badge } from '../components/ui/Badge';
-import { Trash2, Calendar, Filter, RefreshCcw, Pencil, ShoppingBag, DollarSign, TrendingUp, Users, MessageSquare, UserPlus, CheckCircle, XCircle, Phone, Route, Bell } from 'lucide-react';
+import { Trash2, Calendar, Filter, RefreshCcw, Pencil, ShoppingBag, DollarSign, TrendingUp, Users, MessageSquare, UserPlus, CheckCircle, XCircle, Phone, Route, Bell, GripVertical, ChevronRight } from 'lucide-react';
 import { cn, formatCurrency } from '../lib/utils';
 import { LeadDetailsPanel } from '../components/LeadDetailsPanel';
 import { loadCRMSettings, CustomField, LeadCardUISettings } from '../lib/crmSettings';
@@ -206,6 +206,8 @@ export default function CRMPage() {
     icon: getIconForColor(stage.color)
   }));
 
+  const canViewBudget = currentUser?.permissions?.view_budget !== false;
+
   const kanbanMinWidth = Math.max(1000, columns.length * 290);
 
   const unreadTotal = useMemo(() => {
@@ -386,7 +388,7 @@ export default function CRMPage() {
               </div>
             </div>
 
-            {currentUser?.permissions?.view_budget !== false && (
+            {canViewBudget && (
               <div className="bg-slate-900 border border-slate-800 rounded-lg p-2 sm:p-3 sm:px-5 flex items-center gap-2 sm:gap-4 flex-1 sm:flex-none sm:min-w-[180px]">
                 <div className="p-1.5 sm:p-2 bg-green-500/10 rounded-full shrink-0">
                   <TrendingUp className="w-3.5 h-3.5 sm:w-5 sm:h-5 text-green-400" />
@@ -483,6 +485,15 @@ export default function CRMPage() {
         {/* Desktop */}
         <div className="hidden sm:flex gap-4 lg:gap-6 h-full" style={{ minWidth: kanbanMinWidth }}>
           {columns.map((col) => (
+            (() => {
+              const leadsInCol = filteredLeads.filter(l => l.status === col.id);
+              const colCount = leadsInCol.length;
+              const colUnread = leadsInCol.reduce((s, l) => s + (Number((l as any).unread_count || 0) > 0 ? 1 : 0), 0);
+              const colValue = canViewBudget
+                ? leadsInCol.reduce((s, l) => s + (typeof (l as any).value === 'number' ? (l as any).value : (parseFloat(String((l as any).value ?? '0')) || 0)), 0)
+                : 0;
+
+              return (
             <div
               key={col.id}
               className="flex-1 min-w-[250px] flex flex-col bg-slate-900/50 rounded-xl border border-slate-800 h-full max-h-[calc(100vh-300px)]"
@@ -493,19 +504,38 @@ export default function CRMPage() {
                 if (leadId) updateLeadStatus(leadId, col.id);
               }}
             >
-              <div className={`p-2.5 border-b border-slate-800 flex items-center justify-between`}>
-                <div className="flex items-center gap-2 font-semibold text-slate-200 text-sm">
-                  <div className="p-1 rounded bg-slate-800">
-                    {col.icon}
+              <div className="p-2.5 border-b border-slate-800/70 bg-slate-950/30 rounded-t-xl">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="p-1.5 rounded-lg bg-slate-900/60 border border-slate-800 shrink-0">
+                      {col.icon}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <div className="text-[13px] font-extrabold text-slate-100 truncate">{col.title}</div>
+                        {colUnread > 0 ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-950/30 text-amber-200 border border-amber-900/40">
+                            <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                            {colUnread} unread
+                          </span>
+                        ) : null}
+                      </div>
+                      {canViewBudget ? (
+                        <div className="mt-0.5 text-[10px] text-slate-500 tabular-nums">Budce: <span className="text-slate-300 font-semibold">{formatCurrency(colValue, 'AZN')}</span></div>
+                      ) : (
+                        <div className="mt-0.5 text-[10px] text-slate-600">&nbsp;</div>
+                      )}
+                    </div>
                   </div>
-                  {col.title}
+
+                  <Badge variant="secondary" className="bg-slate-900/60 text-slate-200 border border-slate-800 font-extrabold tabular-nums">
+                    {colCount}
+                  </Badge>
                 </div>
-                <Badge variant="secondary" className="bg-slate-800 text-slate-300">
-                  {filteredLeads.filter(l => l.status === col.id).length}
-                </Badge>
               </div>
-              <div className="p-2.5 space-y-2 overflow-y-auto flex-1 custom-scrollbar">
-                {filteredLeads.filter(l => l.status === col.id).map((lead) => (
+
+              <div className="p-2.5 space-y-3 overflow-y-auto flex-1 custom-scrollbar">
+                {leadsInCol.map((lead) => (
                   <LeadCard
                     key={lead.id}
                     lead={lead}
@@ -519,13 +549,16 @@ export default function CRMPage() {
                     leadCardUi={leadCardUi}
                   />
                 ))}
-                {filteredLeads.filter(l => l.status === col.id).length === 0 && (
-                  <div className="text-center py-10 flex flex-col items-center gap-2 text-slate-600 text-xs border-2 border-dashed border-slate-800/50 rounded-lg">
+                {colCount === 0 && (
+                  <div className="text-center py-10 flex flex-col items-center gap-2 text-slate-600 text-xs border border-slate-800/70 bg-slate-950/10 rounded-xl">
+                    <div className="w-10 h-10 rounded-2xl border border-slate-800 bg-slate-950/40 flex items-center justify-center text-slate-500">0</div>
                     No leads
                   </div>
                 )}
               </div>
             </div>
+              );
+            })()
           ))}
         </div>
 
@@ -682,87 +715,140 @@ function LeadCard({
 
   const sourceLabel = lead.source === 'manual' ? 'Manual' : 'WhatsApp';
 
+  const stageMeta = (pipelineStages || []).find(s => s.id === lead.status) || null;
+  const stageColor = String(stageMeta?.color || 'slate');
+  const stageHex = (() => {
+    if (stageColor === 'blue') return '#3b82f6';
+    if (stageColor === 'purple') return '#a855f7';
+    if (stageColor === 'green') return '#22c55e';
+    if (stageColor === 'emerald') return '#10b981';
+    if (stageColor === 'teal') return '#14b8a6';
+    if (stageColor === 'red') return '#ef4444';
+    if (stageColor === 'orange') return '#f97316';
+    if (stageColor === 'amber') return '#f59e0b';
+    if (stageColor === 'yellow') return '#eab308';
+    return '#94a3b8';
+  })();
+
+  const primaryTitle = (cfg.showNameBadge !== false && lead.name && lead.name !== 'Unknown') ? String(lead.name) : String(lead.phone);
+  const secondary = (cfg.showNameBadge !== false && lead.name && lead.name !== 'Unknown') ? String(lead.phone) : '';
+  const hasValue = cfg.showValue !== false && Boolean(lead.value && lead.value > 0);
+
   return (
     <div
       draggable
       onDragStart={(e) => e.dataTransfer.setData('leadId', lead.id)}
       className={cn(
-        "bg-slate-950 border p-2.5 rounded-lg shadow-sm hover:shadow-md transition-all duration-200 group relative cursor-grab active:cursor-grabbing",
-        unread > 0 ? "border-rose-500/40 hover:border-rose-400/60" : "border-slate-800 hover:border-slate-600"
+        "group relative rounded-2xl border bg-slate-950/40 p-3 shadow-sm transition-all duration-200 cursor-grab active:cursor-grabbing",
+        unread > 0
+          ? "border-rose-500/35 hover:border-rose-400/60 shadow-rose-900/10"
+          : "border-slate-800/80 hover:border-slate-700"
       )}
+      style={{ boxShadow: unread > 0 ? '0 10px 24px rgba(244,63,94,0.05)' : undefined }}
     >
-      <div className="flex justify-between items-start mb-1.5">
-        <div className="flex flex-col">
-          <div className="flex items-center gap-1.5 text-[13px] font-bold text-slate-200">
-            <Phone className="w-3 h-3 text-green-500" />
-            {lead.phone}
-            {unread > 0 && (
-              <span className="ml-1 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 text-white text-[10px] font-extrabold">
-                {unread > 99 ? '99+' : unread}
-              </span>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-[9px] text-slate-500 flex items-center gap-1">
-              <Calendar className="w-2.5 h-2.5" /> {dateStr}
-            </span>
-            {cfg.showNameBadge !== false && lead.name && lead.name !== 'Unknown' && (
-              <span className="text-[9px] text-blue-400 bg-blue-950/30 px-1 rounded truncate max-w-[140px]">{lead.name}</span>
-            )}
+      {/* stage accent */}
+      <div className="absolute left-0 top-0 bottom-0 w-1.5 rounded-l-2xl" style={{ background: stageHex, opacity: unread > 0 ? 0.9 : 0.55 }} />
+
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="shrink-0 w-7 h-7 rounded-xl border border-slate-800 bg-slate-950/50 flex items-center justify-center">
+              <GripVertical className="w-4 h-4 text-slate-600" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="text-[13px] sm:text-[14px] font-extrabold text-slate-100 truncate" title={primaryTitle}>{primaryTitle}</div>
+                {unread > 0 ? (
+                  <span className="shrink-0 inline-flex items-center gap-1 rounded-full border border-rose-500/30 bg-rose-950/25 px-2 py-0.5 text-[10px] font-extrabold text-rose-200 tabular-nums">
+                    <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />
+                    {unread > 99 ? '99+' : unread}
+                  </span>
+                ) : null}
+              </div>
+              {secondary ? (
+                <div className="mt-0.5 text-[11px] text-slate-400 flex items-center gap-2 min-w-0">
+                  <span className="inline-flex items-center gap-1">
+                    <Phone className="w-3 h-3 text-green-500" />
+                    <span className="font-mono tabular-nums">{secondary}</span>
+                  </span>
+                </div>
+              ) : null}
+            </div>
           </div>
 
-          {(cfg.showAssignee !== false || cfg.showSource !== false) && (
-            <div className="mt-1 flex flex-wrap items-center gap-1">
-              {cfg.showAssignee !== false && (
-                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-semibold bg-slate-900/60 text-slate-300 border border-slate-800">
-                  <Users className="w-2.5 h-2.5" /> {assigneeLabel}
-                </span>
-              )}
-              {cfg.showSource !== false && (
-                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-semibold bg-slate-900/60 text-slate-300 border border-slate-800">
-                  <Route className="w-2.5 h-2.5" /> {sourceLabel}
-                </span>
-              )}
-            </div>
-          )}
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            {cfg.showAssignee !== false ? (
+              <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-bold bg-slate-950/50 text-slate-300 border border-slate-800">
+                <Users className="w-3 h-3 text-slate-500" />
+                <span className="truncate max-w-[180px]">{assigneeLabel}</span>
+              </span>
+            ) : null}
+            {cfg.showSource !== false ? (
+              <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-bold bg-slate-950/50 text-slate-300 border border-slate-800">
+                <Route className="w-3 h-3 text-slate-500" />
+                {sourceLabel}
+              </span>
+            ) : null}
+            <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-bold bg-slate-950/50 text-slate-300 border border-slate-800">
+              <Calendar className="w-3 h-3 text-slate-500" />
+              <span className="tabular-nums">{dateStr}</span>
+            </span>
+            {hasValue ? (
+              <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-extrabold bg-emerald-950/25 text-emerald-200 border border-emerald-900/30 tabular-nums">
+                <DollarSign className="w-3 h-3" />
+                {formatCurrency(Number(lead.value || 0), 'AZN')}
+              </span>
+            ) : null}
+          </div>
+
         </div>
 
-        <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-          <button onClick={() => onEdit(lead)} className="text-slate-500 hover:text-blue-400 p-1">
-            <Pencil className="w-3 h-3" />
+        <div className={cn(
+          'flex gap-1 transition-opacity',
+          'opacity-100 sm:opacity-0 sm:group-hover:opacity-100'
+        )}>
+          <button
+            type="button"
+            onClick={() => onEdit(lead)}
+            className="text-slate-500 hover:text-blue-300 p-1.5 rounded-lg hover:bg-slate-900/50 border border-transparent hover:border-slate-800"
+            title="Edit"
+          >
+            <Pencil className="w-3.5 h-3.5" />
           </button>
-          <button onClick={() => onRemove(lead.id)} className="text-slate-500 hover:text-red-400 p-1">
-            <Trash2 className="w-3 h-3" />
+          <button
+            type="button"
+            onClick={() => onRemove(lead.id)}
+            className="text-slate-500 hover:text-red-300 p-1.5 rounded-lg hover:bg-slate-900/50 border border-transparent hover:border-slate-800"
+            title="Delete"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
 
       {/* Product Name Badge */}
       {cfg.showProductBadge !== false && lead.product_name && (
-        <div className="mb-2">
-          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-800 text-slate-300 border border-slate-700">
-            <ShoppingBag className="w-2.5 h-2.5" /> {lead.product_name}
+        <div className="mt-3">
+          <span className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full text-[11px] font-bold bg-slate-950/40 text-slate-200 border border-slate-800">
+            <ShoppingBag className="w-3.5 h-3.5 text-slate-400" />
+            <span className="truncate max-w-[260px]" title={lead.product_name}>{lead.product_name}</span>
           </span>
         </div>
       )}
 
       {cfg.showCustomFieldBadges !== false && selectBadges.length > 0 && (
-        <div className="mb-2 flex flex-wrap gap-1">
+        <div className="mt-2 flex flex-wrap gap-1.5">
           {selectBadges.map(b => {
             const hue = hashHue(`${b.id}:${b.value}`);
-            const style: React.CSSProperties = {
-              backgroundColor: `hsla(${hue}, 70%, 22%, 0.45)`,
-              borderColor: `hsla(${hue}, 75%, 55%, 0.55)`,
-              color: `hsl(${hue}, 85%, 78%)`
-            };
+            const dot: React.CSSProperties = { backgroundColor: `hsl(${hue}, 85%, 70%)` };
             return (
               <span
                 key={`${b.id}:${b.value}`}
                 title={`${b.label}: ${b.value}`}
-                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold border max-w-full"
-                style={style}
+                className="inline-flex items-center gap-2 px-2 py-1 rounded-full text-[10px] font-bold border border-slate-800 bg-slate-950/35 text-slate-200 max-w-full"
               >
-                <span className="max-w-[180px] truncate">
+                <span className="w-2 h-2 rounded-full shrink-0" style={dot} />
+                <span className="max-w-[220px] truncate">
                   {(cfg.customFieldBadgeMode || 'value') === 'label_value' ? `${b.label}: ${b.value}` : b.value}
                 </span>
               </span>
@@ -772,61 +858,45 @@ function LeadCard({
       )}
 
       {cfg.showLastMessagePreview !== false && lead.last_message && (
-        <div className="bg-slate-900/50 p-2 rounded mb-1.5 border border-slate-800/50">
-          <p className="text-[11px] text-slate-300 line-clamp-2 italic leading-snug">
-            "{lead.last_message}"
+        <div className={cn(
+          'mt-3 rounded-xl border border-slate-800/80 bg-slate-950/35 px-3 py-2',
+          unread > 0 && 'border-rose-500/20'
+        )}>
+          <div className="text-[10px] uppercase tracking-wide font-bold text-slate-500">Son mesaj</div>
+          <p className="mt-1 text-[12px] text-slate-200 line-clamp-2 leading-snug">
+            {lead.last_message}
           </p>
         </div>
       )}
 
       {/* Button to open lead details explicitly */}
-      <button
-        onClick={onViewMessage}
-        className="w-full mb-1.5 py-1 text-[9px] font-bold tracking-widest uppercase bg-blue-950/30 hover:bg-blue-900/50 text-blue-400 rounded border border-blue-900/50 transition-colors"
-      >
-        ƏTRAFLI
-      </button>
 
-      {cfg.showValue !== false && lead.value && lead.value > 0 ? (
-        <div className="mb-2 text-xs font-mono text-green-400 flex items-center gap-1">
-          <DollarSign className="w-3 h-3" /> {lead.value} AZN
-        </div>
-      ) : null}
+      <div className="mt-3 flex items-center justify-between gap-2">
+        <button
+          type="button"
+          onClick={onViewMessage}
+          className="inline-flex items-center gap-2 text-[11px] font-extrabold text-blue-200 hover:text-blue-100 rounded-lg px-2 py-1 border border-blue-900/30 bg-blue-950/20 hover:bg-blue-950/35 transition-colors"
+        >
+          Ətraflı
+          <ChevronRight className="w-3.5 h-3.5" />
+        </button>
 
-      {/* Quick Actions (dynamic from Kanban stages) */}
-      {Array.isArray(pipelineStages) && pipelineStages.length > 0 && (
-        <div className="mt-1.5 opacity-80 hover:opacity-100 transition-opacity">
-          <div className="-mx-1 px-1 overflow-x-auto no-scrollbar">
-            <div className="flex gap-1 min-w-max">
-              {pipelineStages.filter(s => s.id !== lead.status).map(stage => {
-                const c = String(stage.color || 'slate');
-                const cls = c === 'green'
-                  ? 'bg-green-950/20 hover:bg-green-900/40 text-green-300 border-green-900/30'
-                  : c === 'blue'
-                    ? 'bg-blue-950/20 hover:bg-blue-900/40 text-blue-300 border-blue-900/30'
-                    : c === 'purple'
-                      ? 'bg-purple-950/20 hover:bg-purple-900/40 text-purple-300 border-purple-900/30'
-                      : c === 'red'
-                        ? 'bg-red-950/20 hover:bg-red-900/40 text-red-300 border-red-900/30'
-                        : c === 'orange' || c === 'amber' || c === 'yellow'
-                          ? 'bg-amber-950/20 hover:bg-amber-900/40 text-amber-200 border-amber-900/30'
-                          : 'bg-slate-900 hover:bg-slate-800 text-slate-400 border-slate-800';
-
-                return (
-                  <button
-                    key={stage.id}
-                    onClick={() => onUpdateStatus(lead.id, stage.id)}
-                    className={cn('px-2 py-1 text-[9px] font-semibold rounded border transition-colors whitespace-nowrap', cls)}
-                    title={stage.label}
-                  >
-                    {stage.label}
-                  </button>
-                );
-              })}
-            </div>
+        {Array.isArray(pipelineStages) && pipelineStages.length > 0 ? (
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] uppercase tracking-wide font-bold text-slate-500">Etap</span>
+            <select
+              value={lead.status}
+              onChange={(e) => onUpdateStatus(lead.id, e.target.value)}
+              className="h-8 rounded-lg bg-slate-950/60 border border-slate-800 text-slate-200 text-[11px] font-semibold px-2 focus:outline-none focus:ring-2 focus:ring-blue-600/40"
+              title="Etap deyis"
+            >
+              {pipelineStages.map((s) => (
+                <option key={s.id} value={s.id}>{s.label}</option>
+              ))}
+            </select>
           </div>
-        </div>
-      )}
+        ) : null}
+      </div>
     </div>
   );
 }
