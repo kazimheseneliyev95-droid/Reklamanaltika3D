@@ -2452,23 +2452,121 @@ app.post('/api/telegram/test', requireTenantAuth, requireAdmin, asyncHandler(asy
   }
 
   const row = await db.getTelegramIntegration(req.tenantId).catch(() => null);
-  const enabled = row ? (row.enabled !== false) : false;
-  const botToken = row?.bot_token ? String(row.bot_token) : '';
-  const chatId = row?.chat_id ? String(row.chat_id) : '';
+  const enabledStored = row ? (row.enabled !== false) : false;
+  const storedToken = row?.bot_token ? String(row.bot_token) : '';
+  const storedChat = row?.chat_id ? String(row.chat_id) : '';
 
-  if (!enabled) return res.status(400).json({ error: 'Telegram notifications are disabled for this tenant' });
+  const overrideToken = req.body?.bot_token ? normalizeTelegramBotToken(req.body.bot_token) : '';
+  const overrideChat = req.body?.chat_id ? normalizeTelegramChatId(req.body.chat_id) : '';
+  const overrideTextRaw = req.body?.text ? String(req.body.text) : '';
+
+  const allowOverride = Boolean(overrideToken || overrideChat || overrideTextRaw);
+  if (!allowOverride && !enabledStored) {
+    return res.status(400).json({ error: 'Telegram notifications are disabled for this tenant' });
+  }
+
+  const botToken = overrideToken || storedToken;
+  const chatId = overrideChat || storedChat;
   if (!botToken || !chatId) return res.status(400).json({ error: 'Telegram bot_token/chat_id is missing' });
 
-  const text = `✅ Telegram test ok\nTenant: ${String(req.tenantId)}\nTime: ${new Date().toISOString()}`;
+  const text = (overrideTextRaw || `✅ Telegram test ok\nTenant: ${String(req.tenantId)}\nTime: ${new Date().toISOString()}`).slice(0, 3500);
   try {
     await sendTelegramTextWithConfig({ botToken, chatId, text });
-    await db.setTelegramIntegrationStatus(req.tenantId, { last_error: null, last_test_at: new Date().toISOString() }).catch(() => null);
-    res.json({ ok: true });
+    if (row) {
+      await db.setTelegramIntegrationStatus(req.tenantId, { last_error: null, last_test_at: new Date().toISOString() }).catch(() => null);
+    }
+    res.json({ ok: true, used_override: { bot_token: Boolean(overrideToken), chat_id: Boolean(overrideChat), text: Boolean(overrideTextRaw) } });
   } catch (e) {
     const msg = String(e?.message || 'test_failed');
-    await db.setTelegramIntegrationStatus(req.tenantId, { last_error: msg, last_test_at: new Date().toISOString() }).catch(() => null);
+    if (row) {
+      await db.setTelegramIntegrationStatus(req.tenantId, { last_error: msg, last_test_at: new Date().toISOString() }).catch(() => null);
+    }
     res.status(400).json({ error: msg });
   }
+}));
+
+app.post('/api/telegram/diagnose', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  if (!db || typeof db.getTelegramIntegration !== 'function') return res.status(501).json({ error: 'Telegram integration not available' });
+
+  const row = await db.getTelegramIntegration(req.tenantId).catch(() => null);
+  const stored = {
+    enabled: row ? (row.enabled !== false) : false,
+    chat_id: row?.chat_id ? String(row.chat_id) : '',
+    has_bot_token: Boolean(row?.bot_token),
+    bot_token_masked: row?.bot_token ? maskTelegramToken(row.bot_token) : '',
+    last_error: row?.last_error ? String(row.last_error) : null,
+    last_sent_at: row?.last_sent_at ? new Date(row.last_sent_at).toISOString() : null,
+    last_test_at: row?.last_test_at ? new Date(row.last_test_at).toISOString() : null,
+  };
+
+  if (!TELEGRAM_NOTIFICATIONS_ENABLED) {
+    return res.json({ ok: false, enabled_global: false, stored, bot: null, chat_candidates: [] });
+  }
+
+  const botToken = row?.bot_token ? String(row.bot_token) : '';
+  if (!botToken) {
+    return res.json({ ok: false, enabled_global: true, stored, bot: null, chat_candidates: [] });
+  }
+
+  const base = `https://api.telegram.org/bot${encodeURIComponent(normalizeTelegramBotToken(botToken))}`;
+
+  let bot = null;
+  try {
+    const me = await fetchJsonWithRetry(`${base}/getMe`, {}, { retries: 0, timeoutMs: 6000 });
+    if (me && me.ok && me.result) {
+      bot = {
+        id: me.result.id,
+        username: me.result.username || null,
+        first_name: me.result.first_name || null,
+        can_join_groups: Boolean(me.result.can_join_groups),
+        can_read_all_group_messages: Boolean(me.result.can_read_all_group_messages),
+        supports_inline_queries: Boolean(me.result.supports_inline_queries)
+      };
+    }
+  } catch (e) {
+    return res.json({ ok: false, enabled_global: true, stored, bot: null, chat_candidates: [], error: String(e?.message || 'getMe failed') });
+  }
+
+  const chat_candidates = [];
+  try {
+    const updates = await fetchJsonWithRetry(`${base}/getUpdates?limit=25`, {}, { retries: 0, timeoutMs: 6000 });
+    const items = updates && updates.ok && Array.isArray(updates.result) ? updates.result : [];
+
+    const seen = new Map();
+    for (const u of items) {
+      const msg = u?.message || u?.channel_post || null;
+      const chat = msg?.chat || null;
+      if (!chat || chat.id === undefined || chat.id === null) continue;
+      const id = String(chat.id);
+      const prev = seen.get(id);
+      const date = msg?.date ? Number(msg.date) : null;
+      if (prev && prev.last_date && date && date <= prev.last_date) continue;
+      seen.set(id, {
+        chat_id: id,
+        type: chat.type ? String(chat.type) : null,
+        title: chat.title ? String(chat.title) : null,
+        username: chat.username ? String(chat.username) : null,
+        last_date: date || null
+      });
+    }
+
+    const rows = Array.from(seen.values());
+    rows.sort((a, b) => (b.last_date || 0) - (a.last_date || 0));
+    for (const r of rows.slice(0, 8)) {
+      chat_candidates.push({
+        chat_id: r.chat_id,
+        type: r.type,
+        title: r.title,
+        username: r.username,
+        last_at: r.last_date ? new Date(r.last_date * 1000).toISOString() : null
+      });
+    }
+  } catch {
+    // ignore updates failures
+  }
+
+  res.json({ ok: true, enabled_global: true, stored, bot, chat_candidates });
 }));
 
 // ═══════════════════════════════════════════════════════════════

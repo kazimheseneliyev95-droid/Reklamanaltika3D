@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import QRCode from 'react-qr-code';
-import { RefreshCcw, Smartphone, Wifi, WifiOff, Link2, CheckSquare, Square, Trash2, BellRing, Send } from 'lucide-react';
+import { RefreshCcw, Smartphone, Wifi, WifiOff, Link2, CheckSquare, Square, Trash2, BellRing, Send, Bot, ShieldCheck, ScanSearch, AlertCircle, Info, ClipboardCopy, CheckCircle2 } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import { useAppStore } from '../../../context/Store';
 import { CrmService } from '../../../services/CrmService';
@@ -39,6 +39,10 @@ export function ConnectionTab() {
   const [tgBusy, setTgBusy] = useState(false);
   const [tgError, setTgError] = useState('');
   const [tgSavedOk, setTgSavedOk] = useState(false);
+
+  const [tgDiag, setTgDiag] = useState<any | null>(null);
+  const [tgDiagBusy, setTgDiagBusy] = useState(false);
+  const [tgDiagError, setTgDiagError] = useState('');
 
   const [metaPages, setMetaPages] = useState<MetaPage[]>([]);
   const [metaBusy, setMetaBusy] = useState(false);
@@ -105,6 +109,50 @@ export function ConnectionTab() {
     }
   };
 
+  const diagnoseTelegram = async (): Promise<any | null> => {
+    setTgDiagBusy(true);
+    setTgDiagError('');
+    try {
+      const url = CrmService.getServerUrl();
+      const token = localStorage.getItem('crm_auth_token');
+      if (!url || !token) return null;
+      const res = await fetch(`${url}/api/telegram/diagnose`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Telegram diaqnoz alinmadi');
+      setTgDiag(data || null);
+      return data || null;
+    } catch (e: any) {
+      setTgDiagError(e?.message || 'Telegram diaqnoz alinmadi');
+      setTgDiag(null);
+      return null;
+    } finally {
+      setTgDiagBusy(false);
+    }
+  };
+
+  const detectChatId = async () => {
+    const data = await diagnoseTelegram();
+    const first = Array.isArray(data?.chat_candidates) ? data.chat_candidates[0] : null;
+    if (first && first.chat_id) {
+      setTgChatId(String(first.chat_id));
+      return;
+    }
+    setTgDiagError('Chat id tapilmadi. Bot-a 1 mesaj gonderin (məs: /start), sonra tekrar yoxlayin.');
+  };
+
+  const copyText = async (text: string) => {
+    const t = String(text || '');
+    if (!t) return;
+    try {
+      await navigator.clipboard.writeText(t);
+    } catch {
+      // ignore
+    }
+  };
+
   const saveTelegram = async () => {
     setTgBusy(true);
     setTgError('');
@@ -150,9 +198,20 @@ export function ConnectionTab() {
       const url = CrmService.getServerUrl();
       const token = localStorage.getItem('crm_auth_token');
       if (!url || !token) return;
+
+      const payload: any = {
+        chat_id: String(tgChatId || '').trim(),
+      };
+      if (String(tgBotToken || '').trim()) payload.bot_token = String(tgBotToken || '').trim();
+      payload.text = `Telegram test ok\nTenant: ${localStorage.getItem('crm_tenant_id') || ''}\nTime: ${new Date().toISOString()}`;
+
       const res = await fetch(`${url}/api/telegram/test`, {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}` }
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || 'Telegram test failed');
@@ -374,6 +433,16 @@ export function ConnectionTab() {
   const callbackPath = metaConfig?.callbackPath || '/api/webhooks/meta';
   const callbackUrl = info?.serverUrl ? `${String(info.serverUrl).replace(/\/$/, '')}${callbackPath}` : callbackPath;
 
+  const tgServerEnabled = tgConfig ? (tgConfig.enabled !== false) : false;
+  const tgServerChat = String(tgConfig?.chat_id || '').trim();
+  const tgServerHasToken = Boolean(tgConfig?.has_bot_token);
+  const tgGlobalEnabled = tgConfig?.enabled_global !== false;
+  const tgDirty = Boolean(tgConfig)
+    ? (tgEnabled !== tgServerEnabled || String(tgChatId || '').trim() !== tgServerChat || tgClearToken || String(tgBotToken || '').trim() !== '')
+    : (Boolean(String(tgChatId || '').trim()) || Boolean(String(tgBotToken || '').trim()));
+  const tgReady = tgGlobalEnabled && tgServerEnabled && tgServerHasToken && Boolean(tgServerChat);
+  const tgDraftReady = tgGlobalEnabled && Boolean(tgEnabled) && Boolean(String(tgChatId || '').trim()) && (tgServerHasToken || Boolean(String(tgBotToken || '').trim()));
+
   return (
     <SettingsGrid>
       <SettingsMain>
@@ -474,17 +543,156 @@ export function ConnectionTab() {
               </div>
             ) : null}
 
-            <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/20 px-3 py-2">
+            <div className="rounded-xl border border-slate-800 bg-slate-950/25 px-3 py-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <div className={cn(
+                      'w-9 h-9 rounded-xl border flex items-center justify-center',
+                      tgReady ? 'border-emerald-900/40 bg-emerald-950/15' : 'border-slate-800 bg-slate-950/30'
+                    )}>
+                      {tgReady ? <CheckCircle2 className="w-5 h-5 text-emerald-300" /> : <AlertCircle className="w-5 h-5 text-slate-400" />}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-[12px] font-extrabold text-slate-100">
+                        {tgReady ? 'Hazirdir (server config)' : 'Setup lazimdir'}
+                      </div>
+                      <div className="mt-0.5 text-[10px] text-slate-500">
+                        Bildirimler server-de saxlanan config ile gonderilir. Formdakı deyisiklikler <span className="text-slate-300 font-semibold">Yadda Saxla</span> edenden sonra aktiv olur.
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <span className={cn('inline-flex items-center gap-2 rounded-full border px-2 py-1 text-[10px] font-extrabold', tgGlobalEnabled ? 'border-slate-800 bg-slate-950/40 text-slate-300' : 'border-amber-900/40 bg-amber-950/10 text-amber-300')}>
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                      Global: {tgGlobalEnabled ? 'ON' : 'OFF'}
+                    </span>
+                    <span className={cn('inline-flex items-center gap-2 rounded-full border px-2 py-1 text-[10px] font-extrabold', tgServerEnabled ? 'border-emerald-900/30 bg-emerald-950/10 text-emerald-200' : 'border-slate-800 bg-slate-950/40 text-slate-500')}>
+                      Tenant: {tgServerEnabled ? 'ENABLED' : 'DISABLED'}
+                    </span>
+                    <span className={cn('inline-flex items-center gap-2 rounded-full border px-2 py-1 text-[10px] font-extrabold', tgServerHasToken ? 'border-slate-800 bg-slate-950/40 text-slate-300' : 'border-slate-800 bg-slate-950/40 text-slate-500')}>
+                      <Bot className="w-3.5 h-3.5" /> Token: {tgServerHasToken ? 'ok' : 'yox'}
+                    </span>
+                    <span className={cn('inline-flex items-center gap-2 rounded-full border px-2 py-1 text-[10px] font-extrabold', tgServerChat ? 'border-slate-800 bg-slate-950/40 text-slate-300' : 'border-slate-800 bg-slate-950/40 text-slate-500')}>
+                      Chat: {tgServerChat ? 'set' : 'yox'}
+                    </span>
+                    {tgDirty ? (
+                      <span className="inline-flex items-center gap-2 rounded-full border border-blue-900/30 bg-blue-950/15 text-blue-200 px-2 py-1 text-[10px] font-extrabold">
+                        Draft: {tgDraftReady ? 'ready' : 'incomplete'}
+                      </span>
+                    ) : null}
+                  </div>
+
+                  {tgConfig?.last_error ? (
+                    <div className="mt-3 rounded-lg border border-red-900/40 bg-red-950/15 px-3 py-2 text-[11px] text-red-300">
+                      Son xeta: {String(tgConfig.last_error)}
+                    </div>
+                  ) : null}
+
+                  <div className="mt-2 text-[10px] text-slate-600">
+                    {tgConfig?.last_sent_at ? <span>Son gonderis: {new Date(tgConfig.last_sent_at).toLocaleString()} </span> : <span>Son gonderis: - </span>}
+                    <span className="text-slate-700">·</span>
+                    {tgConfig?.last_test_at ? <span> Test: {new Date(tgConfig.last_test_at).toLocaleString()}</span> : <span> Test: -</span>}
+                    {tgConfig?.updated_at ? <span className="text-slate-700"> ·</span> : null}
+                    {tgConfig?.updated_at ? <span> Yenilendi: {new Date(tgConfig.updated_at).toLocaleString()}</span> : null}
+                  </div>
+                </div>
+
+                <div className="shrink-0 flex items-center gap-2">
+                  <button
+                    onClick={diagnoseTelegram}
+                    disabled={tgDiagBusy || tgBusy}
+                    className="px-2 py-1.5 rounded-lg text-[10px] font-extrabold border border-slate-800 text-slate-300 hover:bg-slate-900 disabled:opacity-50 inline-flex items-center gap-2"
+                    title="Bot token yoxla + chat id tap"
+                  >
+                    <ScanSearch className={cn('w-3.5 h-3.5', tgDiagBusy && 'animate-spin')} />
+                    Diaqnoz
+                  </button>
+                </div>
+              </div>
+
+              {tgDiagError ? (
+                <div className="mt-3 rounded-lg border border-red-900/40 bg-red-950/15 px-3 py-2 text-[11px] text-red-300">
+                  {tgDiagError}
+                </div>
+              ) : null}
+
+              {tgDiag?.bot ? (
+                <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/25 px-3 py-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-[11px] text-slate-300 font-semibold flex items-center gap-2">
+                      <Bot className="w-4 h-4 text-slate-400" />
+                      Bot: <span className="text-slate-100">{tgDiag.bot.username ? `@${tgDiag.bot.username}` : (tgDiag.bot.first_name || 'Telegram Bot')}</span>
+                    </div>
+                    {tgDiag?.stored?.bot_token_masked ? (
+                      <div className="text-[10px] text-slate-500">token: {String(tgDiag.stored.bot_token_masked)}</div>
+                    ) : null}
+                  </div>
+
+                  {Array.isArray(tgDiag?.chat_candidates) && tgDiag.chat_candidates.length > 0 ? (
+                    <div className="mt-2">
+                      <div className="text-[10px] uppercase font-extrabold text-slate-500">Chat id namizedleri (getUpdates)</div>
+                      <div className="mt-2 grid grid-cols-1 gap-2">
+                        {tgDiag.chat_candidates.map((c: any) => {
+                          const label = c?.title || (c?.username ? `@${c.username}` : c?.chat_id);
+                          const meta = [c?.type ? String(c.type) : null, c?.last_at ? new Date(c.last_at).toLocaleString() : null].filter(Boolean).join(' · ');
+                          return (
+                            <div key={String(c.chat_id)} className="flex items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-950/30 px-3 py-2">
+                              <div className="min-w-0">
+                                <div className="text-[11px] font-semibold text-slate-200 truncate" title={String(label)}>{String(label)}</div>
+                                <div className="text-[10px] text-slate-600">{meta}</div>
+                              </div>
+                              <div className="shrink-0 flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => { setTgChatId(String(c.chat_id || '')); }}
+                                  className="px-2 py-1 rounded-lg text-[10px] font-extrabold border border-blue-900/30 bg-blue-950/20 text-blue-200 hover:bg-blue-950/35"
+                                >
+                                  Istifade et
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => copyText(String(c.chat_id || ''))}
+                                  className="p-1.5 rounded-lg border border-slate-800 bg-slate-950/40 text-slate-300 hover:bg-slate-900"
+                                  title="Copy chat id"
+                                >
+                                  <ClipboardCopy className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <div className="mt-2 text-[10px] text-slate-600 flex items-start gap-2">
+                        <Info className="w-3.5 h-3.5 mt-0.5 text-slate-500" />
+                        Chat id namizedleri gorunmesi ucun bot-a 1 mesaj gonderin (məs: /start), sonra tekrar Diaqnoz edin.
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mt-2 text-[10px] text-slate-600 flex items-start gap-2">
+                      <Info className="w-3.5 h-3.5 mt-0.5 text-slate-500" />
+                      Chat id tapilmadi. Bot-a 1 mesaj gonderin (məs: /start), sonra tekrar Diaqnoz edin.
+                    </div>
+                  )}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950/20 px-3 py-2">
               <div className="text-[11px] text-slate-400">
-                Status: <span className={cn('font-semibold', tgEnabled ? 'text-emerald-300' : 'text-slate-500')}>{tgEnabled ? 'ENABLED' : 'DISABLED'}</span>
-                {tgConfig?.has_bot_token ? <span className="text-slate-600"> · token: ok</span> : <span className="text-slate-600"> · token: yok</span>}
-                {tgConfig?.last_error ? <span className="text-red-300"> · err: {String(tgConfig.last_error)}</span> : null}
+                Tenant bildirimleri:{' '}
+                <span className={cn('font-extrabold', tgEnabled ? 'text-emerald-300' : 'text-slate-500')}>
+                  {tgEnabled ? 'ENABLED' : 'DISABLED'}
+                </span>
+                {tgDirty ? <span className="text-blue-300"> · (draft)</span> : <span className="text-slate-600"> · (saved)</span>}
               </div>
               <button
+                type="button"
                 onClick={() => setTgEnabled(v => !v)}
                 disabled={tgBusy}
                 className={cn(
-                  'px-3 py-1.5 rounded-lg text-[10px] font-bold border transition-colors disabled:opacity-50',
+                  'px-3 py-1.5 rounded-lg text-[10px] font-extrabold border transition-colors disabled:opacity-50',
                   tgEnabled
                     ? 'border-emerald-900/40 bg-emerald-950/15 text-emerald-300 hover:bg-emerald-950/25'
                     : 'border-slate-800 bg-slate-950/20 text-slate-300 hover:bg-slate-900'
@@ -528,6 +736,28 @@ export function ConnectionTab() {
               />
               <div className="mt-1 text-[10px] text-slate-600">
                 Chat ID ucun: bot-a 1 mesaj yazin, sonra chat id-ni alin (mes: @userinfobot).
+              </div>
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={detectChatId}
+                  disabled={tgBusy || tgDiagBusy}
+                  className="px-2.5 py-1.5 rounded-lg text-[10px] font-extrabold border border-slate-800 text-slate-300 hover:bg-slate-900 disabled:opacity-50 inline-flex items-center gap-2"
+                  title="Bot token ile chat id tap"
+                >
+                  <ScanSearch className={cn('w-3.5 h-3.5', tgDiagBusy && 'animate-spin')} />
+                  Chat ID tap
+                </button>
+                {tgChatId ? (
+                  <button
+                    type="button"
+                    onClick={() => copyText(String(tgChatId))}
+                    className="p-1.5 rounded-lg border border-slate-800 bg-slate-950/40 text-slate-300 hover:bg-slate-900"
+                    title="Copy"
+                  >
+                    <ClipboardCopy className="w-3.5 h-3.5" />
+                  </button>
+                ) : null}
               </div>
             </div>
 
