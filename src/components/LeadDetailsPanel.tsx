@@ -59,6 +59,26 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
 
     const canSend = lead.source === 'whatsapp' || isMeta;
 
+    const buildMediaSrc = useCallback((rawUrl: string) => {
+        const u = String(rawUrl || '').trim();
+        if (!u) return '';
+        const base = serverUrl ? String(serverUrl).replace(/\/$/, '') : '';
+        const full = u.startsWith('http://') || u.startsWith('https://')
+            ? u
+            : `${base}${u.startsWith('/') ? '' : '/'}${u}`;
+
+        const tokenNow = localStorage.getItem('crm_auth_token') || '';
+        if (!tokenNow) return full;
+        const sep = full.includes('?') ? '&' : '?';
+        return `${full}${sep}token=${encodeURIComponent(tokenNow)}`;
+    }, [serverUrl]);
+
+    const isWorkerPlaceholder = useCallback((text: string) => {
+        const t = String(text || '').trim();
+        if (!t) return true;
+        return /^\[(?:Image|Video|Document|Audio|Sticker|Location|Contact|Reaction|Button|List|Template|Unsupported message)\]$/i.test(t);
+    }, []);
+
     const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
         const el = listRef.current;
         if (!el) return;
@@ -218,6 +238,12 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                         const qAd = msg?.metadata?.quotedAd;
                         const ctwa = msg?.metadata?.ctwa;
                         const adUrl = ad?.sourceUrl || ad?.wtwaWebsiteUrl || ad?.adPreviewUrl || ad?.mediaUrl;
+
+                        const media = msg?.metadata?.media;
+                        const mediaKind = String(media?.kind || '').toLowerCase();
+                        const mediaSrc = media?.url ? buildMediaSrc(String(media.url)) : '';
+                        const hideBody = Boolean(mediaSrc) && isWorkerPlaceholder(msg.body);
+
                         return (
                             <div key={msg.id} className={cn('flex', isOut ? 'justify-end' : 'justify-start')}>
                                 <div className={cn(
@@ -270,7 +296,60 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                                             )}
                                         </div>
                                     )}
-                                    <p className="whitespace-pre-wrap break-words">{msg.body}</p>
+
+                                    {media && media.tooLarge ? (
+                                        <div className={cn(
+                                            'mb-2 rounded-xl border px-3 py-2 text-xs',
+                                            isOut ? 'border-blue-300/30 bg-blue-500/10 text-blue-50' : 'border-slate-700 bg-slate-900/30 text-slate-200'
+                                        )}>
+                                            Fayl cox boyuk oldugu ucun gosterilmedi ({Math.round(Number(media.declaredBytes || media.actualBytes || 0) / (1024 * 1024) * 10) / 10}MB)
+                                        </div>
+                                    ) : null}
+
+                                    {mediaSrc && mediaKind === 'image' ? (
+                                        <a href={mediaSrc} target="_blank" rel="noreferrer" className="block mb-2">
+                                            <img
+                                                src={mediaSrc}
+                                                alt={String(media?.fileName || 'Image')}
+                                                className="max-h-80 w-auto max-w-full rounded-xl border border-white/10"
+                                                loading="lazy"
+                                            />
+                                        </a>
+                                    ) : null}
+
+                                    {mediaSrc && mediaKind === 'audio' ? (
+                                        <div className="mb-2">
+                                            <audio controls src={mediaSrc} className="w-[260px] max-w-full" />
+                                            <div className="mt-1">
+                                                <a href={mediaSrc} target="_blank" rel="noreferrer" className={cn('text-[11px] underline', isOut ? 'text-blue-100' : 'text-blue-300')}>
+                                                    Sesi yukle
+                                                </a>
+                                            </div>
+                                        </div>
+                                    ) : null}
+
+                                    {mediaSrc && mediaKind === 'video' ? (
+                                        <div className="mb-2">
+                                            <video controls src={mediaSrc} className="max-h-80 w-auto max-w-full rounded-xl border border-white/10" />
+                                        </div>
+                                    ) : null}
+
+                                    {mediaSrc && mediaKind === 'document' ? (
+                                        <div className="mb-2">
+                                            <a
+                                                href={mediaSrc}
+                                                target="_blank"
+                                                rel="noreferrer"
+                                                className={cn('inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold underline break-all', isOut ? 'border-blue-300/30 bg-blue-500/10 text-blue-50' : 'border-slate-700 bg-slate-900/30 text-slate-200')}
+                                            >
+                                                {String(media?.fileName || 'Document')}
+                                            </a>
+                                        </div>
+                                    ) : null}
+
+                                    {!hideBody ? (
+                                        <p className="whitespace-pre-wrap break-words">{msg.body}</p>
+                                    ) : null}
                                     <p className={cn(
                                         'text-[10px] mt-1 text-right',
                                         isOut ? 'text-blue-200/70' : 'text-slate-500'

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import QRCode from 'react-qr-code';
-import { RefreshCcw, Smartphone, Wifi, WifiOff, Link2, CheckSquare, Square, Trash2, BellRing } from 'lucide-react';
+import { RefreshCcw, Smartphone, Wifi, WifiOff, Link2, CheckSquare, Square, Trash2, BellRing, Send } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import { useAppStore } from '../../../context/Store';
 import { CrmService } from '../../../services/CrmService';
@@ -30,6 +30,15 @@ export function ConnectionTab() {
   const [health, setHealth] = useState<any | null>(null);
   const [qr, setQr] = useState<string>('');
   const [busy, setBusy] = useState(false);
+
+  const [tgConfig, setTgConfig] = useState<any | null>(null);
+  const [tgEnabled, setTgEnabled] = useState(true);
+  const [tgChatId, setTgChatId] = useState('');
+  const [tgBotToken, setTgBotToken] = useState('');
+  const [tgClearToken, setTgClearToken] = useState(false);
+  const [tgBusy, setTgBusy] = useState(false);
+  const [tgError, setTgError] = useState('');
+  const [tgSavedOk, setTgSavedOk] = useState(false);
 
   const [metaPages, setMetaPages] = useState<MetaPage[]>([]);
   const [metaBusy, setMetaBusy] = useState(false);
@@ -70,6 +79,88 @@ export function ConnectionTab() {
       setMetaError(e?.message || 'Meta bağlantısı oxuna bilmədi');
     } finally {
       setMetaBusy(false);
+    }
+  };
+
+  const refreshTelegram = async () => {
+    setTgBusy(true);
+    setTgError('');
+    try {
+      const url = CrmService.getServerUrl();
+      const token = localStorage.getItem('crm_auth_token');
+      if (!url || !token) return;
+      const res = await fetch(`${url}/api/telegram/config`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Telegram config oxunmadi');
+
+      setTgConfig(data || null);
+      setTgEnabled(data?.enabled !== false);
+      setTgChatId(String(data?.chat_id || ''));
+    } catch (e: any) {
+      setTgError(e?.message || 'Telegram config oxunmadi');
+    } finally {
+      setTgBusy(false);
+    }
+  };
+
+  const saveTelegram = async () => {
+    setTgBusy(true);
+    setTgError('');
+    try {
+      const url = CrmService.getServerUrl();
+      const token = localStorage.getItem('crm_auth_token');
+      if (!url || !token) return;
+
+      const payload: any = {
+        enabled: tgEnabled,
+        chat_id: tgChatId
+      };
+      if (tgClearToken) payload.clear_token = true;
+      if (tgBotToken.trim()) payload.bot_token = tgBotToken.trim();
+
+      const res = await fetch(`${url}/api/telegram/config`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Telegram save failed');
+
+      setTgBotToken('');
+      setTgClearToken(false);
+      setTgSavedOk(true);
+      setTimeout(() => setTgSavedOk(false), 1500);
+      await refreshTelegram();
+    } catch (e: any) {
+      setTgError(e?.message || 'Telegram save failed');
+    } finally {
+      setTgBusy(false);
+    }
+  };
+
+  const testTelegram = async () => {
+    setTgBusy(true);
+    setTgError('');
+    try {
+      const url = CrmService.getServerUrl();
+      const token = localStorage.getItem('crm_auth_token');
+      if (!url || !token) return;
+      const res = await fetch(`${url}/api/telegram/test`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Telegram test failed');
+      await refreshTelegram();
+    } catch (e: any) {
+      setTgError(e?.message || 'Telegram test failed');
+    } finally {
+      setTgBusy(false);
     }
   };
 
@@ -241,6 +332,7 @@ export function ConnectionTab() {
       refreshHealth();
     });
     refreshHealth();
+    refreshTelegram();
     refreshMeta();
     refreshWebhookStats();
     refreshMetaConfig();
@@ -352,6 +444,114 @@ export function ConnectionTab() {
             </CardContent>
           </Card>
         </div>
+
+        <Card className="border-slate-800 bg-slate-950/30">
+          <CardHeader className="p-4">
+            <CardTitle className="text-xs text-slate-200 flex items-center justify-between">
+              <span className="flex items-center gap-2">
+                <Send className="w-4 h-4 text-slate-400" />
+                Telegram Bildirimleri
+              </span>
+              <button
+                onClick={refreshTelegram}
+                disabled={tgBusy}
+                className="px-2 py-1 rounded-md text-[10px] font-bold border border-slate-800 text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+              >
+                {tgBusy ? '...' : 'Yenilə'}
+              </button>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-4 pt-0 space-y-3">
+            {tgError ? (
+              <div className="rounded-lg border border-red-900/40 bg-red-950/15 px-3 py-2 text-[11px] text-red-300">
+                {tgError}
+              </div>
+            ) : null}
+
+            {tgConfig?.enabled_global === false ? (
+              <div className="rounded-lg border border-amber-900/40 bg-amber-950/10 px-3 py-2 text-[11px] text-amber-300">
+                Server env: TELEGRAM_NOTIFICATIONS_ENABLED=false oldugu ucun gonderis bloklanir.
+              </div>
+            ) : null}
+
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/20 px-3 py-2">
+              <div className="text-[11px] text-slate-400">
+                Status: <span className={cn('font-semibold', tgEnabled ? 'text-emerald-300' : 'text-slate-500')}>{tgEnabled ? 'ENABLED' : 'DISABLED'}</span>
+                {tgConfig?.has_bot_token ? <span className="text-slate-600"> · token: ok</span> : <span className="text-slate-600"> · token: yok</span>}
+                {tgConfig?.last_error ? <span className="text-red-300"> · err: {String(tgConfig.last_error)}</span> : null}
+              </div>
+              <button
+                onClick={() => setTgEnabled(v => !v)}
+                disabled={tgBusy}
+                className={cn(
+                  'px-3 py-1.5 rounded-lg text-[10px] font-bold border transition-colors disabled:opacity-50',
+                  tgEnabled
+                    ? 'border-emerald-900/40 bg-emerald-950/15 text-emerald-300 hover:bg-emerald-950/25'
+                    : 'border-slate-800 bg-slate-950/20 text-slate-300 hover:bg-slate-900'
+                )}
+              >
+                {tgEnabled ? 'Sondur' : 'Aktiv et'}
+              </button>
+            </div>
+
+            <div>
+              <label className="text-[10px] uppercase font-bold text-slate-500 mb-1 block">Bot Token</label>
+              <input
+                type="password"
+                value={tgBotToken}
+                onChange={(e) => setTgBotToken(e.target.value)}
+                className="w-full h-9 rounded-lg bg-slate-950 border border-slate-800 px-3 text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-600/50"
+                placeholder={tgConfig?.has_bot_token ? (tgConfig?.bot_token_masked ? `Saved (${tgConfig.bot_token_masked})` : 'Saved') : '123456:AA...'}
+              />
+              <div className="mt-1 text-[10px] text-slate-600">
+                Tokeni yalniz 1 defe yazmaq kifayetdir (sonra DB-de qalir).
+              </div>
+              <label className="mt-2 flex items-center gap-2 text-[11px] text-slate-400 select-none">
+                <input
+                  type="checkbox"
+                  checked={tgClearToken}
+                  onChange={(e) => setTgClearToken(e.target.checked)}
+                  className="accent-blue-600"
+                />
+                Tokeni sil (clear)
+              </label>
+            </div>
+
+            <div>
+              <label className="text-[10px] uppercase font-bold text-slate-500 mb-1 block">Chat ID</label>
+              <input
+                type="text"
+                value={tgChatId}
+                onChange={(e) => setTgChatId(e.target.value)}
+                className="w-full h-9 rounded-lg bg-slate-950 border border-slate-800 px-3 text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-600/50"
+                placeholder="-1001234567890 veya @kanal"
+              />
+              <div className="mt-1 text-[10px] text-slate-600">
+                Chat ID ucun: bot-a 1 mesaj yazin, sonra chat id-ni alin (mes: @userinfobot).
+              </div>
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                onClick={saveTelegram}
+                disabled={tgBusy}
+                className={cn(
+                  'flex-1 py-2 rounded-lg text-xs font-semibold transition-colors disabled:opacity-50',
+                  tgSavedOk ? 'bg-emerald-600 text-white' : 'bg-blue-600 hover:bg-blue-500 text-white'
+                )}
+              >
+                {tgBusy ? '...' : (tgSavedOk ? 'Saxlandi' : 'Yadda Saxla')}
+              </button>
+              <button
+                onClick={testTelegram}
+                disabled={tgBusy}
+                className="px-3 py-2 rounded-lg text-xs font-semibold bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-200 transition-colors disabled:opacity-50"
+              >
+                Test
+              </button>
+            </div>
+          </CardContent>
+        </Card>
 
         {!waOk ? (
           <Card className="border-slate-800 bg-slate-950/30">

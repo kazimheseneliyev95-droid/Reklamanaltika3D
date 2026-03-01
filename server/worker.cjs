@@ -6,6 +6,8 @@ if (!process.env.DATABASE_URL) {
 
 const express = require('express');
 const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
 const {
     makeWASocket,
     useMultiFileAuthState,
@@ -16,7 +18,8 @@ const {
     jidNormalizedUser,
     isJidGroup,
     isJidBroadcast,
-    isJidStatusBroadcast
+    isJidStatusBroadcast,
+    downloadMediaMessage
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const HAS_DATABASE = Boolean(process.env.DATABASE_URL);
@@ -31,6 +34,13 @@ const WORKER_PORT = process.env.WORKER_PORT || 4001;
 var apiPort = process.env.PORT || 4000;
 var API_URL = process.env.API_URL || ('http://localhost:' + apiPort);
 const INTERNAL_WEBHOOK_SECRET = process.env.INTERNAL_WEBHOOK_SECRET || '';
+
+const WA_MEDIA_ENABLED = process.env.WA_MEDIA_ENABLED !== 'false';
+const WA_MEDIA_MAX_BYTES = (() => {
+    const n = parseInt(String(process.env.WA_MEDIA_MAX_BYTES || ''), 10);
+    if (Number.isFinite(n) && n > 0) return Math.min(n, 50 * 1024 * 1024);
+    return 15 * 1024 * 1024; // 15MB default
+})();
 
 workerApp.use('/api/internal', (req, res, next) => {
     if (!INTERNAL_WEBHOOK_SECRET) {
@@ -71,6 +81,156 @@ async function fetchWithRetry(url, options = {}, retryOptions = {}) {
 function getTenantAuthDir(tenantId) {
     var safeTenantId = String(tenantId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
     return path.join(__dirname, '.baileys_auth', safeTenantId);
+}
+
+function toSafeTenantId(tenantId) {
+    return String(tenantId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+function toSafeFileBase(value, maxLen) {
+    var s = String(value || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+    if (!s) s = 'file';
+    if (typeof maxLen === 'number' && maxLen > 0) s = s.slice(0, maxLen);
+    return s;
+}
+
+function ensureDirSync(dirPath) {
+    try {
+        fs.mkdirSync(dirPath, { recursive: true });
+    } catch { }
+}
+
+function normalizeMime(mime) {
+    if (!mime) return '';
+    return String(mime).split(';')[0].trim().toLowerCase();
+}
+
+function guessExtFromMime(mime) {
+    var m = normalizeMime(mime);
+    if (m === 'image/jpeg') return 'jpg';
+    if (m === 'image/png') return 'png';
+    if (m === 'image/webp') return 'webp';
+    if (m === 'image/gif') return 'gif';
+    if (m === 'audio/ogg') return 'ogg';
+    if (m === 'audio/mpeg') return 'mp3';
+    if (m === 'audio/mp4') return 'm4a';
+    if (m === 'audio/aac') return 'aac';
+    if (m === 'audio/wav') return 'wav';
+    if (m === 'video/mp4') return 'mp4';
+    if (m === 'application/pdf') return 'pdf';
+    return 'bin';
+}
+
+function safeNumberFromLong(v) {
+    if (v === null || v === undefined) return null;
+    if (typeof v === 'number' && Number.isFinite(v)) return v;
+    if (typeof v === 'string') {
+        var n = parseInt(v, 10);
+        return Number.isFinite(n) ? n : null;
+    }
+    if (typeof v === 'object') {
+        // protobufjs Long-like
+        if (typeof v.low === 'number' && typeof v.high === 'number') {
+            try {
+                // best-effort; may overflow for huge values but fine for typical media sizes
+                return (v.high * 4294967296) + (v.low >>> 0);
+            } catch {
+                return null;
+            }
+        }
+    }
+    return null;
+}
+
+async function maybePersistWhatsAppMedia(tenantId, msg, unwrapped, msgType, whatsappId) {
+    if (!WA_MEDIA_ENABLED) return null;
+    if (!tenantId || !msg || !unwrapped || !whatsappId) return null;
+    if (msgType !== 'image' && msgType !== 'audio' && msgType !== 'video' && msgType !== 'document') return null;
+
+    var content = null;
+    if (msgType === 'image') content = unwrapped.imageMessage;
+    else if (msgType === 'audio') content = unwrapped.audioMessage;
+    else if (msgType === 'video') content = unwrapped.videoMessage;
+    else if (msgType === 'document') content = unwrapped.documentMessage;
+    if (!content) return null;
+
+    var mimeType = normalizeMime(content.mimetype || content.mimeType || '');
+    var declaredLen = safeNumberFromLong(content.fileLength);
+    if (declaredLen && declaredLen > WA_MEDIA_MAX_BYTES) {
+        return {
+            kind: msgType,
+            mimeType: mimeType || null,
+            tooLarge: true,
+            maxBytes: WA_MEDIA_MAX_BYTES,
+            declaredBytes: declaredLen
+        };
+    }
+
+    var session = sessions.get(tenantId);
+    if (!session || !session.sock) return null;
+
+    var safeTenant = toSafeTenantId(tenantId);
+    var mediaDir = path.join(__dirname, 'media', safeTenant);
+    ensureDirSync(mediaDir);
+
+    var base = toSafeFileBase('wa_' + whatsappId, 120);
+    var rand = crypto.randomBytes(6).toString('hex');
+
+    var fileNameHint = null;
+    try {
+        if (msgType === 'document' && content.fileName) fileNameHint = String(content.fileName);
+    } catch { }
+
+    var ext = null;
+    if (fileNameHint && fileNameHint.includes('.')) {
+        var last = fileNameHint.split('.').pop();
+        if (last && /^[a-zA-Z0-9]{1,8}$/.test(last)) ext = last.toLowerCase();
+    }
+    if (!ext) ext = guessExtFromMime(mimeType);
+
+    var storedFileName = base + '_' + rand + '.' + ext;
+    var fullPath = path.join(mediaDir, storedFileName);
+
+    try {
+        var dlMsg = Object.assign({}, msg, { message: unwrapped });
+        var buffer = await downloadMediaMessage(
+            dlMsg,
+            'buffer',
+            {},
+            {
+                logger: pino({ level: 'silent' }),
+                reuploadRequest: session.sock.updateMediaMessage
+            }
+        );
+
+        if (!buffer || !(buffer instanceof Buffer) || buffer.length === 0) {
+            return null;
+        }
+
+        if (buffer.length > WA_MEDIA_MAX_BYTES) {
+            return {
+                kind: msgType,
+                mimeType: mimeType || null,
+                tooLarge: true,
+                maxBytes: WA_MEDIA_MAX_BYTES,
+                declaredBytes: declaredLen || null,
+                actualBytes: buffer.length
+            };
+        }
+
+        fs.writeFileSync(fullPath, buffer);
+
+        return {
+            kind: msgType,
+            mimeType: mimeType || null,
+            fileName: fileNameHint || null,
+            bytes: buffer.length,
+            url: '/api/media/' + safeTenant + '/' + encodeURIComponent(storedFileName)
+        };
+    } catch (e) {
+        console.warn('⚠️ [' + tenantId + '] Media download failed:', e && e.message ? e.message : e);
+        return null;
+    }
 }
 
 async function getAuthState(tenantId) {
@@ -521,6 +681,16 @@ async function processMessage(tenantId, msg, isFromMe) {
             if (externalAd.mediaUrl) adLinks.push(externalAd.mediaUrl);
             metadata.links = Array.from(new Set([].concat(metadata.links || [], adLinks))).slice(0, 10);
         }
+
+        // Media: download and persist, then store URL in metadata (so UI can render image/audio)
+        try {
+            if (msgType === 'image' || msgType === 'audio' || msgType === 'video' || msgType === 'document') {
+                var media = await maybePersistWhatsAppMedia(tenantId, msg, unwrapped, msgType, whatsappId);
+                if (media) {
+                    metadata.media = media;
+                }
+            }
+        } catch { }
 
         // Write ALL messages (incoming AND outgoing caught by Baileys) to DB
         if (HAS_DATABASE && db) {

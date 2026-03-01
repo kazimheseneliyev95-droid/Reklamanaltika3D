@@ -58,12 +58,66 @@ function shouldSendTelegramDedup(key, ttlMs = 60000) {
   return true;
 }
 
-async function sendTelegramText(text) {
+const telegramConfigCache = new Map();
+const TELEGRAM_CONFIG_TTL_MS = 15000;
+
+function normalizeTelegramChatId(raw) {
+  const v = String(raw || '').trim();
+  if (!v) return '';
+  if (/^@\w{3,}$/i.test(v)) return v;
+  if (/^-?\d+$/.test(v)) return v;
+  return v; // keep as-is; Telegram accepts some non-numeric ids
+}
+
+function normalizeTelegramBotToken(raw) {
+  return String(raw || '').trim();
+}
+
+async function getTelegramConfigForTenant(tenantId) {
+  const t = String(tenantId || '').trim() || 'admin';
+
+  const cached = telegramConfigCache.get(t);
+  if (cached && cached.expiresAt && Date.now() < cached.expiresAt) {
+    return cached.value;
+  }
+
+  // DB-backed per-tenant config (preferred)
+  try {
+    if (process.env.DATABASE_URL && db && typeof db.getTelegramIntegration === 'function') {
+      const row = await db.getTelegramIntegration(t).catch(() => null);
+      if (row) {
+        const cfg = {
+          enabled: row.enabled !== false,
+          botToken: normalizeTelegramBotToken(row.bot_token || ''),
+          chatId: normalizeTelegramChatId(row.chat_id || '')
+        };
+        telegramConfigCache.set(t, { expiresAt: Date.now() + TELEGRAM_CONFIG_TTL_MS, value: cfg });
+        return cfg;
+      }
+    }
+  } catch {
+    // ignore and fall back
+  }
+
+  // Env fallback (single-tenant / legacy)
+  const envCfg = {
+    enabled: true,
+    botToken: normalizeTelegramBotToken(TELEGRAM_BOT_TOKEN),
+    chatId: normalizeTelegramChatId(TELEGRAM_CHAT_ID)
+  };
+  telegramConfigCache.set(t, { expiresAt: Date.now() + TELEGRAM_CONFIG_TTL_MS, value: envCfg });
+  return envCfg;
+}
+
+async function sendTelegramTextWithConfig({ botToken, chatId, text }) {
   if (!TELEGRAM_NOTIFICATIONS_ENABLED) return { ok: false, skipped: 'disabled' };
-  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return { ok: false, skipped: 'missing_env' };
-  const url = `https://api.telegram.org/bot${encodeURIComponent(TELEGRAM_BOT_TOKEN)}/sendMessage`;
+  const token = normalizeTelegramBotToken(botToken);
+  const chat = normalizeTelegramChatId(chatId);
+  if (!token || !chat) return { ok: false, skipped: 'missing_config' };
+
+  const url = `https://api.telegram.org/bot${encodeURIComponent(token)}/sendMessage`;
   const payload = {
-    chat_id: TELEGRAM_CHAT_ID,
+    chat_id: chat,
     text: String(text || '').slice(0, 3500),
     disable_web_page_preview: true
   };
@@ -94,9 +148,29 @@ async function notifyTelegramInbound({ tenantId, source, phone, name, message, e
     const header = `📩 New ${src} message [${t}]`;
     const who = name ? `${name} (${p})` : p;
     const body = m.length > 900 ? (m.slice(0, 900) + '…') : m;
-    await sendTelegramText(`${header}\nFrom: ${who}\n\n${body}`);
+    const cfg = await getTelegramConfigForTenant(t);
+    if (!cfg || cfg.enabled === false) return;
+    if (!cfg.botToken || !cfg.chatId) return;
+
+    await sendTelegramTextWithConfig({ botToken: cfg.botToken, chatId: cfg.chatId, text: `${header}\nFrom: ${who}\n\n${body}` });
+
+    try {
+      if (process.env.DATABASE_URL && db && typeof db.setTelegramIntegrationStatus === 'function') {
+        await db.setTelegramIntegrationStatus(t, { last_error: null, last_sent_at: new Date().toISOString() });
+      }
+    } catch {
+      // ignore
+    }
   } catch (e) {
     // never throw from alerts
+    try {
+      const t = String(tenantId || '').trim() || 'admin';
+      if (process.env.DATABASE_URL && db && typeof db.setTelegramIntegrationStatus === 'function') {
+        await db.setTelegramIntegrationStatus(t, { last_error: String(e?.message || 'notify_failed') });
+      }
+    } catch {
+      // ignore
+    }
     try { console.warn('⚠️ Telegram notify failed:', e.message); } catch { }
   }
 }
@@ -1398,12 +1472,68 @@ const requireTenantAuth = (req, res, next) => {
   }
 };
 
+function toSafeTenantId(tenantId) {
+  return String(tenantId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+// Media embeds (img/audio/video) cannot reliably send Authorization headers.
+// For media routes we also accept `?token=...` as a compatibility path.
+const requireTenantAuthFlexible = (req, res, next) => {
+  const headerToken = req.headers['authorization']?.replace('Bearer ', '') || '';
+  const queryToken = (req.query && req.query.token) ? String(req.query.token) : '';
+  const token = headerToken || queryToken;
+  if (!token) return res.status(401).send('Unauthorized');
+
+  try {
+    const data = verifyAnyToken(token);
+    if (!data.tenantId) throw new Error();
+    req.tenantId = data.tenantId;
+    req.userRole = data.role;
+    req.userId = data.id;
+    req.userPermissions = data.permissions || {};
+    next();
+  } catch {
+    res.status(401).send('Unauthorized');
+  }
+};
+
 const requireAdmin = (req, res, next) => {
   if (req.userRole !== 'admin' && req.userRole !== 'superadmin') {
     return res.status(403).json({ error: 'Forbidden: Admin access required' });
   }
   next();
 };
+
+// ═══════════════════════════════════════════════════════════════
+// 📎 MEDIA SERVING (WhatsApp attachments)
+// ═══════════════════════════════════════════════════════════════
+
+const MEDIA_ROOT = path.join(__dirname, 'media');
+
+app.use('/api/media', requireTenantAuthFlexible, (req, res, next) => {
+  // URL shape: /api/media/:tenantSafe/:file
+  const parts = String(req.path || '').split('/').filter(Boolean);
+  const tenantFromUrl = parts[0] ? String(parts[0]) : '';
+  if (!tenantFromUrl) return res.status(400).send('Missing tenant');
+
+  const safeFromToken = toSafeTenantId(req.tenantId);
+  const safeFromUrl = toSafeTenantId(tenantFromUrl);
+  if (safeFromToken !== safeFromUrl) return res.status(403).send('Forbidden');
+
+  // Basic hardening (express.static also prevents path traversal)
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  next();
+}, express.static(MEDIA_ROOT, {
+  index: false,
+  fallthrough: false,
+  etag: true,
+  maxAge: NODE_ENV === 'production' ? '7d' : 0,
+  setHeaders: (res) => {
+    if (NODE_ENV !== 'production') {
+      res.setHeader('Cache-Control', 'no-store');
+    }
+  }
+}));
 
 // Tenant profile (display name, etc.)
 app.get('/api/tenant/profile', requireTenantAuth, asyncHandler(async (req, res) => {
@@ -2241,6 +2371,104 @@ app.post('/api/settings', requireTenantAuth, requireAdmin, asyncHandler(async (r
   io.to(req.tenantId).emit('settings_updated', updatedSettings);
 
   res.json({ success: true, settings: updatedSettings });
+}));
+
+// ═══════════════════════════════════════════════════════════════
+// 📣 TELEGRAM NOTIFICATIONS API (per-tenant)
+// ═══════════════════════════════════════════════════════════════
+
+function maskTelegramToken(token) {
+  const t = String(token || '');
+  if (!t) return '';
+  if (t.length <= 10) return '********';
+  return t.slice(0, 6) + '…' + t.slice(-4);
+}
+
+app.get('/api/telegram/config', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  if (!db || typeof db.getTelegramIntegration !== 'function') return res.status(501).json({ error: 'Telegram integration not available' });
+
+  const row = await db.getTelegramIntegration(req.tenantId).catch(() => null);
+  res.json({
+    enabled: row ? (row.enabled !== false) : false,
+    chat_id: row?.chat_id ? String(row.chat_id) : '',
+    has_bot_token: Boolean(row?.bot_token),
+    bot_token_masked: row?.bot_token ? maskTelegramToken(row.bot_token) : '',
+    last_error: row?.last_error ? String(row.last_error) : null,
+    last_sent_at: row?.last_sent_at ? new Date(row.last_sent_at).toISOString() : null,
+    last_test_at: row?.last_test_at ? new Date(row.last_test_at).toISOString() : null,
+    updated_at: row?.updated_at ? new Date(row.updated_at).toISOString() : null,
+    enabled_global: TELEGRAM_NOTIFICATIONS_ENABLED
+  });
+}));
+
+app.post('/api/telegram/config', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  if (!db || typeof db.upsertTelegramIntegration !== 'function' || typeof db.getTelegramIntegration !== 'function') {
+    return res.status(501).json({ error: 'Telegram integration not available' });
+  }
+
+  const enabled = req.body?.enabled === false ? false : true;
+  const chatId = req.body?.chat_id !== undefined ? normalizeTelegramChatId(req.body.chat_id) : '';
+  const botTokenRaw = req.body?.bot_token !== undefined ? normalizeTelegramBotToken(req.body.bot_token) : '';
+  const clearToken = req.body?.clear_token === true;
+
+  const existing = await db.getTelegramIntegration(req.tenantId).catch(() => null);
+  const nextToken = clearToken
+    ? ''
+    : (botTokenRaw ? botTokenRaw : (existing?.bot_token ? String(existing.bot_token) : ''));
+
+  const nextChat = chatId !== undefined && chatId !== null && String(chatId).trim() !== ''
+    ? String(chatId).trim()
+    : (existing?.chat_id ? String(existing.chat_id) : '');
+
+  if (enabled) {
+    if (!nextChat) return res.status(400).json({ error: 'chat_id is required when enabled' });
+    if (!nextToken) return res.status(400).json({ error: 'bot_token is required when enabled' });
+  }
+
+  const saved = await db.upsertTelegramIntegration(req.tenantId, {
+    enabled,
+    chat_id: nextChat || null,
+    bot_token: nextToken || null
+  });
+
+  // Bust cache for this tenant
+  try { telegramConfigCache.delete(String(req.tenantId)); } catch { }
+
+  res.json({
+    success: true,
+    enabled: saved.enabled !== false,
+    chat_id: saved.chat_id ? String(saved.chat_id) : '',
+    has_bot_token: Boolean(saved.bot_token),
+    bot_token_masked: saved.bot_token ? maskTelegramToken(saved.bot_token) : ''
+  });
+}));
+
+app.post('/api/telegram/test', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  if (!db || typeof db.getTelegramIntegration !== 'function' || typeof db.setTelegramIntegrationStatus !== 'function') {
+    return res.status(501).json({ error: 'Telegram integration not available' });
+  }
+
+  const row = await db.getTelegramIntegration(req.tenantId).catch(() => null);
+  const enabled = row ? (row.enabled !== false) : false;
+  const botToken = row?.bot_token ? String(row.bot_token) : '';
+  const chatId = row?.chat_id ? String(row.chat_id) : '';
+
+  if (!enabled) return res.status(400).json({ error: 'Telegram notifications are disabled for this tenant' });
+  if (!botToken || !chatId) return res.status(400).json({ error: 'Telegram bot_token/chat_id is missing' });
+
+  const text = `✅ Telegram test ok\nTenant: ${String(req.tenantId)}\nTime: ${new Date().toISOString()}`;
+  try {
+    await sendTelegramTextWithConfig({ botToken, chatId, text });
+    await db.setTelegramIntegrationStatus(req.tenantId, { last_error: null, last_test_at: new Date().toISOString() }).catch(() => null);
+    res.json({ ok: true });
+  } catch (e) {
+    const msg = String(e?.message || 'test_failed');
+    await db.setTelegramIntegrationStatus(req.tenantId, { last_error: msg, last_test_at: new Date().toISOString() }).catch(() => null);
+    res.status(400).json({ error: msg });
+  }
 }));
 
 // ═══════════════════════════════════════════════════════════════

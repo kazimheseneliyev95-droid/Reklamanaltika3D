@@ -159,6 +159,18 @@ async function initDb() {
           last_error TEXT,
           updated_at TIMESTAMP DEFAULT NOW()
         );
+
+        CREATE TABLE IF NOT EXISTS telegram_integrations (
+          tenant_id VARCHAR(50) PRIMARY KEY,
+          bot_token TEXT,
+          chat_id TEXT,
+          enabled BOOLEAN DEFAULT true,
+          last_error TEXT,
+          last_sent_at TIMESTAMP,
+          last_test_at TIMESTAMP,
+          created_at TIMESTAMP DEFAULT NOW(),
+          updated_at TIMESTAMP DEFAULT NOW()
+        );
       `;
 
         await client.query(createTableQuery);
@@ -201,6 +213,19 @@ async function initDb() {
                     tenant_id VARCHAR(50) PRIMARY KEY,
                     settings JSONB NOT NULL DEFAULT '{}',
                     updated_at TIMESTAMP DEFAULT NOW()
+                );
+
+                -- Telegram integration (per-tenant)
+                CREATE TABLE IF NOT EXISTS telegram_integrations (
+                  tenant_id VARCHAR(50) PRIMARY KEY,
+                  bot_token TEXT,
+                  chat_id TEXT,
+                  enabled BOOLEAN DEFAULT true,
+                  last_error TEXT,
+                  last_sent_at TIMESTAMP,
+                  last_test_at TIMESTAMP,
+                  created_at TIMESTAMP DEFAULT NOW(),
+                  updated_at TIMESTAMP DEFAULT NOW()
                 );
 
                 -- Meta (Facebook/Instagram) integrations
@@ -1560,6 +1585,70 @@ async function updateCRMSettings(tenantId, settings) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// TELEGRAM INTEGRATION (per-tenant)
+// ═══════════════════════════════════════════════════════════════
+
+async function getTelegramIntegration(tenantId) {
+    if (!tenantId) return null;
+    const res = await pool.query(
+        'SELECT tenant_id, enabled, chat_id, bot_token, last_error, last_sent_at, last_test_at, updated_at FROM telegram_integrations WHERE tenant_id = $1 LIMIT 1',
+        [String(tenantId)]
+    );
+    return res.rows[0] || null;
+}
+
+async function upsertTelegramIntegration(tenantId, { enabled, chat_id, bot_token }) {
+    if (!tenantId) throw new Error('tenantId is required');
+    const en = enabled === false ? false : true;
+    const chat = chat_id !== undefined && chat_id !== null ? String(chat_id).trim() : null;
+    const tok = bot_token !== undefined && bot_token !== null ? String(bot_token).trim() : null;
+
+    const res = await pool.query(
+        `INSERT INTO telegram_integrations (tenant_id, enabled, chat_id, bot_token, updated_at)
+         VALUES ($1, $2, $3, $4, NOW())
+         ON CONFLICT (tenant_id)
+         DO UPDATE SET
+           enabled = EXCLUDED.enabled,
+           chat_id = EXCLUDED.chat_id,
+           bot_token = EXCLUDED.bot_token,
+           updated_at = NOW()
+         RETURNING tenant_id, enabled, chat_id, bot_token, last_error, last_sent_at, last_test_at, updated_at`,
+        [String(tenantId), en, chat, tok]
+    );
+    return res.rows[0] || null;
+}
+
+async function setTelegramIntegrationStatus(tenantId, { last_error, last_sent_at, last_test_at }) {
+    if (!tenantId) return false;
+    const fields = [];
+    const values = [];
+    let i = 1;
+
+    if (last_error !== undefined) {
+        fields.push(`last_error = $${i++}`);
+        values.push(last_error ? String(last_error).slice(0, 1200) : null);
+    }
+    if (last_sent_at !== undefined) {
+        fields.push(`last_sent_at = $${i++}`);
+        values.push(last_sent_at ? new Date(last_sent_at) : null);
+    }
+    if (last_test_at !== undefined) {
+        fields.push(`last_test_at = $${i++}`);
+        values.push(last_test_at ? new Date(last_test_at) : null);
+    }
+    if (fields.length === 0) return false;
+
+    fields.push('updated_at = NOW()');
+    values.push(String(tenantId));
+
+    const res = await pool.query(
+        `UPDATE telegram_integrations SET ${fields.join(', ')} WHERE tenant_id = $${i}`,
+        values
+    );
+    return res.rowCount > 0;
+}
+
+// ═══════════════════════════════════════════════════════════════
 // ANALYTICS LAYOUTS (per-user)
 // ═══════════════════════════════════════════════════════════════
 
@@ -1716,6 +1805,9 @@ module.exports = {
     getAuditLogs,
     getCRMSettings,
     updateCRMSettings,
+    getTelegramIntegration,
+    upsertTelegramIntegration,
+    setTelegramIntegrationStatus,
     getAnalyticsLayout,
     upsertAnalyticsLayout,
     markLeadRead,
