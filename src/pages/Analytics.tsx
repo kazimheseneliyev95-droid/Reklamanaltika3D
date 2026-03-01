@@ -8,7 +8,7 @@ import { CrmService } from '../services/CrmService';
 
 type ChartKind = 'bar' | 'donut' | 'table';
 type DisplayMode = 'value' | 'percent' | 'both';
-type WidgetKind = 'pipeline' | 'custom_select' | 'assignee';
+type WidgetKind = 'pipeline' | 'custom_select' | 'assignee' | 'select_pipeline';
 
 type WidgetBase = {
   id: string;
@@ -35,7 +35,14 @@ type AssigneeWidget = WidgetBase & {
   includeUnassigned: boolean;
 };
 
-type Widget = PipelineWidget | CustomSelectWidget | AssigneeWidget;
+type SelectPipelineWidget = WidgetBase & {
+  kind: 'select_pipeline';
+  fieldId: string;
+  topN: number;
+  ignoreEmpty: boolean;
+};
+
+type Widget = PipelineWidget | CustomSelectWidget | AssigneeWidget | SelectPipelineWidget;
 
 type Layout = {
   version: 1;
@@ -45,6 +52,9 @@ type Layout = {
 };
 
 type Datum = { label: string; value: number; color: string };
+
+type BreakdownStage = { id: string; label: string; color: string; value: number; pct: number };
+type BreakdownRow = { label: string; total: number; stages: BreakdownStage[] };
 
 function makeId() {
   return `aw-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -95,6 +105,56 @@ function valueLabel(value: number, total: number, mode: DisplayMode, isMoney: bo
   if (mode === 'value') return v;
   if (mode === 'percent') return p;
   return `${v} · ${p}`;
+}
+
+function BreakdownTable({ rows, stageLegend }: { rows: BreakdownRow[]; stageLegend: { id: string; label: string; color: string }[] }) {
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-3">
+        {stageLegend.map(s => (
+          <div key={s.id} className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full" style={{ background: s.color }} />
+            <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wide">{s.label}</span>
+          </div>
+        ))}
+      </div>
+
+      <div className="space-y-3">
+        {rows.map((r) => (
+          <div key={r.label} className="rounded-xl border border-slate-800 bg-slate-950/25 px-3 py-2">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-[12px] font-semibold text-slate-200 truncate" title={r.label}>{r.label}</div>
+                <div className="mt-0.5 text-[10px] text-slate-500">Toplam: <span className="text-slate-300 font-semibold tabular-nums">{formatNumber(r.total)}</span></div>
+              </div>
+            </div>
+
+            <div className="mt-2 h-3 rounded-full overflow-hidden border border-slate-800 bg-slate-900 flex">
+              {r.stages.filter(s => s.value > 0).map((s) => (
+                <div
+                  key={s.id}
+                  className="h-full"
+                  style={{ flex: `${s.value} ${s.value} 0%`, background: s.color, minWidth: 2 }}
+                  title={`${s.label}: ${formatNumber(s.value)} (${s.pct.toFixed(0)}%)`}
+                />
+              ))}
+              {r.total === 0 ? <div className="h-full w-full bg-slate-900" /> : null}
+            </div>
+
+            <div className="mt-2 text-[11px] text-slate-400 leading-relaxed">
+              {r.stages.filter(s => s.value > 0).map((s) => (
+                <span key={s.id} className="mr-3">
+                  <span className="font-semibold" style={{ color: s.color }}>{s.label}</span>{' '}
+                  <span className="tabular-nums text-slate-200">{formatNumber(s.value)}</span>{' '}
+                  <span className="tabular-nums text-slate-500">({s.pct.toFixed(0)}%)</span>
+                </span>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function BarList({ data, total, mode, isMoney }: { data: Datum[]; total: number; mode: DisplayMode; isMoney: boolean }) {
@@ -211,7 +271,7 @@ export default function AnalyticsPage() {
         { id: makeId(), kind: 'pipeline', title: 'Kanban (Say)', chart: 'bar', display: 'both', metric: 'count' },
         { id: makeId(), kind: 'pipeline', title: 'Kanban (Budce)', chart: 'donut', display: 'both', metric: 'revenue' },
         firstField
-          ? { id: makeId(), kind: 'custom_select', title: 'Xususi Saha', chart: 'bar', display: 'both', fieldId: firstField, topN: 8, ignoreEmpty: true }
+          ? { id: makeId(), kind: 'select_pipeline', title: 'Kurs → Kanban', chart: 'table', display: 'both', fieldId: firstField, topN: 5, ignoreEmpty: true }
           : { id: makeId(), kind: 'assignee', title: 'Operatorlar', chart: 'bar', display: 'both', includeUnassigned: true },
         { id: makeId(), kind: 'assignee', title: 'Operatorlar', chart: 'table', display: 'both', includeUnassigned: true },
       ]
@@ -309,6 +369,10 @@ export default function AnalyticsPage() {
         return { data: sliced, total, isMoney: false };
       }
 
+      if (w.kind === 'select_pipeline') {
+        return { data: [], total: 0, isMoney: false };
+      }
+
       // assignee
       const counts = new Map<string, number>();
       for (const l of scopedLeads) {
@@ -327,6 +391,70 @@ export default function AnalyticsPage() {
       return { data: rows, total, isMoney: false };
     };
   }, [pipelineDataBase, scopedLeads, selectFields, teamMembers]);
+
+  const getSelectPipelineBreakdown = useMemo(() => {
+    const stageLegend = pipelineStages.map(s => ({ id: s.id, label: s.label, color: stageToColor(s.color) }));
+    const stageIndex = new Map(stageLegend.map((s, i) => [s.id, i] as const));
+
+    return (w: SelectPipelineWidget): { rows: BreakdownRow[]; legend: { id: string; label: string; color: string }[] } => {
+      const field = selectFields.find(f => f.id === w.fieldId);
+      if (!field) return { rows: [], legend: stageLegend };
+
+      const byKey = new Map<string, { total: number; byStage: Map<string, number> }>();
+
+      for (const l of scopedLeads) {
+        const extra = safeParseExtra((l as any).extra_data);
+        const vRaw = String(extra[w.fieldId] ?? '').trim();
+        if (!vRaw && w.ignoreEmpty) continue;
+        const key = vRaw || '(bos)';
+        if (!byKey.has(key)) byKey.set(key, { total: 0, byStage: new Map() });
+        const slot = byKey.get(key)!;
+        slot.total += 1;
+        const st = String(l.status || '');
+        slot.byStage.set(st, (slot.byStage.get(st) || 0) + 1);
+      }
+
+      let keys = Array.from(byKey.keys());
+
+      const options = (field.options || []).slice();
+      for (const k of keys) {
+        if (k !== '(bos)' && !options.includes(k)) options.push(k);
+      }
+      if (!w.ignoreEmpty && keys.includes('(bos)')) {
+        if (!options.includes('(bos)')) options.unshift('(bos)');
+      }
+
+      // Sort by total desc
+      keys.sort((a, b) => (byKey.get(b)?.total || 0) - (byKey.get(a)?.total || 0));
+
+      const top = keys.slice(0, Math.max(3, Math.min(24, w.topN)));
+      const rows: BreakdownRow[] = top.map((k) => {
+        const slot = byKey.get(k) || { total: 0, byStage: new Map() };
+        const total = slot.total || 0;
+
+        const stageIds = new Set<string>([...stageLegend.map(s => s.id), ...slot.byStage.keys()]);
+        const stages: BreakdownStage[] = Array.from(stageIds).map((id) => {
+          const meta = stageLegend.find(s => s.id === id);
+          const label = meta?.label || id || 'other';
+          const color = meta?.color || '#60a5fa';
+          const value = slot.byStage.get(id) || 0;
+          const pct = total > 0 ? (value / total) * 100 : 0;
+          return { id, label, color, value, pct };
+        });
+
+        stages.sort((a, b) => {
+          const ia = stageIndex.has(a.id) ? (stageIndex.get(a.id) as number) : 999;
+          const ib = stageIndex.has(b.id) ? (stageIndex.get(b.id) as number) : 999;
+          if (ia !== ib) return ia - ib;
+          return b.value - a.value;
+        });
+
+        return { label: k, total, stages };
+      });
+
+      return { rows, legend: stageLegend };
+    };
+  }, [pipelineStages, scopedLeads, selectFields]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -431,7 +559,13 @@ export default function AnalyticsPage() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {layout.widgets.map((w, idx) => {
           const info = getWidgetData(w);
-          const icon = w.kind === 'pipeline' ? <BarChart2 className="w-4 h-4 text-slate-400" /> : w.kind === 'custom_select' ? <PieChart className="w-4 h-4 text-slate-400" /> : <Users className="w-4 h-4 text-slate-400" />;
+          const icon = w.kind === 'pipeline'
+            ? <BarChart2 className="w-4 h-4 text-slate-400" />
+            : w.kind === 'custom_select'
+              ? <PieChart className="w-4 h-4 text-slate-400" />
+              : w.kind === 'select_pipeline'
+                ? <LayoutGrid className="w-4 h-4 text-slate-400" />
+                : <Users className="w-4 h-4 text-slate-400" />;
 
           return (
             <div key={w.id} className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4 shadow-sm">
@@ -459,6 +593,9 @@ export default function AnalyticsPage() {
                     } else if (next === 'custom_select') {
                       const fieldId = selectFields[0]?.id || '';
                       updateWidget(idx, { kind: 'custom_select', fieldId, topN: 8, ignoreEmpty: true, chart: 'bar', display: 'both' } as any);
+                    } else if (next === 'select_pipeline') {
+                      const fieldId = selectFields[0]?.id || '';
+                      updateWidget(idx, { kind: 'select_pipeline', fieldId, topN: 5, ignoreEmpty: true, chart: 'table', display: 'both' } as any);
                     } else {
                       updateWidget(idx, { kind: 'assignee', includeUnassigned: true, chart: 'table', display: 'both' } as any);
                     }
@@ -467,18 +604,29 @@ export default function AnalyticsPage() {
                 >
                   <option value="pipeline">Kanban</option>
                   <option value="custom_select">Xususi (Select)</option>
+                  <option value="select_pipeline">Select → Kanban</option>
                   <option value="assignee">Operator</option>
                 </select>
 
-                <select
-                  value={w.chart}
-                  onChange={(e) => updateWidget(idx, { chart: e.target.value as any })}
-                  className="bg-slate-950 border border-slate-800 text-slate-200 text-[11px] rounded-lg px-2 py-2"
-                >
-                  <option value="bar">Bar</option>
-                  <option value="donut">Donut</option>
-                  <option value="table">Cədvəl</option>
-                </select>
+                {w.kind === 'select_pipeline' ? (
+                  <select
+                    value={'table'}
+                    disabled
+                    className="bg-slate-950 border border-slate-800 text-slate-500 text-[11px] rounded-lg px-2 py-2"
+                  >
+                    <option value="table">Cədvəl</option>
+                  </select>
+                ) : (
+                  <select
+                    value={w.chart}
+                    onChange={(e) => updateWidget(idx, { chart: e.target.value as any })}
+                    className="bg-slate-950 border border-slate-800 text-slate-200 text-[11px] rounded-lg px-2 py-2"
+                  >
+                    <option value="bar">Bar</option>
+                    <option value="donut">Donut</option>
+                    <option value="table">Cədvəl</option>
+                  </select>
+                )}
 
                 <select
                   value={w.display}
@@ -499,7 +647,7 @@ export default function AnalyticsPage() {
                     <option value="count">Lead sayi</option>
                     <option value="revenue">Budce (AZN)</option>
                   </select>
-                ) : w.kind === 'custom_select' ? (
+                ) : (w.kind === 'custom_select' || w.kind === 'select_pipeline') ? (
                   <select
                     value={w.fieldId}
                     onChange={(e) => updateWidget(idx, { fieldId: e.target.value } as any)}
@@ -524,12 +672,12 @@ export default function AnalyticsPage() {
                 )}
               </div>
 
-              {w.kind === 'custom_select' && (
+              {(w.kind === 'custom_select' || w.kind === 'select_pipeline') && (
                 <div className="mt-2 flex items-center justify-between gap-3">
                   <label className="flex items-center gap-2 text-[11px] text-slate-400">
                     <input
                       type="checkbox"
-                      checked={w.ignoreEmpty}
+                      checked={(w as any).ignoreEmpty}
                       onChange={(e) => updateWidget(idx, { ignoreEmpty: e.target.checked } as any)}
                     />
                     Boslari gizlet
@@ -540,7 +688,7 @@ export default function AnalyticsPage() {
                       type="number"
                       min={3}
                       max={24}
-                      value={w.topN}
+                      value={(w as any).topN}
                       onChange={(e) => updateWidget(idx, { topN: parseInt(e.target.value || '8', 10) } as any)}
                       className="w-16 bg-slate-950 border border-slate-800 text-slate-200 text-[11px] rounded-lg px-2 py-1"
                     />
@@ -549,7 +697,13 @@ export default function AnalyticsPage() {
               )}
 
               <div className="mt-4">
-                {info.data.length === 0 ? (
+                {w.kind === 'select_pipeline' ? (
+                  (() => {
+                    const b = getSelectPipelineBreakdown(w as any);
+                    if (!b.rows || b.rows.length === 0) return <div className="text-xs text-slate-500">Data yoxdur.</div>;
+                    return <BreakdownTable rows={b.rows} stageLegend={b.legend} />;
+                  })()
+                ) : info.data.length === 0 ? (
                   <div className="text-xs text-slate-500">Data yoxdur.</div>
                 ) : w.chart === 'bar' ? (
                   <BarList data={info.data} total={info.total} mode={w.display} isMoney={info.isMoney} />
