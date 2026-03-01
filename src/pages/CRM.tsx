@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useAppStore } from '../context/Store';
 import { Lead, LeadStatus } from '../types/crm';
 import { Badge } from '../components/ui/Badge';
-import { Trash2, Calendar, Filter, RefreshCcw, Pencil, ShoppingBag, DollarSign, TrendingUp, Users, MessageSquare, UserPlus, CheckCircle, XCircle, Phone, Route, Bell, GripVertical, ChevronRight } from 'lucide-react';
+import { Trash2, Calendar, Filter, RefreshCcw, Pencil, ShoppingBag, DollarSign, TrendingUp, Users, MessageSquare, UserPlus, CheckCircle, XCircle, Phone, Route, Bell, GripVertical } from 'lucide-react';
 import { cn, formatCurrency } from '../lib/utils';
 import { LeadDetailsPanel } from '../components/LeadDetailsPanel';
 import { loadCRMSettings, CustomField, LeadCardUISettings } from '../lib/crmSettings';
@@ -207,8 +207,6 @@ export default function CRMPage() {
   }));
 
   const canViewBudget = currentUser?.permissions?.view_budget !== false;
-
-  const kanbanMinWidth = Math.max(1000, columns.length * 290);
 
   const unreadTotal = useMemo(() => {
     return (leads || []).reduce((sum, l) => sum + (Number(l.unread_count || 0) > 0 ? Number(l.unread_count || 0) : 0), 0);
@@ -480,15 +478,17 @@ export default function CRMPage() {
         ))}
       </div>
 
-      {/* KANBAN BOARD — desktop: side-by-side | mobile: single column */}
-      <div className="flex-1 overflow-x-auto pb-4">
+      {/* KANBAN BOARD — desktop: fit-to-screen grid | mobile: single column */}
+      <div className="flex-1 overflow-x-hidden pb-4">
         {/* Desktop */}
-        <div className="hidden sm:flex gap-4 lg:gap-6 h-full" style={{ minWidth: kanbanMinWidth }}>
+        <div
+          className="hidden sm:grid gap-3 lg:gap-4 h-full w-full min-w-0"
+          style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(0, 1fr))` }}
+        >
           {columns.map((col) => (
             (() => {
               const leadsInCol = filteredLeads.filter(l => l.status === col.id);
               const colCount = leadsInCol.length;
-              const colUnread = leadsInCol.reduce((s, l) => s + (Number((l as any).unread_count || 0) > 0 ? 1 : 0), 0);
               const colValue = canViewBudget
                 ? leadsInCol.reduce((s, l) => s + (typeof (l as any).value === 'number' ? (l as any).value : (parseFloat(String((l as any).value ?? '0')) || 0)), 0)
                 : 0;
@@ -496,7 +496,7 @@ export default function CRMPage() {
               return (
             <div
               key={col.id}
-              className="flex-1 min-w-[250px] flex flex-col bg-slate-900/50 rounded-xl border border-slate-800 h-full max-h-[calc(100vh-300px)]"
+              className="min-w-0 flex flex-col bg-slate-900/40 rounded-xl border border-slate-800 h-full max-h-[calc(100vh-300px)]"
               onDragOver={(e) => e.preventDefault()}
               onDrop={(e) => {
                 e.preventDefault();
@@ -504,42 +504,31 @@ export default function CRMPage() {
                 if (leadId) updateLeadStatus(leadId, col.id);
               }}
             >
-              <div className="p-2.5 border-b border-slate-800/70 bg-slate-950/30 rounded-t-xl">
-                <div className="flex items-center justify-between gap-2">
+              <div className="sticky top-0 z-10 p-2.5 border-b border-slate-800/70 bg-slate-950/60 backdrop-blur rounded-t-xl">
+                <div className="flex items-center justify-between gap-2 min-w-0">
                   <div className="flex items-center gap-2 min-w-0">
-                    <div className="p-1.5 rounded-lg bg-slate-900/60 border border-slate-800 shrink-0">
+                    <div className="p-1.5 rounded-lg bg-slate-950/50 border border-slate-800 shrink-0">
                       {col.icon}
                     </div>
                     <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <div className="text-[13px] font-extrabold text-slate-100 truncate">{col.title}</div>
-                        {colUnread > 0 ? (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-950/30 text-amber-200 border border-amber-900/40">
-                            <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-                            {colUnread} unread
-                          </span>
-                        ) : null}
-                      </div>
+                      <div className="text-[12px] font-extrabold text-slate-100 truncate" title={col.title}>{col.title}</div>
                       {canViewBudget ? (
-                        <div className="mt-0.5 text-[10px] text-slate-500 tabular-nums">Budce: <span className="text-slate-300 font-semibold">{formatCurrency(colValue, 'AZN')}</span></div>
-                      ) : (
-                        <div className="mt-0.5 text-[10px] text-slate-600">&nbsp;</div>
-                      )}
+                        <div className="mt-0.5 text-[10px] text-slate-500 tabular-nums truncate">Budce: <span className="text-slate-300 font-semibold">{formatCurrency(colValue, 'AZN')}</span></div>
+                      ) : null}
                     </div>
                   </div>
 
-                  <Badge variant="secondary" className="bg-slate-900/60 text-slate-200 border border-slate-800 font-extrabold tabular-nums">
+                  <Badge variant="secondary" className="bg-slate-950/50 text-slate-200 border border-slate-800 font-extrabold tabular-nums shrink-0">
                     {colCount}
                   </Badge>
                 </div>
               </div>
 
-              <div className="p-2.5 space-y-3 overflow-y-auto flex-1 custom-scrollbar">
+              <div className="p-2.5 space-y-2.5 overflow-y-auto flex-1 custom-scrollbar">
                 {leadsInCol.map((lead) => (
                   <LeadCard
                     key={lead.id}
                     lead={lead}
-                    onUpdateStatus={updateLeadStatus}
                     onRemove={removeLead}
                     onEdit={handleEdit}
                     onViewMessage={() => setSelectedLead(lead)}
@@ -579,7 +568,6 @@ export default function CRMPage() {
                 <LeadCard
                   key={lead.id}
                   lead={lead}
-                  onUpdateStatus={updateLeadStatus}
                   onRemove={removeLead}
                   onEdit={handleEdit}
                   onViewMessage={() => setSelectedLead(lead)}
@@ -629,7 +617,6 @@ function parseExtraData(raw: any): Record<string, any> {
 
 function LeadCard({
   lead,
-  onUpdateStatus,
   onRemove,
   onEdit,
   onViewMessage,
@@ -639,7 +626,6 @@ function LeadCard({
   leadCardUi,
 }: {
   lead: Lead;
-  onUpdateStatus: any;
   onRemove: any;
   onEdit: any;
   onViewMessage: () => void;
@@ -736,10 +722,8 @@ function LeadCard({
 
   return (
     <div
-      draggable
-      onDragStart={(e) => e.dataTransfer.setData('leadId', lead.id)}
       className={cn(
-        "group relative rounded-2xl border bg-slate-950/40 p-3 shadow-sm transition-all duration-200 cursor-grab active:cursor-grabbing",
+        "group relative rounded-2xl border bg-slate-950/40 p-3 shadow-sm transition-all duration-200",
         unread > 0
           ? "border-rose-500/35 hover:border-rose-400/60 shadow-rose-900/10"
           : "border-slate-800/80 hover:border-slate-700"
@@ -752,7 +736,17 @@ function LeadCard({
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex items-center gap-2 min-w-0">
-            <div className="shrink-0 w-7 h-7 rounded-xl border border-slate-800 bg-slate-950/50 flex items-center justify-center">
+            <div
+              draggable
+              onDragStart={(e) => {
+                try {
+                  e.dataTransfer.setData('leadId', lead.id);
+                  e.dataTransfer.effectAllowed = 'move';
+                } catch { }
+              }}
+              className="shrink-0 w-7 h-7 rounded-xl border border-slate-800 bg-slate-950/50 flex items-center justify-center cursor-grab active:cursor-grabbing"
+              title="Drag"
+            >
               <GripVertical className="w-4 h-4 text-slate-600" />
             </div>
             <div className="min-w-0">
@@ -858,45 +852,22 @@ function LeadCard({
       )}
 
       {cfg.showLastMessagePreview !== false && lead.last_message && (
-        <div className={cn(
-          'mt-3 rounded-xl border border-slate-800/80 bg-slate-950/35 px-3 py-2',
-          unread > 0 && 'border-rose-500/20'
-        )}>
+        <button
+          type="button"
+          onClick={onViewMessage}
+          className={cn(
+            'mt-3 w-full text-left rounded-xl border px-3 py-2 transition-colors',
+            'border-slate-800/80 bg-slate-950/35 hover:bg-slate-950/55 hover:border-slate-700',
+            unread > 0 && 'border-rose-500/20'
+          )}
+          title="Mesaji ac"
+        >
           <div className="text-[10px] uppercase tracking-wide font-bold text-slate-500">Son mesaj</div>
           <p className="mt-1 text-[12px] text-slate-200 line-clamp-2 leading-snug">
             {lead.last_message}
           </p>
-        </div>
-      )}
-
-      {/* Button to open lead details explicitly */}
-
-      <div className="mt-3 flex items-center justify-between gap-2">
-        <button
-          type="button"
-          onClick={onViewMessage}
-          className="inline-flex items-center gap-2 text-[11px] font-extrabold text-blue-200 hover:text-blue-100 rounded-lg px-2 py-1 border border-blue-900/30 bg-blue-950/20 hover:bg-blue-950/35 transition-colors"
-        >
-          Ətraflı
-          <ChevronRight className="w-3.5 h-3.5" />
         </button>
-
-        {Array.isArray(pipelineStages) && pipelineStages.length > 0 ? (
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] uppercase tracking-wide font-bold text-slate-500">Etap</span>
-            <select
-              value={lead.status}
-              onChange={(e) => onUpdateStatus(lead.id, e.target.value)}
-              className="h-8 rounded-lg bg-slate-950/60 border border-slate-800 text-slate-200 text-[11px] font-semibold px-2 focus:outline-none focus:ring-2 focus:ring-blue-600/40"
-              title="Etap deyis"
-            >
-              {pipelineStages.map((s) => (
-                <option key={s.id} value={s.id}>{s.label}</option>
-              ))}
-            </select>
-          </div>
-        ) : null}
-      </div>
+      )}
     </div>
   );
 }
