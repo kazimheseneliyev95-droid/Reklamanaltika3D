@@ -2273,7 +2273,44 @@ app.get('/api/analytics/response-times', requireTenantAuth, asyncHandler(async (
 
   const tenantId = req.tenantId;
 
+  // Compatibility: older DBs might not have messages.sender_user_id yet.
+  // Try to add it, but also be able to run without it.
+  let hasSenderUserId = false;
+  try {
+    const chk = await db.pool.query(
+      `SELECT 1
+       FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND table_name = 'messages'
+         AND column_name = 'sender_user_id'
+       LIMIT 1`
+    );
+    hasSenderUserId = chk.rowCount > 0;
+  } catch {
+    hasSenderUserId = false;
+  }
+
+  if (!hasSenderUserId) {
+    try {
+      await db.pool.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_user_id UUID REFERENCES users(id) ON DELETE SET NULL;');
+      await db.pool.query('CREATE INDEX IF NOT EXISTS idx_messages_tenant_sender_created_at ON messages (tenant_id, sender_user_id, created_at);');
+      const chk2 = await db.pool.query(
+        `SELECT 1
+         FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = 'messages'
+           AND column_name = 'sender_user_id'
+         LIMIT 1`
+      );
+      hasSenderUserId = chk2.rowCount > 0;
+    } catch {
+      hasSenderUserId = false;
+    }
+  }
+
   // Response events: each outbound that replies to the first inbound since previous outbound.
+  const senderExpr = hasSenderUserId ? 'm.sender_user_id' : 'NULL::uuid AS sender_user_id';
+
   const responseSql = `
     WITH leads_in_range AS (
       SELECT DISTINCT lead_id
@@ -2288,7 +2325,7 @@ app.get('/api/analytics/response-times', requireTenantAuth, asyncHandler(async (
         m.lead_id,
         m.direction,
         m.created_at,
-        m.sender_user_id,
+        ${senderExpr},
         COUNT(CASE WHEN m.direction = 'out' THEN 1 END) OVER (
           PARTITION BY m.lead_id
           ORDER BY m.created_at, m.id

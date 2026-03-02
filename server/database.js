@@ -324,6 +324,15 @@ async function initDb() {
             console.warn('⚠️ Migration warning (messages outbox columns):', e.message);
         }
 
+        // Ensure message sender tracking exists (response-time analytics)
+        try {
+            await client.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_user_id UUID REFERENCES users(id) ON DELETE SET NULL;');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_messages_tenant_lead_created_at ON messages (tenant_id, lead_id, created_at);');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_messages_tenant_sender_created_at ON messages (tenant_id, sender_user_id, created_at);');
+        } catch (e) {
+            console.warn('⚠️ Migration warning (messages sender_user_id):', e.message);
+        }
+
         // Analytics layouts (per-tenant, per-user)
         try {
             await client.query(`
