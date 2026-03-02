@@ -45,6 +45,7 @@ type StoryEvent =
 function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) {
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [loading, setLoading] = useState(true);
+    const [refreshing, setRefreshing] = useState(false);
     const [replyText, setReplyText] = useState('');
     const [isSending, setIsSending] = useState(false);
     const bottomRef = useRef<HTMLDivElement>(null);
@@ -52,6 +53,11 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
     const stickToBottomRef = useRef(true);
     const prevLenRef = useRef(0);
     const [showJump, setShowJump] = useState(false);
+
+    const messagesRef = useRef<ChatMessage[]>([]);
+    useEffect(() => {
+        messagesRef.current = messages;
+    }, [messages]);
 
     const isMeta = lead.source === 'facebook' || lead.source === 'instagram';
     const [metaMode, setMetaMode] = useState<'dm' | 'comment' | 'private'>(isMeta ? 'comment' : 'dm');
@@ -90,9 +96,22 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
         }
     }, []);
 
-    const loadMessages = useCallback(async () => {
-        if (!serverUrl || !lead.id) { setLoading(false); return; }
-        setLoading(true);
+    const loadLockRef = useRef(false);
+    const loadPendingRef = useRef(false);
+
+    const loadMessages = useCallback(async (opts?: { background?: boolean }) => {
+        if (!serverUrl || !lead.id) { setLoading(false); setRefreshing(false); return; }
+
+        if (loadLockRef.current) {
+            loadPendingRef.current = true;
+            return;
+        }
+        loadLockRef.current = true;
+
+        const background = Boolean(opts?.background) || messagesRef.current.length > 0;
+        if (background) setRefreshing(true);
+        else setLoading(true);
+
         try {
             const token = localStorage.getItem('crm_auth_token') || '';
             const res = await fetch(`${serverUrl}/api/leads/${lead.id}/messages`, {
@@ -100,10 +119,21 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
             });
             if (res.ok) {
                 const data = await res.json();
-                setMessages(data);
+                if (Array.isArray(data)) setMessages(data);
             }
-        } catch { /* non-fatal */ }
-        finally { setLoading(false); }
+        } catch {
+            /* non-fatal */
+        } finally {
+            loadLockRef.current = false;
+            setLoading(false);
+            setRefreshing(false);
+            if (loadPendingRef.current) {
+                loadPendingRef.current = false;
+                setTimeout(() => {
+                    loadMessages({ background: true });
+                }, 0);
+            }
+        }
     }, [serverUrl, lead.id]);
 
     useEffect(() => { loadMessages(); }, [loadMessages]);
@@ -136,17 +166,20 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
 
     // Live: listen for new socket messages
     useEffect(() => {
+        let t: any = null;
+        const schedule = () => {
+            if (t) clearTimeout(t);
+            t = setTimeout(() => loadMessages({ background: true }), 250);
+        };
+
         const cleanupUpdate = CrmService.onLeadUpdated((updated) => {
-            if (updated.id === lead.id || updated.phone === lead.phone) {
-                loadMessages();
-            }
+            if (updated.id === lead.id || updated.phone === lead.phone) schedule();
         });
         const cleanupNew = CrmService.onNewMessage((newLead) => {
-            if (newLead.id === lead.id || newLead.phone === lead.phone) {
-                loadMessages();
-            }
+            if (newLead.id === lead.id || newLead.phone === lead.phone) schedule();
         });
         return () => {
+            if (t) clearTimeout(t);
             cleanupUpdate();
             cleanupNew();
         };
@@ -184,7 +217,7 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                 body: JSON.stringify(payload)
             });
             if (res.ok) {
-                loadMessages();
+                loadMessages({ background: true });
             } else {
                 const data = await res.json().catch(() => ({}));
                 setSendError(String(data?.error || 'Mesaj gonderilemedi'));
@@ -197,7 +230,7 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
         }
     };
 
-    if (loading) return (
+    if (loading && messages.length === 0) return (
         <div className="flex items-center justify-center h-40 text-slate-500 text-sm">
             <span className="animate-pulse">Yüklənir...</span>
         </div>
@@ -210,8 +243,14 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                 <span className="text-xs font-semibold text-slate-400">
                     {messages.length} mesaj
                 </span>
-                <button onClick={loadMessages} className="text-[10px] text-blue-400 hover:text-blue-300">
-                    ↺ Yenilə
+                <button
+                    onClick={() => loadMessages({ background: true })}
+                    className={cn(
+                        "text-[10px] text-blue-400 hover:text-blue-300",
+                        refreshing && "opacity-70"
+                    )}
+                >
+                    {refreshing ? '↻ Yenilənir…' : '↺ Yenilə'}
                 </button>
             </div>
 

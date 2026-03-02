@@ -2194,11 +2194,29 @@ app.post('/api/leads/:id/messages', requireTenantAuth, asyncHandler(async (req, 
   }
 
   // Insert into messages as pending
-  const insertResult = await db.pool.query(`
-    INSERT INTO messages (lead_id, phone, body, direction, status, tenant_id, sender_user_id)
-    VALUES ($1, $2, $3, 'out', 'pending', $4, $5)
-    RETURNING id, created_at
-  `, [leadId, lead.phone, body, req.tenantId, req.userId || null]);
+  // Compatibility: older DBs might not have sender_user_id yet.
+  let insertResult = null;
+  try {
+    insertResult = await db.pool.query(`
+      INSERT INTO messages (lead_id, phone, body, direction, status, tenant_id, sender_user_id)
+      VALUES ($1, $2, $3, 'out', 'pending', $4, $5)
+      RETURNING id, created_at
+    `, [leadId, lead.phone, body, req.tenantId, req.userId || null]);
+  } catch (e) {
+    const msg = String(e?.message || 'insert_failed');
+    if (msg.includes('sender_user_id') && msg.includes('does not exist')) {
+      try {
+        await db.pool.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_user_id UUID REFERENCES users(id) ON DELETE SET NULL;');
+      } catch { }
+      insertResult = await db.pool.query(`
+        INSERT INTO messages (lead_id, phone, body, direction, status, tenant_id)
+        VALUES ($1, $2, $3, 'out', 'pending', $4)
+        RETURNING id, created_at
+      `, [leadId, lead.phone, body, req.tenantId]);
+    } else {
+      throw e;
+    }
+  }
 
   const newMsg = insertResult.rows[0];
 
