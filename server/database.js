@@ -99,6 +99,7 @@ async function initDb() {
           unread_count INTEGER DEFAULT 0,
           last_read_at TIMESTAMP,
           last_inbound_at TIMESTAMP,
+          last_outbound_at TIMESTAMP,
           tenant_id VARCHAR(50) DEFAULT 'admin',
           assignee_id UUID REFERENCES users(id) ON DELETE SET NULL,
           created_at TIMESTAMP DEFAULT NOW(),
@@ -169,6 +170,21 @@ async function initDb() {
           last_error TEXT,
           last_sent_at TIMESTAMP,
           last_test_at TIMESTAMP,
+          created_at TIMESTAMP DEFAULT NOW(),
+          updated_at TIMESTAMP DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS follow_ups (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          tenant_id VARCHAR(50) NOT NULL,
+          lead_id UUID NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+          assignee_id UUID REFERENCES users(id) ON DELETE SET NULL,
+          created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+          status VARCHAR(20) NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'done', 'cancelled')),
+          due_at TIMESTAMP NOT NULL,
+          note TEXT,
+          notified_at TIMESTAMP,
+          done_at TIMESTAMP,
           created_at TIMESTAMP DEFAULT NOW(),
           updated_at TIMESTAMP DEFAULT NOW()
         );
@@ -769,6 +785,7 @@ async function updateLeadMessage(phone, message, whatsappId, name = null, tenant
             assignee_id = COALESCE(assignee_id, $6),
             unread_count = CASE WHEN $7 = 'in' THEN COALESCE(unread_count, 0) + 1 ELSE unread_count END,
             last_inbound_at = CASE WHEN $7 = 'in' THEN NOW() ELSE last_inbound_at END,
+            last_outbound_at = CASE WHEN $7 = 'out' THEN NOW() ELSE last_outbound_at END,
             updated_at = NOW()
         WHERE phone = $4 AND tenant_id = $5
         RETURNING *;
@@ -988,37 +1005,49 @@ async function updateLeadValue(id, value, tenantId = 'admin') {
  */
 async function getLeads(filters = {}, tenantId = 'admin') {
     try {
-        let query = 'SELECT * FROM leads WHERE tenant_id = $1';
+        let query = `
+          SELECT l.*,
+                 fu.next_due_at AS next_followup_due_at
+          FROM leads l
+          LEFT JOIN LATERAL (
+            SELECT MIN(due_at) AS next_due_at
+            FROM follow_ups f
+            WHERE f.tenant_id = l.tenant_id
+              AND f.lead_id = l.id
+              AND f.status = 'open'
+          ) fu ON true
+          WHERE l.tenant_id = $1
+        `;
         const values = [tenantId];
         let paramCount = 2;
 
         if (filters.status) {
             const validStatus = validateStatus(filters.status);
-            query += ` AND status = $${paramCount}`;
+            query += ` AND l.status = $${paramCount}`;
             values.push(validStatus);
             paramCount++;
         }
 
         if (filters.startDate) {
-            query += ` AND created_at >= $${paramCount}::timestamptz`;
+            query += ` AND l.created_at >= $${paramCount}::timestamptz`;
             values.push(filters.startDate);
             paramCount++;
         }
 
         if (filters.endDate) {
             // Inclusive end-of-day for YYYY-MM-DD filters from UI
-            query += ` AND created_at < ($${paramCount}::date + INTERVAL '1 day')`;
+            query += ` AND l.created_at < ($${paramCount}::date + INTERVAL '1 day')`;
             values.push(filters.endDate);
             paramCount++;
         }
 
         if (filters.search) {
-            query += ` AND (name ILIKE $${paramCount} OR phone ILIKE $${paramCount} OR last_message ILIKE $${paramCount})`;
+            query += ` AND (l.name ILIKE $${paramCount} OR l.phone ILIKE $${paramCount} OR l.last_message ILIKE $${paramCount})`;
             values.push(`%${filters.search}%`);
             paramCount++;
         }
 
-        query += ' ORDER BY created_at DESC';
+        query += ' ORDER BY l.created_at DESC';
 
         if (filters.limit) {
             query += ` LIMIT $${paramCount}`;

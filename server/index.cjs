@@ -336,6 +336,68 @@ if (!process.env.DATABASE_URL) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// FOLLOW-UP SCHEDULER (in-app notifications)
+// ═══════════════════════════════════════════════════════════════
+
+let followUpTimer = null;
+let followUpTickBusy = false;
+
+async function followUpTick() {
+  if (followUpTickBusy) return;
+  if (!process.env.DATABASE_URL || !db || !db.pool) return;
+  followUpTickBusy = true;
+
+  try {
+    const result = await db.pool.query(
+      `UPDATE follow_ups f
+       SET notified_at = NOW(), updated_at = NOW()
+       FROM leads l
+       WHERE f.lead_id = l.id
+         AND f.tenant_id = l.tenant_id
+         AND f.id IN (
+           SELECT id
+           FROM follow_ups
+           WHERE status = 'open'
+             AND notified_at IS NULL
+             AND due_at <= NOW()
+           ORDER BY due_at ASC
+           FOR UPDATE SKIP LOCKED
+           LIMIT 50
+         )
+       RETURNING f.id, f.tenant_id, f.lead_id, f.assignee_id, f.due_at, f.note, l.phone, l.name;`
+    );
+
+    for (const row of (result.rows || [])) {
+      const tenantId = String(row.tenant_id || '').trim() || 'admin';
+      io.to(tenantId).emit('followup_due', {
+        followup_id: row.id,
+        lead_id: row.lead_id,
+        assignee_id: row.assignee_id || null,
+        due_at: row.due_at ? new Date(row.due_at).toISOString() : null,
+        note: row.note || null,
+        phone: row.phone || null,
+        name: row.name || null,
+      });
+    }
+  } catch (e) {
+    // non-fatal
+    try { console.warn('⚠️ followUpTick failed:', e?.message || e); } catch { }
+  } finally {
+    followUpTickBusy = false;
+  }
+}
+
+function startFollowUpScheduler() {
+  if (followUpTimer) return;
+  // Every 20s: pick up due follow-ups
+  followUpTimer = setInterval(() => {
+    followUpTick().catch(() => { });
+  }, 20000);
+}
+
+startFollowUpScheduler();
+
+// ═══════════════════════════════════════════════════════════════
 // META (FACEBOOK/INSTAGRAM) WEBHOOKS
 // ═══════════════════════════════════════════════════════════════
 
@@ -2169,6 +2231,134 @@ app.post('/api/leads/:id/read', requireTenantAuth, asyncHandler(async (req, res)
   res.json({ success: true });
 }));
 
+// ═══════════════════════════════════════════════════════════════
+// 📌 FOLLOW-UPS (Tasks / Reminders)
+// ═══════════════════════════════════════════════════════════════
+
+function parseDateTimeInput(value) {
+  const s = String(value || '').trim();
+  if (!s) return null;
+  const d = new Date(s);
+  return Number.isFinite(d.getTime()) ? d : null;
+}
+
+app.get('/api/leads/:id/follow-ups', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  const leadId = String(req.params.id || '').trim();
+  if (!leadId) return res.status(400).json({ error: 'Lead id is required' });
+
+  const rows = await db.pool.query(
+    `SELECT id, lead_id, assignee_id, created_by, status, due_at, note, notified_at, done_at, created_at, updated_at
+     FROM follow_ups
+     WHERE tenant_id = $1 AND lead_id = $2
+     ORDER BY due_at ASC`,
+    [req.tenantId, leadId]
+  );
+  res.json(rows.rows || []);
+}));
+
+app.post('/api/leads/:id/follow-ups', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  const leadId = String(req.params.id || '').trim();
+  const due = parseDateTimeInput(req.body?.due_at);
+  const note = String(req.body?.note || '').trim();
+  const assigneeIdRaw = req.body?.assignee_id;
+  const assigneeId = assigneeIdRaw ? String(assigneeIdRaw).trim() : null;
+
+  if (!leadId) return res.status(400).json({ error: 'Lead id is required' });
+  if (!due) return res.status(400).json({ error: 'due_at is required' });
+  if (due.getTime() < Date.now() - 5 * 60 * 1000) {
+    return res.status(400).json({ error: 'due_at cannot be in the past' });
+  }
+
+  const leadRes = await db.pool.query('SELECT id, assignee_id FROM leads WHERE id = $1 AND tenant_id = $2', [leadId, req.tenantId]);
+  if (leadRes.rowCount === 0) return res.status(404).json({ error: 'Lead not found' });
+  const lead = leadRes.rows[0];
+  const targetAssignee = assigneeId || lead.assignee_id || null;
+
+  const ins = await db.pool.query(
+    `INSERT INTO follow_ups (tenant_id, lead_id, assignee_id, created_by, status, due_at, note, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, 'open', $5, $6, NOW(), NOW())
+     RETURNING *`,
+    [req.tenantId, leadId, targetAssignee, req.userId || null, due.toISOString(), note || null]
+  );
+
+  // Broadcast lead updated (so UI can show next_followup_due_at)
+  try {
+    const updatedLeads = await db.getLeads({}, req.tenantId);
+    io.to(req.tenantId).emit('leads_updated', updatedLeads);
+  } catch { }
+
+  res.status(201).json(ins.rows[0]);
+}));
+
+app.patch('/api/follow-ups/:id', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  const id = String(req.params.id || '').trim();
+  if (!id) return res.status(400).json({ error: 'Follow-up id is required' });
+
+  const statusRaw = req.body?.status;
+  const status = statusRaw ? String(statusRaw).trim().toLowerCase() : null;
+  const due = req.body?.due_at !== undefined ? parseDateTimeInput(req.body?.due_at) : undefined;
+  const note = req.body?.note !== undefined ? String(req.body?.note || '').trim() : undefined;
+  const assigneeId = req.body?.assignee_id !== undefined ? (req.body?.assignee_id ? String(req.body.assignee_id).trim() : null) : undefined;
+
+  const allowed = new Set(['open', 'done', 'cancelled']);
+  if (status !== null && !allowed.has(status)) return res.status(400).json({ error: 'Invalid status' });
+  if (due === null) return res.status(400).json({ error: 'Invalid due_at' });
+
+  const sets = [];
+  const values = [];
+  let i = 1;
+
+  if (status !== null) {
+    sets.push(`status = $${i++}`);
+    values.push(status);
+    if (status === 'done') {
+      sets.push(`done_at = NOW()`);
+    }
+    if (status !== 'open') {
+      sets.push(`notified_at = COALESCE(notified_at, NOW())`);
+    }
+  }
+  if (due !== undefined) {
+    sets.push(`due_at = $${i++}`);
+    values.push(due ? due.toISOString() : null);
+    // If rescheduled, allow re-notify
+    sets.push(`notified_at = NULL`);
+  }
+  if (note !== undefined) {
+    sets.push(`note = $${i++}`);
+    values.push(note || null);
+  }
+  if (assigneeId !== undefined) {
+    sets.push(`assignee_id = $${i++}`);
+    values.push(assigneeId);
+  }
+  if (sets.length === 0) return res.status(400).json({ error: 'No fields to update' });
+
+  sets.push('updated_at = NOW()');
+  values.push(req.tenantId);
+  values.push(id);
+
+  const q = `
+    UPDATE follow_ups
+    SET ${sets.join(', ')}
+    WHERE tenant_id = $${i++} AND id = $${i}
+    RETURNING *
+  `;
+  const upd = await db.pool.query(q, values);
+  if (upd.rowCount === 0) return res.status(404).json({ error: 'Follow-up not found' });
+
+  // Broadcast lead list refresh (next due might change)
+  try {
+    const updatedLeads = await db.getLeads({}, req.tenantId);
+    io.to(req.tenantId).emit('leads_updated', updatedLeads);
+  } catch { }
+
+  res.json(upd.rows[0]);
+}));
+
 // ADDED IN PHASE 6: Sending Messages directly to DB Queue
 app.post('/api/leads/:id/messages', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
@@ -3254,6 +3444,14 @@ app.post('/api/meta/leads/:id/reply', requireTenantAuth, asyncHandler(async (req
     [lead.id, lead.phone, bodyText, pendingKey, baseMeta, req.tenantId]
   );
   const rowId = insertRes.rows[0]?.id;
+
+  // Track outbound activity (for response SLA dots)
+  try {
+    await db.pool.query(
+      'UPDATE leads SET last_outbound_at = NOW(), updated_at = NOW() WHERE id = $1 AND tenant_id = $2',
+      [lead.id, req.tenantId]
+    );
+  } catch { }
 
   // Instant UI feedback: show the outgoing message as "sending"
   io.to(req.tenantId).emit('new_message', {

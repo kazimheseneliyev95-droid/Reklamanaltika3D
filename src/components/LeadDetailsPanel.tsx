@@ -465,6 +465,281 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
     );
 }
 
+type FollowUpItem = {
+    id: string;
+    lead_id: string;
+    assignee_id: string | null;
+    created_by: string | null;
+    status: 'open' | 'done' | 'cancelled';
+    due_at: string;
+    note: string | null;
+    notified_at: string | null;
+    done_at: string | null;
+    created_at: string;
+    updated_at: string;
+};
+
+function toDateTimeLocalValue(d: Date): string {
+    const dt = new Date(d);
+    // Convert to local datetime-local string
+    dt.setMinutes(dt.getMinutes() - dt.getTimezoneOffset());
+    return dt.toISOString().slice(0, 16);
+}
+
+function FollowUpsTab({
+    lead,
+    serverUrl,
+    teamMembers,
+    currentUserId,
+}: {
+    lead: Lead;
+    serverUrl: string;
+    teamMembers: any[];
+    currentUserId?: string | null;
+}) {
+    const [items, setItems] = useState<FollowUpItem[]>([]);
+    const [busy, setBusy] = useState(false);
+    const [err, setErr] = useState('');
+
+    const [dueAt, setDueAt] = useState(() => toDateTimeLocalValue(new Date(Date.now() + 60 * 60 * 1000)));
+    const [note, setNote] = useState('');
+    const [assigneeId, setAssigneeId] = useState<string>(() => String((lead as any).assignee_id || '') || '');
+
+    const load = useCallback(async () => {
+        if (!serverUrl || !lead?.id) return;
+        setBusy(true);
+        setErr('');
+        try {
+            const token = localStorage.getItem('crm_auth_token') || '';
+            const res = await fetch(`${serverUrl}/api/leads/${lead.id}/follow-ups`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (!res.ok) {
+                const data = await res.json().catch(() => ({}));
+                throw new Error(String(data?.error || 'Follow-up yuklenmedi'));
+            }
+            const data = await res.json();
+            setItems(Array.isArray(data) ? data : []);
+        } catch (e: any) {
+            setErr(e?.message || 'Follow-up yuklenmedi');
+        } finally {
+            setBusy(false);
+        }
+    }, [serverUrl, lead?.id]);
+
+    useEffect(() => {
+        load();
+    }, [load]);
+
+    const create = async () => {
+        if (!serverUrl || !lead?.id) return;
+        setBusy(true);
+        setErr('');
+        try {
+            const token = localStorage.getItem('crm_auth_token') || '';
+            const iso = new Date(dueAt).toISOString();
+            const payload: any = { due_at: iso, note: note.trim() };
+            if (assigneeId) payload.assignee_id = assigneeId;
+
+            const res = await fetch(`${serverUrl}/api/leads/${lead.id}/follow-ups`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(String(data?.error || 'Follow-up yaradilmedi'));
+            setNote('');
+            await load();
+        } catch (e: any) {
+            setErr(e?.message || 'Follow-up yaradilmedi');
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const patchItem = async (id: string, patch: any) => {
+        if (!serverUrl) return;
+        setBusy(true);
+        setErr('');
+        try {
+            const token = localStorage.getItem('crm_auth_token') || '';
+            const res = await fetch(`${serverUrl}/api/follow-ups/${id}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify(patch)
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(String(data?.error || 'Follow-up update olmadi'));
+            await load();
+        } catch (e: any) {
+            setErr(e?.message || 'Follow-up update olmadi');
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const snooze = async (id: string, minutes: number) => {
+        const it = items.find(x => x.id === id);
+        if (!it) return;
+        const base = new Date(it.due_at);
+        const next = new Date(base.getTime() + minutes * 60000);
+        await patchItem(id, { due_at: next.toISOString() });
+    };
+
+    const now = Date.now();
+    const open = items.filter(x => x.status === 'open');
+    const done = items.filter(x => x.status !== 'open');
+
+    const nameFor = (uid: string | null) => {
+        if (!uid) return 'Unassigned';
+        const u = (teamMembers || []).find((x: any) => x.id === uid);
+        return u?.display_name || u?.username || uid;
+    };
+
+    return (
+        <div className="h-full overflow-y-auto overscroll-contain touch-pan-y" style={{ WebkitOverflowScrolling: 'touch' }}>
+            <div className="p-4 sm:p-6 space-y-4 max-w-2xl mx-auto w-full">
+                <div className="flex items-center justify-between gap-2">
+                    <div>
+                        <div className="text-sm font-extrabold text-white">Follow-up</div>
+                        <div className="text-[12px] text-slate-500">Vaxt qoyun, vaxti gelende operatora bildiris gedecek.</div>
+                    </div>
+                    <button
+                        type="button"
+                        onClick={load}
+                        disabled={busy}
+                        className="text-[11px] font-bold text-blue-400 hover:text-blue-300"
+                    >
+                        {busy ? '...' : '↺ Yenilə'}
+                    </button>
+                </div>
+
+                {err ? (
+                    <div className="rounded-xl border border-red-900/40 bg-red-950/15 px-3 py-2 text-[12px] text-red-300">{err}</div>
+                ) : null}
+
+                <div className="rounded-2xl border border-slate-800 bg-slate-900/30 p-4">
+                    <div className="text-[11px] uppercase font-bold text-slate-500">Yeni follow-up</div>
+                    <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <div>
+                            <label className="text-[10px] uppercase font-bold text-slate-500">Vaxt</label>
+                            <input
+                                type="datetime-local"
+                                value={dueAt}
+                                onChange={(e) => setDueAt(e.target.value)}
+                                className="mt-1 w-full h-10 rounded-xl bg-slate-950 border border-slate-800 px-3 text-sm text-slate-100"
+                            />
+                        </div>
+                        <div>
+                            <label className="text-[10px] uppercase font-bold text-slate-500">Operator</label>
+                            <select
+                                value={assigneeId}
+                                onChange={(e) => setAssigneeId(e.target.value)}
+                                className="mt-1 w-full h-10 rounded-xl bg-slate-950 border border-slate-800 px-3 text-sm text-slate-100"
+                            >
+                                <option value="">(lead-in operatoru)</option>
+                                {(teamMembers || []).map((u: any) => (
+                                    <option key={u.id} value={u.id}>{u.display_name || u.username}</option>
+                                ))}
+                            </select>
+                        </div>
+                    </div>
+                    <div className="mt-2">
+                        <label className="text-[10px] uppercase font-bold text-slate-500">Qeyd</label>
+                        <input
+                            type="text"
+                            value={note}
+                            onChange={(e) => setNote(e.target.value)}
+                            placeholder="məs: Teklif yaz / cavab gozle"
+                            className="mt-1 w-full h-10 rounded-xl bg-slate-950 border border-slate-800 px-3 text-sm text-slate-100 placeholder:text-slate-600"
+                        />
+                    </div>
+                    <div className="mt-3 flex justify-end">
+                        <button
+                            type="button"
+                            onClick={create}
+                            disabled={busy || !dueAt}
+                            className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-extrabold disabled:opacity-60"
+                        >
+                            {busy ? '...' : 'Elave et'}
+                        </button>
+                    </div>
+                </div>
+
+                <div className="space-y-2">
+                    <div className="text-[11px] uppercase font-bold text-slate-500">Acıq ({open.length})</div>
+                    {open.length === 0 ? (
+                        <div className="text-sm text-slate-600">Acıq follow-up yoxdur.</div>
+                    ) : open.map((it) => {
+                        const dueMs = new Date(it.due_at).getTime();
+                        const diffMin = (dueMs - now) / 60000;
+                        const overdue = diffMin <= 0;
+                        const pill = overdue
+                            ? 'border-violet-700/40 bg-violet-950/15 text-violet-200'
+                            : diffMin <= 15
+                                ? 'border-amber-900/40 bg-amber-950/10 text-amber-200'
+                                : 'border-slate-800 bg-slate-950/20 text-slate-300';
+                        return (
+                            <div key={it.id} className="rounded-2xl border border-slate-800 bg-slate-950/20 p-3">
+                                <div className="flex items-start justify-between gap-2">
+                                    <div className="min-w-0">
+                                        <div className="flex items-center gap-2">
+                                            <span className={cn('inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-extrabold border', pill)}>
+                                                {overdue ? 'DUE' : 'Plan'}
+                                            </span>
+                                            <span className="text-[12px] font-extrabold text-white tabular-nums">{new Date(it.due_at).toLocaleString()}</span>
+                                        </div>
+                                        <div className="mt-1 text-[11px] text-slate-400">Operator: <span className="text-slate-200 font-semibold">{nameFor(it.assignee_id)}</span></div>
+                                        {it.note ? <div className="mt-1 text-[12px] text-slate-200">{it.note}</div> : null}
+                                    </div>
+                                    <div className="shrink-0 flex items-center gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => patchItem(it.id, { status: 'done' })}
+                                            className="px-2.5 py-1.5 rounded-lg text-[11px] font-extrabold bg-emerald-600/20 border border-emerald-900/30 text-emerald-200 hover:bg-emerald-600/30"
+                                        >
+                                            Done
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => patchItem(it.id, { status: 'cancelled' })}
+                                            className="px-2.5 py-1.5 rounded-lg text-[11px] font-extrabold bg-slate-900 border border-slate-800 text-slate-300 hover:bg-slate-800"
+                                        >
+                                            Cancel
+                                        </button>
+                                    </div>
+                                </div>
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                    <button type="button" onClick={() => snooze(it.id, 10)} className="px-2 py-1 rounded-lg text-[10px] font-bold border border-slate-800 text-slate-300 hover:bg-slate-900">+10dk</button>
+                                    <button type="button" onClick={() => snooze(it.id, 60)} className="px-2 py-1 rounded-lg text-[10px] font-bold border border-slate-800 text-slate-300 hover:bg-slate-900">+1saat</button>
+                                    <button type="button" onClick={() => snooze(it.id, 24 * 60)} className="px-2 py-1 rounded-lg text-[10px] font-bold border border-slate-800 text-slate-300 hover:bg-slate-900">+1gun</button>
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+
+                {done.length > 0 ? (
+                    <details className="rounded-2xl border border-slate-800 bg-slate-950/15 p-3">
+                        <summary className="cursor-pointer text-[11px] font-extrabold text-slate-300 select-none">Tarixce ({done.length})</summary>
+                        <div className="mt-3 space-y-2">
+                            {done.slice(-20).reverse().map((it) => (
+                                <div key={it.id} className="rounded-xl border border-slate-800 bg-slate-950/20 px-3 py-2">
+                                    <div className="flex items-center justify-between gap-2">
+                                        <div className="text-[12px] font-bold text-slate-200">{new Date(it.due_at).toLocaleString()}</div>
+                                        <div className="text-[10px] font-extrabold text-slate-500">{it.status.toUpperCase()}</div>
+                                    </div>
+                                    {it.note ? <div className="mt-1 text-[12px] text-slate-400">{it.note}</div> : null}
+                                </div>
+                            ))}
+                        </div>
+                    </details>
+                ) : null}
+            </div>
+        </div>
+    );
+}
+
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -491,7 +766,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
         note: lead.last_message || '',
         assignee_id: lead.assignee_id || '',
     });
-    const [activeTab, setActiveTab] = useState<'info' | 'feed' | 'chat' | 'stats'>('chat');
+    const [activeTab, setActiveTab] = useState<'info' | 'feed' | 'chat' | 'follow' | 'stats'>('chat');
     const [isSaving, setIsSaving] = useState(false);
     const [savedOk, setSavedOk] = useState(false);
     const feedRef = useRef<HTMLDivElement>(null);
@@ -880,6 +1155,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                             { id: 'info', label: 'Məlumat' },
                             { id: 'feed', label: 'Gedişat' },
                             { id: 'chat', label: 'Yazışma' },
+                            { id: 'follow', label: 'Follow-up' },
                             { id: 'stats', label: 'Statistika' },
                         ] as const).map((t) => (
                             <button
@@ -904,7 +1180,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                     {/* ───── LEFT SIDEBAR ───── */}
                     <aside className={cn(
                         "w-full md:w-72 lg:w-80 shrink-0 min-h-0 border-r border-white/5 bg-[#111827]/60 flex flex-col overflow-hidden overscroll-contain relative",
-                        ['feed', 'chat', 'stats'].includes(activeTab) ? "hidden md:flex" : "flex"
+                        ['feed', 'chat', 'follow', 'stats'].includes(activeTab) ? "hidden md:flex" : "flex"
                     )}>
 
                         {/* Avatar / Name Block */}
@@ -1103,7 +1379,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                     {/* ───── RIGHT MAIN AREA ───── */}
                     <main className={cn(
                         "flex-1 min-h-0 flex flex-col min-w-0 bg-[#0d1117]",
-                        ['feed', 'chat', 'stats'].includes(activeTab) ? "flex" : "hidden md:flex"
+                        ['feed', 'chat', 'follow', 'stats'].includes(activeTab) ? "flex" : "hidden md:flex"
                     )}>
 
                         {/* Tab Bar (Desktop only) */}
@@ -1111,6 +1387,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                             {[
                                 { id: 'feed', label: 'Gedişat', icon: <MessageSquare className="w-3.5 h-3.5" /> },
                                 { id: 'chat', label: 'Yazışmalar', icon: <Edit3 className="w-3.5 h-3.5" /> },
+                                { id: 'follow', label: 'Follow-up', icon: <Clock className="w-3.5 h-3.5" /> },
                                 { id: 'stats', label: 'Statistika', icon: <BarChart2 className="w-3.5 h-3.5" /> },
                             ].map(tab => (
                                 <button
@@ -1337,6 +1614,15 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                         </div>
                                     </div>
                                 </div>
+                            )}
+
+                            {activeTab === 'follow' && (
+                                <FollowUpsTab
+                                    lead={lead}
+                                    serverUrl={serverUrl}
+                                    teamMembers={teamMembers}
+                                    currentUserId={currentUser?.id || null}
+                                />
                             )}
 
                             {/* ── TAB: CHAT History ── */}

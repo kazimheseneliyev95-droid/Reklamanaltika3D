@@ -504,6 +504,14 @@ class CrmServiceImpl {
       localStorage.removeItem(getStorageKey());
       this.resetListeners.forEach((cb) => cb());
     });
+
+    this.socket.on('followup_due', (data: any) => {
+      try {
+        this.followupDueListeners.forEach((cb) => cb(data));
+      } catch {
+        // ignore
+      }
+    });
   }
 
   // 🆕 Clean up old processed message IDs
@@ -620,6 +628,12 @@ class CrmServiceImpl {
     const id = `reconnect-${this.listenerIdCounter++}`;
     this.reconnectListeners.set(id, cb);
     return () => this.reconnectListeners.delete(id);
+  }
+
+  onFollowupDue(cb: (data: any) => void): () => void {
+    const id = `followup-${this.listenerIdCounter++}`;
+    this.followupDueListeners.set(id, cb);
+    return () => this.followupDueListeners.delete(id);
   }
 
   private notifyReconnectListeners() {

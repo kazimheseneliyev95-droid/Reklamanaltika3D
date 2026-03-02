@@ -30,6 +30,7 @@ export default function CRMPage() {
   const pipelineSig = useMemo(() => (pipelineStages || []).map(s => s.id).join('|'), [pipelineStages]);
 
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
+  const [followupToast, setFollowupToast] = useState<any | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [filters, setFilters] = useState<CRMFilters>(() => makeDefaultCRMFilters(pipelineStages));
   const [showNotif, setShowNotif] = useState(false);
@@ -238,8 +239,66 @@ export default function CRMPage() {
     return () => document.removeEventListener('mousedown', onDoc);
   }, [showNotif]);
 
+  // Follow-up due notifications (in-app)
+  useEffect(() => {
+    const cleanup = CrmService.onFollowupDue((data: any) => {
+      try {
+        const assigneeId = data?.assignee_id ? String(data.assignee_id) : '';
+        if (assigneeId && currentUser?.id && assigneeId !== String(currentUser.id)) return;
+        setFollowupToast({
+          followup_id: data?.followup_id || null,
+          lead_id: data?.lead_id || null,
+          due_at: data?.due_at || null,
+          note: data?.note || null,
+          name: data?.name || null,
+          phone: data?.phone || null,
+        });
+      } catch { }
+    });
+    return () => cleanup();
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    if (!followupToast) return;
+    const t = setTimeout(() => setFollowupToast(null), 6000);
+    return () => clearTimeout(t);
+  }, [followupToast]);
+
   return (
     <div className="p-2 sm:p-6 max-w-[1600px] mx-auto h-full flex flex-col font-sans space-y-2 sm:space-y-6">
+
+      {followupToast ? (
+        <div className="fixed top-4 right-4 z-[60] w-[360px] max-w-[92vw] rounded-2xl border border-violet-900/40 bg-violet-950/20 backdrop-blur px-4 py-3 shadow-2xl">
+          <div className="text-[10px] uppercase tracking-wide font-extrabold text-violet-200">Follow-up vaxti geldi</div>
+          <div className="mt-1 text-sm font-bold text-white truncate">
+            {String(followupToast.name || followupToast.phone || 'Lead')}
+          </div>
+          {followupToast.note ? (
+            <div className="mt-1 text-[12px] text-slate-200 line-clamp-2">{String(followupToast.note)}</div>
+          ) : null}
+          <div className="mt-2 flex items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={() => setFollowupToast(null)}
+              className="text-[11px] font-bold text-slate-300 hover:text-white"
+            >
+              Bagla
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const lid = String(followupToast.lead_id || '');
+                const found = lid ? leads.find(l => l.id === lid) : null;
+                if (found) setSelectedLead(found);
+                setFollowupToast(null);
+              }}
+              className="px-3 py-1.5 rounded-lg text-[11px] font-extrabold border border-violet-700/40 bg-violet-600/20 text-violet-100 hover:bg-violet-600/30"
+            >
+              Ac
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {/* HEADER & METRICS */}
       <div className="flex flex-col gap-3 sm:gap-6 border-b border-slate-800 pb-3 sm:pb-6">
@@ -743,6 +802,29 @@ function LeadCard({
     ? (mapped ? hexToRgba(mapped, 0.30) : `hsla(${leadHue}, 85%, 60%, 0.30)`)
     : '';
 
+  const nowMs = Date.now();
+  const lastInMs = lead.last_inbound_at ? new Date(String(lead.last_inbound_at)).getTime() : null;
+  const lastOutMs = (lead as any).last_outbound_at ? new Date(String((lead as any).last_outbound_at)).getTime() : null;
+  const waiting = Boolean(lastInMs && (!lastOutMs || (lastOutMs < (lastInMs as number))));
+  const waitingMin = waiting && lastInMs ? (nowMs - lastInMs) / 60000 : 0;
+
+  let responseDot = null as null | { color: string; title: string };
+  if (waiting) {
+    const m = waitingMin;
+    if (m <= 10) responseDot = { color: '#22c55e', title: `Cavab gecikmesi: ${m.toFixed(0)} dk (yasil)` };
+    else if (m <= 30) responseDot = { color: '#f59e0b', title: `Cavab gecikmesi: ${m.toFixed(0)} dk (sari)` };
+    else responseDot = { color: '#ef4444', title: `Cavab gecikmesi: ${m.toFixed(0)} dk (qirmizi)` };
+  }
+
+  const nextDueMs = (lead as any).next_followup_due_at ? new Date(String((lead as any).next_followup_due_at)).getTime() : null;
+  let followDot = null as null | { color: string; title: string };
+  if (nextDueMs && Number.isFinite(nextDueMs)) {
+    const diffMin = (nextDueMs - nowMs) / 60000;
+    if (diffMin <= 0) followDot = { color: '#8b5cf6', title: `Follow-up kecib: ${Math.abs(diffMin).toFixed(0)} dk` };
+    else if (diffMin <= 15) followDot = { color: '#a855f7', title: `Follow-up yaxindir: ${diffMin.toFixed(0)} dk` };
+    else followDot = { color: '#60a5fa', title: `Follow-up plan: ${diffMin.toFixed(0)} dk` };
+  }
+
   return (
     <div
       className={cn(
@@ -786,6 +868,17 @@ function LeadCard({
                   <span className="shrink-0 inline-flex items-center gap-1 rounded-full border border-rose-500/30 bg-rose-950/25 px-2 py-0.5 text-[10px] font-extrabold text-rose-200 tabular-nums">
                     <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />
                     {unread > 99 ? '99+' : unread}
+                  </span>
+                ) : null}
+
+                {followDot || responseDot ? (
+                  <span className="shrink-0 inline-flex items-center gap-1">
+                    {followDot ? (
+                      <span className="w-2.5 h-2.5 rounded-full border border-black/30" style={{ background: followDot.color }} title={followDot.title} />
+                    ) : null}
+                    {responseDot ? (
+                      <span className="w-2.5 h-2.5 rounded-full border border-black/30" style={{ background: responseDot.color }} title={responseDot.title} />
+                    ) : null}
                   </span>
                 ) : null}
                 {hasValue ? (
