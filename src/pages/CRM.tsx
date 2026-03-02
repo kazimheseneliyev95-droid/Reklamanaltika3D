@@ -7,6 +7,7 @@ import { cn, formatCurrency } from '../lib/utils';
 import { LeadDetailsPanel } from '../components/LeadDetailsPanel';
 import { loadCRMSettings, CustomField, LeadCardUISettings } from '../lib/crmSettings';
 import { CRMFilterSidebar, countActiveFilters, makeDefaultCRMFilters, type CRMFilters } from '../components/CRMFilterSidebar';
+import { CrmService } from '../services/CrmService';
 
 export default function CRMPage() {
   const [activeMobileTab, setActiveMobileTab] = useState<string>('new');
