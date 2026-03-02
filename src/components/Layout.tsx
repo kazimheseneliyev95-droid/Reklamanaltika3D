@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Calculator, ShieldCheck, LogOut, BarChart3, Settings } from 'lucide-react';
+import { LayoutDashboard, Calculator, ShieldCheck, LogOut, BarChart3, Settings, Timer } from 'lucide-react';
 import { useAppStore } from '../context/Store';
 import { cn } from '../lib/utils';
 
@@ -7,7 +7,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const { logout, currentUser } = useAppStore();
 
-  const isActivePath = (path: string) => {
+  const isPathMatch = (path: string) => {
     if (path === '/') return location.pathname === '/';
     return location.pathname === path || location.pathname.startsWith(path + '/');
   };
@@ -20,8 +20,14 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       { name: 'Simulator', path: '/', icon: <Calculator className="w-5 h-5" /> },
       { name: 'CRM (Classic)', path: '/crm', icon: <LayoutDashboard className="w-5 h-5" /> },
       { name: 'Analitika', path: '/analytics', icon: <BarChart3 className="w-5 h-5" /> },
+      { name: 'Cavab Sureleri', path: '/analytics/response-times', icon: <Timer className="w-5 h-5" /> },
       { name: 'Ayarlar', path: '/settings', icon: <Settings className="w-5 h-5" /> },
     ];
+
+  // Mark only the most specific matching route as active
+  const activePath = (navItems || [])
+    .filter((i) => isPathMatch(i.path))
+    .sort((a, b) => b.path.length - a.path.length)[0]?.path;
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-50 flex flex-col md:flex-row">
@@ -49,7 +55,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       {/* Mobile Bottom Navigation (PWA style) */}
       <nav className="mobile-bottom-nav md:hidden fixed bottom-0 w-full bg-slate-900 border-t border-slate-800 z-50 flex items-center justify-around pb-safe">
          {navItems.map((item) => {
-           const isActive = isActivePath(item.path);
+           const isActive = activePath === item.path;
            return (
              <Link
               key={item.path}
@@ -90,7 +96,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
         <nav className="p-4 space-y-2 flex-1">
           {navItems.map((item) => {
-            const isActive = isActivePath(item.path);
+            const isActive = activePath === item.path;
             return (
               <Link
                 key={item.path}

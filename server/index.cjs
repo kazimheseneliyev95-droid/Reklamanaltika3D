@@ -2195,10 +2195,10 @@ app.post('/api/leads/:id/messages', requireTenantAuth, asyncHandler(async (req, 
 
   // Insert into messages as pending
   const insertResult = await db.pool.query(`
-    INSERT INTO messages (lead_id, phone, body, direction, status, tenant_id)
-    VALUES ($1, $2, $3, 'out', 'pending', $4)
+    INSERT INTO messages (lead_id, phone, body, direction, status, tenant_id, sender_user_id)
+    VALUES ($1, $2, $3, 'out', 'pending', $4, $5)
     RETURNING id, created_at
-  `, [leadId, lead.phone, body, req.tenantId]);
+  `, [leadId, lead.phone, body, req.tenantId, req.userId || null]);
 
   const newMsg = insertResult.rows[0];
 
@@ -2231,6 +2231,260 @@ app.get('/api/stats', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   const stats = await db.getLeadStats(req.tenantId);
   res.json(stats);
+}));
+
+// ═══════════════════════════════════════════════════════════════
+// ⏱️ RESPONSE TIME ANALYTICS
+// ═══════════════════════════════════════════════════════════════
+
+function parseIsoDateOrNull(v) {
+  const s = String(v || '').trim();
+  if (!s) return null;
+  const d = new Date(s);
+  return Number.isFinite(d.getTime()) ? d : null;
+}
+
+function toStageIdForConversion(settings) {
+  const stages = Array.isArray(settings?.pipelineStages) ? settings.pipelineStages : [];
+  const byId = stages.find((s) => String(s?.id || '').toLowerCase() === 'won');
+  if (byId) return String(byId.id);
+  const byLabel = stages.find((s) => /sat|sale|won/i.test(String(s?.label || '')));
+  if (byLabel) return String(byLabel.id);
+  const byGreen = stages.find((s) => String(s?.color || '').toLowerCase() === 'green');
+  if (byGreen) return String(byGreen.id);
+  return null;
+}
+
+app.get('/api/analytics/response-times', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  if (!db || !db.pool) return res.status(503).json({ error: 'Database not ready' });
+
+  const end = parseIsoDateOrNull(req.query.end) || new Date();
+  const start = parseIsoDateOrNull(req.query.start) || new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+  // Clamp: max 90 days
+  const maxSpanMs = 90 * 24 * 60 * 60 * 1000;
+  if ((end.getTime() - start.getTime()) > maxSpanMs) {
+    return res.status(400).json({ error: 'Date range too large (max 90 days)' });
+  }
+
+  const settings = await db.getCRMSettings(req.tenantId).catch(() => null);
+  const conversionStageId = toStageIdForConversion(settings);
+
+  const tenantId = req.tenantId;
+
+  // Response events: each outbound that replies to the first inbound since previous outbound.
+  const responseSql = `
+    WITH leads_in_range AS (
+      SELECT DISTINCT lead_id
+      FROM messages
+      WHERE tenant_id = $1
+        AND direction = 'out'
+        AND created_at BETWEEN $2::timestamptz AND $3::timestamptz
+    ),
+    ordered AS (
+      SELECT
+        m.id,
+        m.lead_id,
+        m.direction,
+        m.created_at,
+        m.sender_user_id,
+        COUNT(CASE WHEN m.direction = 'out' THEN 1 END) OVER (
+          PARTITION BY m.lead_id
+          ORDER BY m.created_at, m.id
+        ) AS out_count
+      FROM messages m
+      JOIN leads_in_range r ON r.lead_id = m.lead_id
+      WHERE m.tenant_id = $1
+    ),
+    inbound_groups AS (
+      SELECT lead_id, out_count, MIN(created_at) AS inbound_at
+      FROM ordered
+      WHERE direction = 'in'
+      GROUP BY lead_id, out_count
+    ),
+    responses AS (
+      SELECT
+        o.lead_id,
+        o.id AS outbound_id,
+        o.created_at AS replied_at,
+        o.sender_user_id,
+        o.out_count,
+        ig.inbound_at
+      FROM ordered o
+      JOIN inbound_groups ig
+        ON ig.lead_id = o.lead_id
+       AND ig.out_count = o.out_count - 1
+      WHERE o.direction = 'out'
+        AND o.created_at BETWEEN $2::timestamptz AND $3::timestamptz
+        AND ig.inbound_at IS NOT NULL
+    )
+    SELECT
+      r.lead_id,
+      r.outbound_id,
+      r.sender_user_id,
+      r.out_count,
+      r.inbound_at,
+      r.replied_at,
+      EXTRACT(EPOCH FROM (r.replied_at - r.inbound_at)) / 60.0 AS response_minutes
+    FROM responses r
+    ORDER BY r.replied_at ASC;
+  `;
+
+  const rows = await db.pool.query(responseSql, [tenantId, start.toISOString(), end.toISOString()]);
+  const events = rows.rows || [];
+
+  // Basic stats helpers
+  const minutes = events.map((e) => Number(e.response_minutes)).filter((n) => Number.isFinite(n) && n >= 0);
+  minutes.sort((a, b) => a - b);
+
+  const pick = (arr, q) => {
+    if (!arr.length) return null;
+    const idx = Math.min(arr.length - 1, Math.max(0, Math.floor(q * (arr.length - 1))));
+    return arr[idx];
+  };
+
+  const overall = {
+    count: minutes.length,
+    avg_minutes: minutes.length ? (minutes.reduce((s, x) => s + x, 0) / minutes.length) : null,
+    min_minutes: minutes.length ? minutes[0] : null,
+    max_minutes: minutes.length ? minutes[minutes.length - 1] : null,
+    p50_minutes: pick(minutes, 0.50),
+    p90_minutes: pick(minutes, 0.90),
+  };
+
+  // By operator
+  const byUser = new Map();
+  for (const e of events) {
+    const uid = e.sender_user_id ? String(e.sender_user_id) : 'unknown';
+    const m = Number(e.response_minutes);
+    if (!Number.isFinite(m) || m < 0) continue;
+    if (!byUser.has(uid)) byUser.set(uid, []);
+    byUser.get(uid).push(m);
+  }
+
+  const userIds = Array.from(byUser.keys()).filter((id) => id !== 'unknown');
+  let usersById = {};
+  if (userIds.length > 0) {
+    const ures = await db.pool.query(
+      'SELECT id, username, display_name FROM users WHERE tenant_id = $1 AND id = ANY($2::uuid[])',
+      [tenantId, userIds]
+    );
+    for (const u of (ures.rows || [])) {
+      usersById[String(u.id)] = u.display_name || u.username || String(u.id);
+    }
+  }
+
+  const by_operator = Array.from(byUser.entries()).map(([id, arr]) => {
+    arr.sort((a, b) => a - b);
+    const avg = arr.length ? (arr.reduce((s, x) => s + x, 0) / arr.length) : null;
+    return {
+      user_id: id === 'unknown' ? null : id,
+      name: id === 'unknown' ? 'Unknown' : (usersById[id] || id),
+      count: arr.length,
+      avg_minutes: avg,
+      min_minutes: arr.length ? arr[0] : null,
+      max_minutes: arr.length ? arr[arr.length - 1] : null,
+      p50_minutes: pick(arr, 0.50),
+      p90_minutes: pick(arr, 0.90),
+    };
+  }).sort((a, b) => (b.count || 0) - (a.count || 0));
+
+  // Category split: first outbound reply for a lead is treated as "new"
+  const cat = { new: [], conversation: [] };
+  for (const e of events) {
+    const m = Number(e.response_minutes);
+    if (!Number.isFinite(m) || m < 0) continue;
+    if (Number(e.out_count) === 1) cat.new.push(m);
+    else cat.conversation.push(m);
+  }
+  const makeStats = (arr) => {
+    const a = arr.slice().sort((x, y) => x - y);
+    return {
+      count: a.length,
+      avg_minutes: a.length ? (a.reduce((s, x) => s + x, 0) / a.length) : null,
+      min_minutes: a.length ? a[0] : null,
+      max_minutes: a.length ? a[a.length - 1] : null,
+      p50_minutes: pick(a, 0.50),
+      p90_minutes: pick(a, 0.90),
+    };
+  };
+  const categories = { new: makeStats(cat.new), conversation: makeStats(cat.conversation) };
+
+  // Conversion correlation: bucket first response time per lead vs current lead status
+  const firstByLead = new Map();
+  for (const e of events) {
+    const lid = String(e.lead_id);
+    const outCount = Number(e.out_count);
+    const m = Number(e.response_minutes);
+    if (!Number.isFinite(m) || m < 0) continue;
+    // first reply only
+    if (outCount === 1 && !firstByLead.has(lid)) firstByLead.set(lid, m);
+  }
+  const leadIds = Array.from(firstByLead.keys());
+  let leadStatus = {};
+  if (leadIds.length > 0) {
+    const lres = await db.pool.query(
+      'SELECT id, status, value FROM leads WHERE tenant_id = $1 AND id = ANY($2::uuid[])',
+      [tenantId, leadIds]
+    );
+    for (const r of (lres.rows || [])) {
+      leadStatus[String(r.id)] = { status: r.status ? String(r.status) : '', value: Number(r.value || 0) };
+    }
+  }
+
+  const buckets = [
+    { key: '0-5', min: 0, max: 5 },
+    { key: '5-15', min: 5, max: 15 },
+    { key: '15-60', min: 15, max: 60 },
+    { key: '60-240', min: 60, max: 240 },
+    { key: '240+', min: 240, max: Infinity },
+  ];
+  const bucketStats = buckets.map((b) => ({
+    bucket: b.key,
+    leads: 0,
+    converted: 0,
+    conversion_rate: null,
+    avg_first_response_minutes: null,
+  }));
+  const accum = new Map(bucketStats.map((b) => [b.bucket, { times: [], leads: 0, conv: 0 }]));
+
+  const isConverted = (lid) => {
+    const st = leadStatus[lid];
+    if (!st) return false;
+    if (conversionStageId) return String(st.status) === String(conversionStageId);
+    return Number(st.value || 0) > 0;
+  };
+
+  for (const [lid, m] of firstByLead.entries()) {
+    const mm = Number(m);
+    if (!Number.isFinite(mm) || mm < 0) continue;
+    const b = buckets.find((x) => mm >= x.min && mm < x.max) || buckets[buckets.length - 1];
+    const slot = accum.get(b.key);
+    slot.leads += 1;
+    slot.times.push(mm);
+    if (isConverted(lid)) slot.conv += 1;
+  }
+
+  for (const b of bucketStats) {
+    const slot = accum.get(b.bucket);
+    b.leads = slot.leads;
+    b.converted = slot.conv;
+    b.conversion_rate = slot.leads ? (slot.conv / slot.leads) : null;
+    b.avg_first_response_minutes = slot.times.length ? (slot.times.reduce((s, x) => s + x, 0) / slot.times.length) : null;
+  }
+
+  res.json({
+    range: { start: start.toISOString(), end: end.toISOString() },
+    overall,
+    categories,
+    by_operator,
+    conversion: {
+      stage_id: conversionStageId,
+      stage_rule: conversionStageId ? 'status==stage' : 'value>0',
+      buckets: bucketStats,
+    }
+  });
 }));
 
 // Routing rules stats (derived from audit_logs)

@@ -113,6 +113,7 @@ async function initDb() {
           body TEXT NOT NULL,
           direction VARCHAR(10) NOT NULL CHECK (direction IN ('in', 'out')),
           whatsapp_id VARCHAR(255),
+          sender_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
           metadata JSONB DEFAULT '{}'::jsonb,
           tenant_id VARCHAR(50) DEFAULT 'admin',
           status VARCHAR(50) DEFAULT 'delivered',
@@ -1083,7 +1084,7 @@ async function healthCheck() {
 /**
  * Append a single message to the messages table (idempotent via whatsapp_id without relying on constraints)
  */
-async function appendMessage({ leadId, phone, body, direction, whatsappId, metadata, createdAt, tenantId = 'admin' }) {
+async function appendMessage({ leadId, phone, body, direction, whatsappId, metadata, createdAt, tenantId = 'admin', senderUserId = null }) {
     try {
         const ts = createdAt ? new Date(createdAt * 1000) : new Date();
 
@@ -1104,9 +1105,9 @@ async function appendMessage({ leadId, phone, body, direction, whatsappId, metad
         if (!meta || typeof meta !== 'object' || Array.isArray(meta)) meta = {};
 
         await pool.query(`
-            INSERT INTO messages (lead_id, phone, body, direction, whatsapp_id, metadata, created_at, tenant_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        `, [leadId, phone, body || '', direction, whatsappId || null, meta, ts, tenantId]);
+            INSERT INTO messages (lead_id, phone, body, direction, whatsapp_id, metadata, created_at, tenant_id, sender_user_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        `, [leadId, phone, body || '', direction, whatsappId || null, meta, ts, tenantId, senderUserId || null]);
     } catch (error) {
         // Non-fatal - log and continue
         console.warn('⚠️ appendMessage error:', error.message);
