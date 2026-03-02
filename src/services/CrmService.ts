@@ -17,6 +17,7 @@ class CrmServiceImpl {
   private testMessageListeners: Map<string, (data: any) => void> = new Map();
   private healthListeners: Map<string, (health: any) => void> = new Map();
   private settingsListeners: Map<string, (settings: any) => void> = new Map();
+  private followupDueListeners: Map<string, (data: any) => void> = new Map();
 
   // Demo Mode State
   private isDemoMode: boolean = false;
@@ -273,6 +274,7 @@ class CrmServiceImpl {
     this.socket.off('settings_updated');
     this.socket.off('leads_reset');
     this.socket.off('lead_read');
+    this.socket.off('followup_due');
 
     console.log('🧹 Socket listeners cleaned up');
   }
