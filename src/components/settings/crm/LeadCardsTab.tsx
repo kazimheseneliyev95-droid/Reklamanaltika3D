@@ -1,11 +1,24 @@
 import React, { useMemo } from 'react';
-import { LayoutGrid } from 'lucide-react';
+import { LayoutGrid, Paintbrush } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import { CRMSettings, LeadCardUISettings } from '../../../lib/crmSettings';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/Card';
 import { HelpCallout } from '../HelpCallout';
 import { SettingsAside, SettingsGrid, SettingsMain } from '../SettingsLayout';
 import { SettingsSectionHeader } from '../SettingsSectionHeader';
+
+function normalizeHexColor(raw: string): string {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  if (/^#[0-9a-fA-F]{6}$/.test(s)) return s.toLowerCase();
+  if (/^#[0-9a-fA-F]{3}$/.test(s)) {
+    const r = s[1];
+    const g = s[2];
+    const b = s[3];
+    return (`#${r}${r}${g}${g}${b}${b}`).toLowerCase();
+  }
+  return '';
+}
 
 function ToggleRow({
   label,
@@ -57,6 +70,7 @@ export function LeadCardsTab({
   };
 
   const badgeEligibleFields = settings.customFields.filter((f) => f.type === 'select' || f.type === 'datetime');
+  const colorEligibleFields = settings.customFields.filter((f) => f.type === 'select');
   const enabledIds = Array.isArray(ui.customFieldIds) ? ui.customFieldIds : [];
   const useAll = (ui.showCustomFieldBadges !== false) && enabledIds.length === 0;
 
@@ -72,6 +86,12 @@ export function LeadCardsTab({
     }),
     []
   );
+
+  const palette = ['#60a5fa', '#34d399', '#fbbf24', '#fb7185', '#a78bfa', '#22c55e', '#f97316', '#38bdf8'];
+  const colorByFieldId = String(ui.colorByFieldId || '').trim();
+  const colorStyle = (ui.colorStyle === 'border' || ui.colorStyle === 'tint') ? ui.colorStyle : 'tint';
+  const colorMap = (ui.colorMap && typeof ui.colorMap === 'object') ? ui.colorMap as Record<string, string> : {};
+  const selectedColorField = colorByFieldId ? colorEligibleFields.find(f => f.id === colorByFieldId) : null;
 
   const show = {
     name: ui.showNameBadge !== false,
@@ -213,6 +233,136 @@ export function LeadCardsTab({
                   })}
                 </div>
                 <p className="text-[10px] text-slate-500">Siyahı boşdursa kartda bütün select sahələr (dəyəri olanlar) görünəcək.</p>
+              </>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="border-slate-800 bg-slate-950/30">
+          <CardHeader className="p-4">
+            <CardTitle className="text-xs text-slate-200 flex items-center gap-2">
+              <Paintbrush className="w-4 h-4 text-slate-400" />
+              Kart Rengleri (Select)
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-4 pt-0 space-y-3">
+            {colorEligibleFields.length === 0 ? (
+              <p className="text-xs text-slate-500 italic">Reng vermek ucun select tipli xususi saha lazimdir.</p>
+            ) : (
+              <>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Hansi saha ile renklensin</label>
+                    <select
+                      value={colorByFieldId}
+                      onChange={(e) => {
+                        const next = String(e.target.value || '');
+                        updateLeadCardUi({
+                          colorByFieldId: next,
+                          colorMap: {},
+                        });
+                      }}
+                      className="mt-1 w-full bg-slate-950 border border-slate-800 text-slate-200 text-xs rounded-lg px-3 py-2"
+                    >
+                      <option value="">(yoxdur)</option>
+                      {colorEligibleFields.map((f) => (
+                        <option key={f.id} value={f.id}>{f.label}</option>
+                      ))}
+                    </select>
+                    <p className="mt-1 text-[10px] text-slate-600">Mes: “Maraqlandigi kurs” → her kurs ucun kart rengi.</p>
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Style</label>
+                    <div className="mt-1 grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => updateLeadCardUi({ colorStyle: 'tint' })}
+                        className={cn(
+                          'px-3 py-2 rounded-lg border text-xs font-semibold transition-colors',
+                          colorStyle === 'tint'
+                            ? 'border-blue-700/40 bg-blue-950/20 text-blue-200'
+                            : 'border-slate-800 bg-slate-950/30 text-slate-400 hover:text-slate-200'
+                        )}
+                      >
+                        Tint
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => updateLeadCardUi({ colorStyle: 'border' })}
+                        className={cn(
+                          'px-3 py-2 rounded-lg border text-xs font-semibold transition-colors',
+                          colorStyle === 'border'
+                            ? 'border-blue-700/40 bg-blue-950/20 text-blue-200'
+                            : 'border-slate-800 bg-slate-950/30 text-slate-400 hover:text-slate-200'
+                        )}
+                      >
+                        Border
+                      </button>
+                    </div>
+                    <p className="mt-1 text-[10px] text-slate-600">Tint: fon yumusag boyanir. Border: yalniz kenar.</p>
+                  </div>
+                </div>
+
+                {selectedColorField ? (
+                  <div className="rounded-xl border border-slate-800 bg-slate-950/25 p-3">
+                    <div className="text-[10px] uppercase font-bold text-slate-500">{selectedColorField.label} → Reng map</div>
+                    <div className="mt-2 space-y-2">
+                      {(selectedColorField.options || []).map((opt, idx) => {
+                        const current = normalizeHexColor(colorMap[opt] || '') || palette[idx % palette.length];
+                        return (
+                          <div key={opt} className="flex items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-950/30 px-3 py-2">
+                            <div className="min-w-0">
+                              <div className="text-xs font-semibold text-slate-200 truncate" title={opt}>{opt}</div>
+                              <div className="text-[10px] text-slate-600">{current}</div>
+                            </div>
+                            <div className="shrink-0 flex items-center gap-2">
+                              <input
+                                type="color"
+                                value={current}
+                                onChange={(e) => {
+                                  const v = normalizeHexColor(e.target.value) || '';
+                                  updateLeadCardUi({
+                                    colorMap: { ...colorMap, [opt]: v }
+                                  });
+                                }}
+                                className="h-8 w-10 bg-transparent border border-slate-800 rounded-lg"
+                                title="Pick color"
+                              />
+                              <input
+                                type="text"
+                                value={normalizeHexColor(colorMap[opt] || '')}
+                                onChange={(e) => {
+                                  const v = normalizeHexColor(e.target.value);
+                                  updateLeadCardUi({
+                                    colorMap: { ...colorMap, [opt]: v }
+                                  });
+                                }}
+                                placeholder="#22c55e"
+                                className="w-28 h-8 rounded-lg bg-slate-950 border border-slate-800 px-2 text-xs text-slate-200 placeholder:text-slate-600"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const next = { ...colorMap };
+                                  delete next[opt];
+                                  updateLeadCardUi({ colorMap: next });
+                                }}
+                                className="px-2 py-1.5 rounded-lg text-[10px] font-bold border border-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-900"
+                                title="Reset"
+                              >
+                                Reset
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p className="mt-2 text-[10px] text-slate-600">Qeyd: kart rengi lead-in bu sahadaki dəyərinə gore dəyişir.</p>
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-slate-500">Reng map gormek ucun yuxaridan saha secin.</p>
+                )}
               </>
             )}
           </CardContent>

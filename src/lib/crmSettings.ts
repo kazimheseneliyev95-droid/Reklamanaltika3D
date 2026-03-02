@@ -59,6 +59,11 @@ export interface LeadCardUISettings {
     customFieldBadgeMode?: 'value' | 'label_value';
     customFieldIds?: string[]; // if empty/undefined and showCustomFieldBadges=true -> show all select/datetime fields
     maxCustomFieldBadges?: number;
+
+    // Optional: colorize cards by a select custom field value
+    colorByFieldId?: string; // select field id
+    colorMap?: Record<string, string>; // option value -> css color (e.g. #22c55e)
+    colorStyle?: 'tint' | 'border';
 }
 
 export interface CRMSettings {
@@ -82,6 +87,10 @@ const DEFAULT_LEAD_CARD_UI: LeadCardUISettings = {
     customFieldBadgeMode: 'value',
     customFieldIds: [],
     maxCustomFieldBadges: 2,
+
+    colorByFieldId: '',
+    colorMap: {},
+    colorStyle: 'tint',
 };
 
 function getApiBase(): string {

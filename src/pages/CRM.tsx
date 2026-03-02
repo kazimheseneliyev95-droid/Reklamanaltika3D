@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useAppStore } from '../context/Store';
 import { Lead, LeadStatus } from '../types/crm';
 import { Badge } from '../components/ui/Badge';
-import { Trash2, Calendar, Filter, RefreshCcw, Pencil, ShoppingBag, DollarSign, TrendingUp, Users, MessageSquare, UserPlus, CheckCircle, XCircle, Phone, Route, Bell, GripVertical } from 'lucide-react';
+import { Trash2, Calendar, Filter, RefreshCcw, Pencil, ShoppingBag, DollarSign, TrendingUp, Users, MessageSquare, UserPlus, CheckCircle, XCircle, Phone, Bell, GripVertical } from 'lucide-react';
 import { cn, formatCurrency } from '../lib/utils';
 import { LeadDetailsPanel } from '../components/LeadDetailsPanel';
 import { loadCRMSettings, CustomField, LeadCardUISettings } from '../lib/crmSettings';
@@ -600,6 +600,29 @@ function hashHue(input: string) {
   return Math.abs(h) % 360;
 }
 
+function normalizeHexColor(raw: string): string {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  if (/^#[0-9a-fA-F]{6}$/.test(s)) return s.toLowerCase();
+  if (/^#[0-9a-fA-F]{3}$/.test(s)) {
+    const r = s[1];
+    const g = s[2];
+    const b = s[3];
+    return (`#${r}${r}${g}${g}${b}${b}`).toLowerCase();
+  }
+  return '';
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+  const h = normalizeHexColor(hex);
+  if (!h) return '';
+  const r = parseInt(h.slice(1, 3), 16);
+  const g = parseInt(h.slice(3, 5), 16);
+  const b = parseInt(h.slice(5, 7), 16);
+  const a = Math.max(0, Math.min(1, Number.isFinite(alpha) ? alpha : 1));
+  return `rgba(${r}, ${g}, ${b}, ${a})`;
+}
+
 function parseExtraData(raw: any): Record<string, any> {
   if (!raw) return {};
   if (typeof raw === 'string') {
@@ -701,24 +724,24 @@ function LeadCard({
 
   const sourceLabel = lead.source === 'manual' ? 'Manual' : 'WhatsApp';
 
-  const stageMeta = (pipelineStages || []).find(s => s.id === lead.status) || null;
-  const stageColor = String(stageMeta?.color || 'slate');
-  const stageHex = (() => {
-    if (stageColor === 'blue') return '#3b82f6';
-    if (stageColor === 'purple') return '#a855f7';
-    if (stageColor === 'green') return '#22c55e';
-    if (stageColor === 'emerald') return '#10b981';
-    if (stageColor === 'teal') return '#14b8a6';
-    if (stageColor === 'red') return '#ef4444';
-    if (stageColor === 'orange') return '#f97316';
-    if (stageColor === 'amber') return '#f59e0b';
-    if (stageColor === 'yellow') return '#eab308';
-    return '#94a3b8';
-  })();
-
   const primaryTitle = (cfg.showNameBadge !== false && lead.name && lead.name !== 'Unknown') ? String(lead.name) : String(lead.phone);
   const secondary = (cfg.showNameBadge !== false && lead.name && lead.name !== 'Unknown') ? String(lead.phone) : '';
   const hasValue = cfg.showValue !== false && Boolean(lead.value && lead.value > 0);
+
+  const colorFieldId = String(cfg.colorByFieldId || '').trim();
+  const colorStyle = (cfg.colorStyle === 'border' || cfg.colorStyle === 'tint') ? cfg.colorStyle : 'tint';
+  const leadColorValue = colorFieldId ? String(extra?.[colorFieldId] ?? '').trim() : '';
+  const mapped = leadColorValue && cfg.colorMap ? normalizeHexColor(String((cfg.colorMap as any)[leadColorValue] || '')) : '';
+  const leadHue = hashHue(`${colorFieldId}:${leadColorValue}`);
+  const leadAccent = leadColorValue
+    ? (mapped || `hsl(${leadHue}, 85%, 60%)`)
+    : '';
+  const leadTint = leadColorValue
+    ? (mapped ? hexToRgba(mapped, 0.12) : `hsla(${leadHue}, 85%, 60%, 0.12)`)
+    : '';
+  const leadBorder = leadColorValue
+    ? (mapped ? hexToRgba(mapped, 0.30) : `hsla(${leadHue}, 85%, 60%, 0.30)`)
+    : '';
 
   return (
     <div
@@ -728,10 +751,17 @@ function LeadCard({
           ? "border-rose-500/35 hover:border-rose-400/60 shadow-rose-900/10"
           : "border-slate-800/80 hover:border-slate-700"
       )}
-      style={{ boxShadow: unread > 0 ? '0 10px 24px rgba(244,63,94,0.05)' : undefined }}
+      style={{
+        boxShadow: unread > 0 ? '0 10px 24px rgba(244,63,94,0.05)' : undefined,
+        borderColor: leadBorder ? leadBorder : undefined,
+        backgroundImage: (leadTint && colorStyle === 'tint') ? `linear-gradient(180deg, ${leadTint}, rgba(2,6,23,0) 55%)` : undefined,
+      }}
     >
-      {/* stage accent */}
-      <div className="absolute left-0 top-0 bottom-0 w-1.5 rounded-l-2xl" style={{ background: stageHex, opacity: unread > 0 ? 0.9 : 0.55 }} />
+      {/* lead accent */}
+      <div
+        className="absolute left-0 top-0 bottom-0 w-1.5 rounded-l-2xl"
+        style={{ background: leadAccent || '#94a3b8', opacity: unread > 0 ? 0.9 : 0.55 }}
+      />
 
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
@@ -758,6 +788,12 @@ function LeadCard({
                     {unread > 99 ? '99+' : unread}
                   </span>
                 ) : null}
+                {hasValue ? (
+                  <span className="shrink-0 inline-flex items-center gap-1 rounded-full border border-emerald-900/30 bg-emerald-950/15 px-2 py-0.5 text-[10px] font-extrabold text-emerald-200 tabular-nums">
+                    <DollarSign className="w-3 h-3" />
+                    {formatCurrency(Number(lead.value || 0), 'AZN')}
+                  </span>
+                ) : null}
               </div>
               {secondary ? (
                 <div className="mt-0.5 text-[11px] text-slate-400 flex items-center gap-2 min-w-0">
@@ -770,29 +806,13 @@ function LeadCard({
             </div>
           </div>
 
-          <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            {cfg.showAssignee !== false ? (
-              <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-bold bg-slate-950/50 text-slate-300 border border-slate-800">
-                <Users className="w-3 h-3 text-slate-500" />
-                <span className="truncate max-w-[180px]">{assigneeLabel}</span>
-              </span>
-            ) : null}
-            {cfg.showSource !== false ? (
-              <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-bold bg-slate-950/50 text-slate-300 border border-slate-800">
-                <Route className="w-3 h-3 text-slate-500" />
-                {sourceLabel}
-              </span>
-            ) : null}
-            <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-bold bg-slate-950/50 text-slate-300 border border-slate-800">
-              <Calendar className="w-3 h-3 text-slate-500" />
-              <span className="tabular-nums">{dateStr}</span>
-            </span>
-            {hasValue ? (
-              <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-extrabold bg-emerald-950/25 text-emerald-200 border border-emerald-900/30 tabular-nums">
-                <DollarSign className="w-3 h-3" />
-                {formatCurrency(Number(lead.value || 0), 'AZN')}
-              </span>
-            ) : null}
+          <div className="mt-2 flex items-center justify-between gap-2">
+            <div className="min-w-0 text-[11px] text-slate-400 font-semibold truncate">
+              {cfg.showAssignee !== false ? assigneeLabel : ''}
+              {(cfg.showAssignee !== false && cfg.showSource !== false) ? ' · ' : ''}
+              {cfg.showSource !== false ? sourceLabel : ''}
+            </div>
+            <div className="shrink-0 text-[10px] text-slate-500 tabular-nums">{dateStr}</div>
           </div>
 
         </div>
