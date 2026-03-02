@@ -807,14 +807,12 @@ function LeadCard({
           </div>
 
           <div className="mt-2">
-            <div className="flex items-center gap-2 min-w-0">
-              {cfg.showAssignee !== false ? (
-                <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-bold bg-slate-950/50 text-slate-300 border border-slate-800 min-w-0">
-                  <span className="truncate max-w-[160px]">{assigneeLabel}</span>
-                </span>
-              ) : null}
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0 text-[11px] font-semibold text-slate-300 truncate">
+                {cfg.showAssignee !== false ? assigneeLabel : ''}
+              </div>
               {cfg.showSource !== false ? (
-                <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-bold bg-slate-950/50 text-slate-300 border border-slate-800">
+                <span className="shrink-0 inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-950/50 text-slate-300 border border-slate-800">
                   {sourceLabel}
                 </span>
               ) : null}
