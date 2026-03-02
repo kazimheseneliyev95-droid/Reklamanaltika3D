@@ -23,6 +23,8 @@ export interface Lead {
   last_inbound_at?: string | null;
   last_outbound_at?: string | null;
   next_followup_due_at?: string | null;
+  conversation_closed?: boolean;
+  conversation_closed_at?: string | null;
 }
 
 export interface UserPermissions {

@@ -18,6 +18,7 @@ class CrmServiceImpl {
   private healthListeners: Map<string, (health: any) => void> = new Map();
   private settingsListeners: Map<string, (settings: any) => void> = new Map();
   private followupDueListeners: Map<string, (data: any) => void> = new Map();
+  private notificationListeners: Map<string, (data: any) => void> = new Map();
 
   // Demo Mode State
   private isDemoMode: boolean = false;
@@ -275,6 +276,7 @@ class CrmServiceImpl {
     this.socket.off('leads_reset');
     this.socket.off('lead_read');
     this.socket.off('followup_due');
+    this.socket.off('notification:new');
 
     console.log('🧹 Socket listeners cleaned up');
   }
@@ -514,6 +516,14 @@ class CrmServiceImpl {
         // ignore
       }
     });
+
+    this.socket.on('notification:new', (data: any) => {
+      try {
+        this.notificationListeners.forEach((cb) => cb(data));
+      } catch {
+        // ignore
+      }
+    });
   }
 
   // 🆕 Clean up old processed message IDs
@@ -636,6 +646,65 @@ class CrmServiceImpl {
     const id = `followup-${this.listenerIdCounter++}`;
     this.followupDueListeners.set(id, cb);
     return () => this.followupDueListeners.delete(id);
+  }
+
+  onNotificationNew(cb: (data: any) => void): () => void {
+    const id = `notif-${this.listenerIdCounter++}`;
+    this.notificationListeners.set(id, cb);
+    return () => this.notificationListeners.delete(id);
+  }
+
+  async fetchNotifications(opts?: { unreadOnly?: boolean; limit?: number }): Promise<{ notifications: any[]; unread_count: number }> {
+    const url = this.getServerUrl();
+    if (!url) return { notifications: [], unread_count: 0 };
+    const unreadOnly = Boolean(opts?.unreadOnly);
+    const limit = Number.isFinite(Number(opts?.limit)) ? Math.max(1, Math.min(200, Math.round(Number(opts?.limit)))) : 60;
+    try {
+      const q = new URLSearchParams();
+      q.set('limit', String(limit));
+      if (unreadOnly) q.set('unread', '1');
+      const res = await fetch(`${url}/api/notifications?${q.toString()}`, {
+        headers: this.getAuthHeaders()
+      });
+      if (!res.ok) return { notifications: [], unread_count: 0 };
+      const data = await res.json().catch(() => ({}));
+      return {
+        notifications: Array.isArray(data?.notifications) ? data.notifications : [],
+        unread_count: Number.isFinite(Number(data?.unread_count)) ? Number(data.unread_count) : 0,
+      };
+    } catch {
+      return { notifications: [], unread_count: 0 };
+    }
+  }
+
+  async markNotificationRead(id: string): Promise<boolean> {
+    const url = this.getServerUrl();
+    if (!url) return false;
+    const nid = String(id || '').trim();
+    if (!nid) return false;
+    try {
+      const res = await fetch(`${url}/api/notifications/${encodeURIComponent(nid)}/read`, {
+        method: 'POST',
+        headers: this.getAuthHeaders()
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  async markAllNotificationsRead(): Promise<boolean> {
+    const url = this.getServerUrl();
+    if (!url) return false;
+    try {
+      const res = await fetch(`${url}/api/notifications/read-all`, {
+        method: 'POST',
+        headers: this.getAuthHeaders()
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
   }
 
   private notifyReconnectListeners() {

@@ -31,7 +31,6 @@ export default function CRMPage() {
   const pipelineSig = useMemo(() => (pipelineStages || []).map(s => s.id).join('|'), [pipelineStages]);
 
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
-  const [followupToast, setFollowupToast] = useState<any | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [filters, setFilters] = useState<CRMFilters>(() => makeDefaultCRMFilters(pipelineStages));
   const [showNotif, setShowNotif] = useState(false);
@@ -240,66 +239,8 @@ export default function CRMPage() {
     return () => document.removeEventListener('mousedown', onDoc);
   }, [showNotif]);
 
-  // Follow-up due notifications (in-app)
-  useEffect(() => {
-    const cleanup = CrmService.onFollowupDue((data: any) => {
-      try {
-        const assigneeId = data?.assignee_id ? String(data.assignee_id) : '';
-        if (assigneeId && currentUser?.id && assigneeId !== String(currentUser.id)) return;
-        setFollowupToast({
-          followup_id: data?.followup_id || null,
-          lead_id: data?.lead_id || null,
-          due_at: data?.due_at || null,
-          note: data?.note || null,
-          name: data?.name || null,
-          phone: data?.phone || null,
-        });
-      } catch { }
-    });
-    return () => cleanup();
-  }, [currentUser?.id]);
-
-  useEffect(() => {
-    if (!followupToast) return;
-    const t = setTimeout(() => setFollowupToast(null), 6000);
-    return () => clearTimeout(t);
-  }, [followupToast]);
-
   return (
     <div className="p-2 sm:p-6 max-w-[1600px] mx-auto h-full flex flex-col font-sans space-y-2 sm:space-y-6">
-
-      {followupToast ? (
-        <div className="fixed top-4 right-4 z-[60] w-[360px] max-w-[92vw] rounded-2xl border border-violet-900/40 bg-violet-950/20 backdrop-blur px-4 py-3 shadow-2xl">
-          <div className="text-[10px] uppercase tracking-wide font-extrabold text-violet-200">Follow-up vaxti geldi</div>
-          <div className="mt-1 text-sm font-bold text-white truncate">
-            {String(followupToast.name || followupToast.phone || 'Lead')}
-          </div>
-          {followupToast.note ? (
-            <div className="mt-1 text-[12px] text-slate-200 line-clamp-2">{String(followupToast.note)}</div>
-          ) : null}
-          <div className="mt-2 flex items-center justify-between gap-2">
-            <button
-              type="button"
-              onClick={() => setFollowupToast(null)}
-              className="text-[11px] font-bold text-slate-300 hover:text-white"
-            >
-              Bagla
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                const lid = String(followupToast.lead_id || '');
-                const found = lid ? leads.find(l => l.id === lid) : null;
-                if (found) setSelectedLead(found);
-                setFollowupToast(null);
-              }}
-              className="px-3 py-1.5 rounded-lg text-[11px] font-extrabold border border-violet-700/40 bg-violet-600/20 text-violet-100 hover:bg-violet-600/30"
-            >
-              Ac
-            </button>
-          </div>
-        </div>
-      ) : null}
 
       {/* HEADER & METRICS */}
       <div className="flex flex-col gap-3 sm:gap-6 border-b border-slate-800 pb-3 sm:pb-6">
@@ -806,14 +747,19 @@ function LeadCard({
   const nowMs = Date.now();
   const lastInMs = lead.last_inbound_at ? new Date(String(lead.last_inbound_at)).getTime() : null;
   const lastOutMs = (lead as any).last_outbound_at ? new Date(String((lead as any).last_outbound_at)).getTime() : null;
-  const waiting = Boolean(lastInMs && (!lastOutMs || (lastOutMs < (lastInMs as number))));
+  const isClosed = Boolean((lead as any).conversation_closed);
+  const waiting = !isClosed && Boolean(lastInMs && (!lastOutMs || (lastOutMs < (lastInMs as number))));
   const waitingMin = waiting && lastInMs ? (nowMs - lastInMs) / 60000 : 0;
+
+  const delayDots = (ui as any)?.delayDots || {};
+  const greenMax = Number.isFinite(Number(delayDots.greenMaxMinutes)) ? Math.max(1, Math.round(Number(delayDots.greenMaxMinutes))) : 10;
+  const yellowMax = Number.isFinite(Number(delayDots.yellowMaxMinutes)) ? Math.max(greenMax + 1, Math.round(Number(delayDots.yellowMaxMinutes))) : 30;
 
   let responseDot = null as null | { color: string; title: string };
   if (waiting) {
     const m = waitingMin;
-    if (m <= 10) responseDot = { color: '#22c55e', title: `Cavab gecikmesi: ${m.toFixed(0)} dk (yasil)` };
-    else if (m <= 30) responseDot = { color: '#f59e0b', title: `Cavab gecikmesi: ${m.toFixed(0)} dk (sari)` };
+    if (m <= greenMax) responseDot = { color: '#22c55e', title: `Cavab gecikmesi: ${m.toFixed(0)} dk (yasil)` };
+    else if (m <= yellowMax) responseDot = { color: '#f59e0b', title: `Cavab gecikmesi: ${m.toFixed(0)} dk (sari)` };
     else responseDot = { color: '#ef4444', title: `Cavab gecikmesi: ${m.toFixed(0)} dk (qirmizi)` };
   }
 

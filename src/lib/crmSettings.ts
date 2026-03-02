@@ -66,13 +66,31 @@ export interface LeadCardUISettings {
     colorStyle?: 'tint' | 'border';
 }
 
+export interface NotificationsSettings {
+    // SLA: warn if last inbound is unanswered for N minutes
+    replySlaMinutes?: number;
+    // Follow-up overdue escalation (minutes after due_at)
+    followupOverdueMinutes?: number;
+    // Who receives notifications
+    notifyAdmins?: boolean;
+    notifyAssignee?: boolean;
+    notifyCreator?: boolean;
+}
+
+export interface DelayDotsSettings {
+    greenMaxMinutes?: number;
+    yellowMaxMinutes?: number;
+}
+
 export interface CRMSettings {
     customFields: CustomField[];
     pipelineStages: PipelineStage[];
     autoRules: AutoRule[];
     routingRules?: RoutingRule[];
+    notifications?: NotificationsSettings;
     ui?: {
         leadCard?: LeadCardUISettings;
+        delayDots?: DelayDotsSettings;
     };
 }
 
@@ -91,6 +109,19 @@ const DEFAULT_LEAD_CARD_UI: LeadCardUISettings = {
     colorByFieldId: '',
     colorMap: {},
     colorStyle: 'tint',
+};
+
+const DEFAULT_NOTIFICATIONS: NotificationsSettings = {
+    replySlaMinutes: 5,
+    followupOverdueMinutes: 15,
+    notifyAdmins: true,
+    notifyAssignee: true,
+    notifyCreator: true,
+};
+
+const DEFAULT_DELAY_DOTS: DelayDotsSettings = {
+    greenMaxMinutes: 10,
+    yellowMaxMinutes: 30,
 };
 
 function getApiBase(): string {
@@ -152,10 +183,16 @@ export function loadCRMSettings(): CRMSettings {
                 parsed.routingRules = [];
             }
 
+            if (!parsed.notifications) parsed.notifications = { ...DEFAULT_NOTIFICATIONS };
+            else parsed.notifications = { ...DEFAULT_NOTIFICATIONS, ...parsed.notifications };
+
             // UI defaults (back-compat)
             if (!parsed.ui) parsed.ui = {};
             if (!parsed.ui.leadCard) parsed.ui.leadCard = { ...DEFAULT_LEAD_CARD_UI };
             else parsed.ui.leadCard = { ...DEFAULT_LEAD_CARD_UI, ...parsed.ui.leadCard };
+
+            if (!(parsed.ui as any).delayDots) (parsed.ui as any).delayDots = { ...DEFAULT_DELAY_DOTS };
+            else (parsed.ui as any).delayDots = { ...DEFAULT_DELAY_DOTS, ...(parsed.ui as any).delayDots };
             return parsed;
         }
     } catch { }
@@ -164,7 +201,8 @@ export function loadCRMSettings(): CRMSettings {
         pipelineStages: DEFAULT_STAGES,
         autoRules: DEFAULT_RULES,
         routingRules: [],
-        ui: { leadCard: { ...DEFAULT_LEAD_CARD_UI } }
+        notifications: { ...DEFAULT_NOTIFICATIONS },
+        ui: { leadCard: { ...DEFAULT_LEAD_CARD_UI }, delayDots: { ...DEFAULT_DELAY_DOTS } }
     };
 }
 

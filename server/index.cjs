@@ -342,13 +342,127 @@ if (!process.env.DATABASE_URL) {
 let followUpTimer = null;
 let followUpTickBusy = false;
 
+// Light caching to avoid hammering DB every 20s
+const tenantSettingsCache = new Map(); // tenantId -> { atMs, settings }
+const tenantAdminIdsCache = new Map(); // tenantId -> { atMs, userIds }
+const SETTINGS_CACHE_TTL_MS = 60 * 1000;
+
+function pickNotificationSettingsFromCrmSettings(settings) {
+  const s = settings && typeof settings === 'object' ? settings : {};
+  const n = (s.notifications && typeof s.notifications === 'object') ? s.notifications : {};
+  const delay = (s.ui && typeof s.ui === 'object' && s.ui.delayDots && typeof s.ui.delayDots === 'object')
+    ? s.ui.delayDots
+    : {};
+
+  const replySlaMinutes = (() => {
+    const v = Number(n.replySlaMinutes);
+    if (Number.isFinite(v) && v > 0) return Math.max(1, Math.min(240, Math.round(v)));
+    return 5;
+  })();
+
+  const followupOverdueMinutes = (() => {
+    const v = Number(n.followupOverdueMinutes);
+    if (Number.isFinite(v) && v >= 0) return Math.max(0, Math.min(7 * 24 * 60, Math.round(v)));
+    return 15;
+  })();
+
+  const notifyAdmins = n.notifyAdmins !== false;
+  const notifyAssignee = n.notifyAssignee !== false;
+  const notifyCreator = n.notifyCreator !== false;
+
+  const delayGreenMaxMinutes = (() => {
+    const v = Number(delay.greenMaxMinutes);
+    if (Number.isFinite(v) && v > 0) return Math.max(1, Math.min(240, Math.round(v)));
+    return 10;
+  })();
+  const delayYellowMaxMinutes = (() => {
+    const v = Number(delay.yellowMaxMinutes);
+    if (Number.isFinite(v) && v > 0) return Math.max(delayGreenMaxMinutes + 1, Math.min(24 * 60, Math.round(v)));
+    return 30;
+  })();
+
+  return {
+    replySlaMinutes,
+    followupOverdueMinutes,
+    notifyAdmins,
+    notifyAssignee,
+    notifyCreator,
+    delayGreenMaxMinutes,
+    delayYellowMaxMinutes,
+  };
+}
+
+async function getTenantNotificationSettings(tenantId) {
+  const t = String(tenantId || '').trim() || 'admin';
+  const cached = tenantSettingsCache.get(t);
+  if (cached && (Date.now() - cached.atMs) < SETTINGS_CACHE_TTL_MS) return cached.settings;
+  let raw = null;
+  try {
+    if (db && typeof db.getCRMSettings === 'function') {
+      raw = await db.getCRMSettings(t);
+    }
+  } catch {
+    raw = null;
+  }
+  const picked = pickNotificationSettingsFromCrmSettings(raw || {});
+  tenantSettingsCache.set(t, { atMs: Date.now(), settings: picked });
+  return picked;
+}
+
+async function getTenantAdminUserIds(tenantId) {
+  const t = String(tenantId || '').trim() || 'admin';
+  const cached = tenantAdminIdsCache.get(t);
+  if (cached && (Date.now() - cached.atMs) < SETTINGS_CACHE_TTL_MS) return cached.userIds;
+  try {
+    const r = await db.pool.query(
+      "SELECT id FROM users WHERE tenant_id = $1 AND role IN ('admin','manager','superadmin')",
+      [t]
+    );
+    const ids = (r.rows || []).map((x) => x.id).filter(Boolean);
+    tenantAdminIdsCache.set(t, { atMs: Date.now(), userIds: ids });
+    return ids;
+  } catch {
+    tenantAdminIdsCache.set(t, { atMs: Date.now(), userIds: [] });
+    return [];
+  }
+}
+
+async function insertNotificationsForUsers({ tenantId, userIds, type, title, body, dedupeKey, leadId, followupId, payload }) {
+  const t = String(tenantId || '').trim() || 'admin';
+  const ids = Array.from(new Set((userIds || []).map((x) => String(x || '').trim()).filter(Boolean)));
+  if (ids.length === 0) return [];
+
+  const p = (payload && typeof payload === 'object') ? payload : {};
+  const q = `
+    INSERT INTO notifications (tenant_id, user_id, type, title, body, payload, dedupe_key, lead_id, followup_id)
+    SELECT $1, u::uuid, $3, $4, $5, $6::jsonb, $2, $7::uuid, $8::uuid
+    FROM unnest($9::text[]) AS u
+    ON CONFLICT (tenant_id, user_id, dedupe_key) DO NOTHING
+    RETURNING id, tenant_id, user_id, type, title, body, payload, dedupe_key, lead_id, followup_id, created_at, read_at;
+  `;
+  const res = await db.pool.query(q, [t, String(dedupeKey || ''), String(type || ''), title || null, body || null, JSON.stringify(p), leadId || null, followupId || null, ids]);
+  return res.rows || [];
+}
+
+function emitNotification(tenantId, userId, notif) {
+  try {
+    const t = String(tenantId || '').trim() || 'admin';
+    const uid = String(userId || '').trim();
+    if (!uid) return;
+    io.to(`${t}:user:${uid}`).emit('notification:new', notif);
+  } catch {
+    // ignore
+  }
+}
+
 async function followUpTick() {
   if (followUpTickBusy) return;
   if (!process.env.DATABASE_URL || !db || !db.pool) return;
   followUpTickBusy = true;
 
   try {
-    const result = await db.pool.query(
+    // 1) Follow-up DUE notifications (one-time)
+    const dueResult = await db.pool.query(
       `UPDATE follow_ups f
        SET notified_at = NOW(), updated_at = NOW()
        FROM leads l
@@ -364,20 +478,174 @@ async function followUpTick() {
            FOR UPDATE SKIP LOCKED
            LIMIT 50
          )
-       RETURNING f.id, f.tenant_id, f.lead_id, f.assignee_id, f.due_at, f.note, l.phone, l.name;`
+       RETURNING f.id, f.tenant_id, f.lead_id, f.assignee_id, f.created_by, f.due_at, f.note, l.phone, l.name, l.assignee_id AS lead_assignee_id;`
     );
 
-    for (const row of (result.rows || [])) {
+    for (const row of (dueResult.rows || [])) {
       const tenantId = String(row.tenant_id || '').trim() || 'admin';
-      io.to(tenantId).emit('followup_due', {
-        followup_id: row.id,
-        lead_id: row.lead_id,
-        assignee_id: row.assignee_id || null,
-        due_at: row.due_at ? new Date(row.due_at).toISOString() : null,
-        note: row.note || null,
-        phone: row.phone || null,
-        name: row.name || null,
+      const cfg = await getTenantNotificationSettings(tenantId);
+      const admins = cfg.notifyAdmins ? await getTenantAdminUserIds(tenantId) : [];
+
+      const recipients = new Set();
+      if (cfg.notifyAssignee) {
+        const a = row.assignee_id || row.lead_assignee_id;
+        if (a) recipients.add(String(a));
+      }
+      if (cfg.notifyCreator && row.created_by) {
+        recipients.add(String(row.created_by));
+      }
+      for (const a of (admins || [])) recipients.add(String(a));
+
+      const dueIso = row.due_at ? new Date(row.due_at).toISOString() : null;
+      const leadName = row.name || row.phone || null;
+      const note = row.note || null;
+
+      const inserted = await insertNotificationsForUsers({
+        tenantId,
+        userIds: Array.from(recipients),
+        type: 'followup_due',
+        title: 'Follow-up vaxti geldi',
+        body: leadName ? `Lead: ${leadName}${note ? `\nQeyd: ${note}` : ''}` : (note ? `Qeyd: ${note}` : null),
+        dedupeKey: `followup_due:${row.id}`,
+        leadId: row.lead_id,
+        followupId: row.id,
+        payload: {
+          lead: { id: row.lead_id, phone: row.phone || null, name: row.name || null },
+          followup: { id: row.id, due_at: dueIso, note }
+        }
       });
+
+      for (const n of (inserted || [])) {
+        emitNotification(tenantId, n.user_id, n);
+        // Back-compat: targeted followup_due event (no tenant broadcast)
+        try {
+          io.to(`${tenantId}:user:${String(n.user_id)}`).emit('followup_due', {
+            followup_id: row.id,
+            lead_id: row.lead_id,
+            assignee_id: row.assignee_id || row.lead_assignee_id || null,
+            due_at: dueIso,
+            note,
+            phone: row.phone || null,
+            name: row.name || null,
+          });
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    // 2) Follow-up OVERDUE notifications (one-time, configurable minutes)
+    const overdueCandidates = await db.pool.query(
+      `SELECT f.id, f.tenant_id, f.lead_id, f.assignee_id, f.created_by, f.due_at, f.note,
+              l.phone, l.name, l.assignee_id AS lead_assignee_id
+       FROM follow_ups f
+       JOIN leads l ON l.id = f.lead_id AND l.tenant_id = f.tenant_id
+       WHERE f.status = 'open'
+         AND f.overdue_notified_at IS NULL
+         AND f.due_at <= NOW()
+       ORDER BY f.due_at ASC
+       LIMIT 50;`
+    );
+
+    const nowMs = Date.now();
+    for (const row of (overdueCandidates.rows || [])) {
+      const tenantId = String(row.tenant_id || '').trim() || 'admin';
+      const cfg = await getTenantNotificationSettings(tenantId);
+      const overdueMin = Number(cfg.followupOverdueMinutes || 0);
+      const dueMs = row.due_at ? new Date(row.due_at).getTime() : null;
+      if (!dueMs || !Number.isFinite(dueMs)) continue;
+      if ((nowMs - dueMs) < overdueMin * 60 * 1000) continue;
+
+      const admins = cfg.notifyAdmins ? await getTenantAdminUserIds(tenantId) : [];
+      const recipients = new Set();
+      if (cfg.notifyAssignee) {
+        const a = row.assignee_id || row.lead_assignee_id;
+        if (a) recipients.add(String(a));
+      }
+      if (cfg.notifyCreator && row.created_by) {
+        recipients.add(String(row.created_by));
+      }
+      for (const a of (admins || [])) recipients.add(String(a));
+
+      const dueIso = row.due_at ? new Date(row.due_at).toISOString() : null;
+      const leadName = row.name || row.phone || null;
+      const note = row.note || null;
+
+      const inserted = await insertNotificationsForUsers({
+        tenantId,
+        userIds: Array.from(recipients),
+        type: 'followup_overdue',
+        title: 'Follow-up gecikib',
+        body: leadName ? `Lead: ${leadName}${note ? `\nQeyd: ${note}` : ''}` : (note ? `Qeyd: ${note}` : null),
+        dedupeKey: `followup_overdue:${row.id}`,
+        leadId: row.lead_id,
+        followupId: row.id,
+        payload: {
+          lead: { id: row.lead_id, phone: row.phone || null, name: row.name || null },
+          followup: { id: row.id, due_at: dueIso, note, overdue_minutes: overdueMin }
+        }
+      });
+
+      if (inserted && inserted.length > 0) {
+        await db.pool.query(
+          'UPDATE follow_ups SET overdue_notified_at = NOW(), updated_at = NOW() WHERE tenant_id = $1 AND id = $2 AND overdue_notified_at IS NULL',
+          [tenantId, row.id]
+        ).catch(() => null);
+      }
+
+      for (const n of (inserted || [])) {
+        emitNotification(tenantId, n.user_id, n);
+      }
+    }
+
+    // 3) SLA reply warning: last inbound unanswered for N minutes
+    const slaCandidates = await db.pool.query(
+      `SELECT id, tenant_id, phone, name, assignee_id, last_inbound_at, last_outbound_at
+       FROM leads
+       WHERE conversation_closed = false
+         AND last_inbound_at IS NOT NULL
+         AND (last_outbound_at IS NULL OR last_outbound_at < last_inbound_at)
+         AND last_inbound_at <= NOW() - INTERVAL '1 minute'
+       ORDER BY last_inbound_at ASC
+       LIMIT 80;`
+    );
+
+    for (const l of (slaCandidates.rows || [])) {
+      const tenantId = String(l.tenant_id || '').trim() || 'admin';
+      const cfg = await getTenantNotificationSettings(tenantId);
+      const slaMin = Number(cfg.replySlaMinutes || 5);
+      const inMs = l.last_inbound_at ? new Date(l.last_inbound_at).getTime() : null;
+      if (!inMs || !Number.isFinite(inMs)) continue;
+      const waitedMs = nowMs - inMs;
+      if (waitedMs < slaMin * 60 * 1000) continue;
+
+      const admins = cfg.notifyAdmins ? await getTenantAdminUserIds(tenantId) : [];
+      const recipients = new Set();
+      if (cfg.notifyAssignee && l.assignee_id) recipients.add(String(l.assignee_id));
+      for (const a of (admins || [])) recipients.add(String(a));
+
+      const leadName = l.name || l.phone || null;
+      const minutes = Math.max(0, Math.floor(waitedMs / 60000));
+      const dedupeKey = `sla_reply:${l.id}:${new Date(inMs).toISOString()}`;
+
+      const inserted = await insertNotificationsForUsers({
+        tenantId,
+        userIds: Array.from(recipients),
+        type: 'sla_reply',
+        title: 'Cavab gecikir',
+        body: leadName ? `Lead: ${leadName}\nGecikme: ${minutes} dk` : `Gecikme: ${minutes} dk`,
+        dedupeKey,
+        leadId: l.id,
+        followupId: null,
+        payload: {
+          lead: { id: l.id, phone: l.phone || null, name: l.name || null },
+          sla: { minutes: slaMin, waited_minutes: minutes, last_inbound_at: new Date(inMs).toISOString() }
+        }
+      });
+
+      for (const n of (inserted || [])) {
+        emitNotification(tenantId, n.user_id, n);
+      }
     }
   } catch (e) {
     // non-fatal
@@ -1178,6 +1446,9 @@ io.use((socket, next) => {
     const data = verifyAnyToken(token);
     if (!data.tenantId) throw new Error();
     socket.tenantId = data.tenantId;
+    socket.userId = data.id || null;
+    socket.userRole = data.role || null;
+    socket.userPermissions = data.permissions || {};
     next();
   } catch (err) {
     next(new Error('Authentication error: Invalid token'));
@@ -1187,6 +1458,14 @@ io.use((socket, next) => {
 io.on('connection', (socket) => {
   const tenantId = socket.tenantId;
   socket.join(tenantId);
+  try {
+    const uid = socket.userId ? String(socket.userId) : '';
+    if (uid) {
+      socket.join(`${tenantId}:user:${uid}`);
+    }
+  } catch {
+    // ignore
+  }
   console.log(`👤 NEW UI CLIENT CONNECTED [${tenantId}]: ${socket.id} (Total: ${io.engine.clientsCount})`);
 
   // Async fetch health from worker
@@ -2231,6 +2510,87 @@ app.post('/api/leads/:id/read', requireTenantAuth, asyncHandler(async (req, res)
   res.json({ success: true });
 }));
 
+// Close/reopen conversation (pauses delay/SLA until next inbound message)
+app.post('/api/leads/:id/close', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  if (req.userRole === 'viewer') return res.status(403).json({ error: 'Forbidden' });
+  const leadId = String(req.params.id || '').trim();
+  if (!leadId) return res.status(400).json({ error: 'Lead id is required' });
+
+  const upd = await db.pool.query(
+    'UPDATE leads SET conversation_closed = true, conversation_closed_at = NOW(), updated_at = NOW() WHERE id = $1 AND tenant_id = $2 RETURNING id',
+    [leadId, req.tenantId]
+  );
+  if (upd.rowCount === 0) return res.status(404).json({ error: 'Lead not found' });
+
+  await db.logAuditAction({
+    tenantId: req.tenantId,
+    userId: req.userId,
+    action: 'CONVERSATION_CLOSED',
+    entityType: 'lead',
+    entityId: leadId,
+    details: {}
+  }).catch(() => null);
+
+  const decorated = await db.pool.query(
+    `SELECT l.*, fu.next_due_at AS next_followup_due_at
+     FROM leads l
+     LEFT JOIN LATERAL (
+       SELECT MIN(due_at) AS next_due_at
+       FROM follow_ups f
+       WHERE f.tenant_id = l.tenant_id
+         AND f.lead_id = l.id
+         AND f.status = 'open'
+     ) fu ON true
+     WHERE l.id = $1 AND l.tenant_id = $2`,
+    [leadId, req.tenantId]
+  );
+
+  const lead = decorated.rows?.[0] || null;
+  if (lead) io.to(req.tenantId).emit('lead_updated', lead);
+  res.json(lead || { success: true });
+}));
+
+app.post('/api/leads/:id/reopen', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  if (req.userRole === 'viewer') return res.status(403).json({ error: 'Forbidden' });
+  const leadId = String(req.params.id || '').trim();
+  if (!leadId) return res.status(400).json({ error: 'Lead id is required' });
+
+  const upd = await db.pool.query(
+    'UPDATE leads SET conversation_closed = false, conversation_closed_at = NULL, updated_at = NOW() WHERE id = $1 AND tenant_id = $2 RETURNING id',
+    [leadId, req.tenantId]
+  );
+  if (upd.rowCount === 0) return res.status(404).json({ error: 'Lead not found' });
+
+  await db.logAuditAction({
+    tenantId: req.tenantId,
+    userId: req.userId,
+    action: 'CONVERSATION_REOPENED',
+    entityType: 'lead',
+    entityId: leadId,
+    details: {}
+  }).catch(() => null);
+
+  const decorated = await db.pool.query(
+    `SELECT l.*, fu.next_due_at AS next_followup_due_at
+     FROM leads l
+     LEFT JOIN LATERAL (
+       SELECT MIN(due_at) AS next_due_at
+       FROM follow_ups f
+       WHERE f.tenant_id = l.tenant_id
+         AND f.lead_id = l.id
+         AND f.status = 'open'
+     ) fu ON true
+     WHERE l.id = $1 AND l.tenant_id = $2`,
+    [leadId, req.tenantId]
+  );
+
+  const lead = decorated.rows?.[0] || null;
+  if (lead) io.to(req.tenantId).emit('lead_updated', lead);
+  res.json(lead || { success: true });
+}));
+
 // ═══════════════════════════════════════════════════════════════
 // 📌 FOLLOW-UPS (Tasks / Reminders)
 // ═══════════════════════════════════════════════════════════════
@@ -2283,6 +2643,23 @@ app.post('/api/leads/:id/follow-ups', requireTenantAuth, asyncHandler(async (req
     [req.tenantId, leadId, targetAssignee, req.userId || null, due.toISOString(), note || null]
   );
 
+  // Timeline entry
+  try {
+    await db.logAuditAction({
+      tenantId: req.tenantId,
+      userId: req.userId,
+      action: 'FOLLOWUP_CREATED',
+      entityType: 'lead',
+      entityId: leadId,
+      details: {
+        followup_id: ins.rows[0]?.id || null,
+        assignee_id: targetAssignee,
+        due_at: due.toISOString(),
+        note: note || null
+      }
+    });
+  } catch { }
+
   // Broadcast lead updated (so UI can show next_followup_due_at)
   try {
     const updatedLeads = await db.getLeads({}, req.tenantId);
@@ -2319,6 +2696,7 @@ app.patch('/api/follow-ups/:id', requireTenantAuth, asyncHandler(async (req, res
     }
     if (status !== 'open') {
       sets.push(`notified_at = COALESCE(notified_at, NOW())`);
+      sets.push(`overdue_notified_at = COALESCE(overdue_notified_at, NOW())`);
     }
   }
   if (due !== undefined) {
@@ -2326,6 +2704,7 @@ app.patch('/api/follow-ups/:id', requireTenantAuth, asyncHandler(async (req, res
     values.push(due ? due.toISOString() : null);
     // If rescheduled, allow re-notify
     sets.push(`notified_at = NULL`);
+    sets.push(`overdue_notified_at = NULL`);
   }
   if (note !== undefined) {
     sets.push(`note = $${i++}`);
@@ -2350,6 +2729,31 @@ app.patch('/api/follow-ups/:id', requireTenantAuth, asyncHandler(async (req, res
   const upd = await db.pool.query(q, values);
   if (upd.rowCount === 0) return res.status(404).json({ error: 'Follow-up not found' });
 
+  // Timeline entry
+  try {
+    const after = upd.rows[0] || {};
+    let action = 'FOLLOWUP_UPDATED';
+    if (status === 'done') action = 'FOLLOWUP_DONE';
+    else if (status === 'cancelled') action = 'FOLLOWUP_CANCELLED';
+    else if (due !== undefined) action = 'FOLLOWUP_RESCHEDULED';
+    else if (assigneeId !== undefined) action = 'FOLLOWUP_REASSIGNED';
+    else if (note !== undefined) action = 'FOLLOWUP_NOTE';
+    await db.logAuditAction({
+      tenantId: req.tenantId,
+      userId: req.userId,
+      action,
+      entityType: 'lead',
+      entityId: after.lead_id,
+      details: {
+        followup_id: after.id,
+        status: after.status,
+        due_at: after.due_at ? new Date(after.due_at).toISOString() : null,
+        assignee_id: after.assignee_id || null,
+        note: after.note || null
+      }
+    });
+  } catch { }
+
   // Broadcast lead list refresh (next due might change)
   try {
     const updatedLeads = await db.getLeads({}, req.tenantId);
@@ -2357,6 +2761,68 @@ app.patch('/api/follow-ups/:id', requireTenantAuth, asyncHandler(async (req, res
   } catch { }
 
   res.json(upd.rows[0]);
+}));
+
+// ═══════════════════════════════════════════════════════════════
+// 🔔 NOTIFICATIONS (persistent in-app alerts)
+// ═══════════════════════════════════════════════════════════════
+
+app.get('/api/notifications', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  if (!req.userId) return res.json({ notifications: [], unread_count: 0 });
+
+  let limit = parseInt(String(req.query.limit || '60'), 10);
+  if (!Number.isFinite(limit) || limit <= 0) limit = 60;
+  if (limit > 200) limit = 200;
+
+  const unreadOnly = String(req.query.unread || '').trim() === '1';
+
+  const whereUnread = unreadOnly ? 'AND n.read_at IS NULL' : '';
+
+  const list = await db.pool.query(
+    `SELECT n.id, n.tenant_id, n.user_id, n.type, n.title, n.body, n.payload, n.dedupe_key, n.lead_id, n.followup_id,
+            n.created_at, n.read_at,
+            l.phone AS lead_phone, l.name AS lead_name
+     FROM notifications n
+     LEFT JOIN leads l ON l.id = n.lead_id AND l.tenant_id = n.tenant_id
+     WHERE n.tenant_id = $1 AND n.user_id = $2
+     ${whereUnread}
+     ORDER BY n.created_at DESC
+     LIMIT $3`,
+    [req.tenantId, req.userId, limit]
+  );
+
+  const unreadCountRes = await db.pool.query(
+    'SELECT COUNT(*)::int AS c FROM notifications WHERE tenant_id = $1 AND user_id = $2 AND read_at IS NULL',
+    [req.tenantId, req.userId]
+  );
+  const unread_count = unreadCountRes.rows?.[0]?.c || 0;
+
+  res.json({ notifications: list.rows || [], unread_count });
+}));
+
+app.post('/api/notifications/:id/read', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  if (!req.userId) return res.status(401).json({ error: 'Unauthorized' });
+  const id = String(req.params.id || '').trim();
+  if (!id) return res.status(400).json({ error: 'Notification id is required' });
+
+  const upd = await db.pool.query(
+    'UPDATE notifications SET read_at = NOW() WHERE tenant_id = $1 AND user_id = $2 AND id = $3 RETURNING id, read_at',
+    [req.tenantId, req.userId, id]
+  );
+  if (upd.rowCount === 0) return res.status(404).json({ error: 'Notification not found' });
+  res.json({ success: true, id, read_at: upd.rows[0].read_at ? new Date(upd.rows[0].read_at).toISOString() : null });
+}));
+
+app.post('/api/notifications/read-all', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  if (!req.userId) return res.status(401).json({ error: 'Unauthorized' });
+  await db.pool.query(
+    'UPDATE notifications SET read_at = NOW() WHERE tenant_id = $1 AND user_id = $2 AND read_at IS NULL',
+    [req.tenantId, req.userId]
+  );
+  res.json({ success: true });
 }));
 
 // ADDED IN PHASE 6: Sending Messages directly to DB Queue
@@ -2421,6 +2887,31 @@ app.post('/api/leads/:id/messages', requireTenantAuth, asyncHandler(async (req, 
     is_fast_emit: true
   };
   io.to(req.tenantId).emit('new_message', payload);
+
+  // Update last_outbound_at immediately so "gecikme" dot doesn't stay on
+  try {
+    await db.pool.query(
+      'UPDATE leads SET last_outbound_at = NOW(), updated_at = NOW() WHERE id = $1 AND tenant_id = $2',
+      [leadId, req.tenantId]
+    );
+    const decorated = await db.pool.query(
+      `SELECT l.*, fu.next_due_at AS next_followup_due_at
+       FROM leads l
+       LEFT JOIN LATERAL (
+         SELECT MIN(due_at) AS next_due_at
+         FROM follow_ups f
+         WHERE f.tenant_id = l.tenant_id
+           AND f.lead_id = l.id
+           AND f.status = 'open'
+       ) fu ON true
+       WHERE l.id = $1 AND l.tenant_id = $2`,
+      [leadId, req.tenantId]
+    );
+    const updatedLead = decorated.rows?.[0] || null;
+    if (updatedLead) io.to(req.tenantId).emit('lead_updated', updatedLead);
+  } catch {
+    // ignore
+  }
 
   // Apply routing rules immediately for outgoing messages as well
   try {

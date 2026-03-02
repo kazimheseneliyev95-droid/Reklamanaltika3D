@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Activity, AlertTriangle, LayoutGrid, List, Route, Save, Settings, Smartphone, Type, Users, Zap } from 'lucide-react';
+import { Activity, AlertTriangle, Bell, LayoutGrid, List, Route, Save, Settings, Smartphone, Type, Users, Zap } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { CRMSettings, loadCRMSettings, saveCRMSettings } from '../lib/crmSettings';
 import { CrmService } from '../services/CrmService';
@@ -13,6 +13,7 @@ import { RoutingTab } from './settings/crm/RoutingTab';
 import { StagesTab } from './settings/crm/StagesTab';
 import { LeadCardsTab } from './settings/crm/LeadCardsTab';
 import { CustomFieldsTab } from './settings/crm/CustomFieldsTab';
+import { NotificationsTab } from './settings/crm/NotificationsTab';
 
 // ─── Factory Reset Button ─────────────────────────────────────────────────────
 function FormatButton({ serverUrl, onClose }: { serverUrl: string; onClose: () => void }) {
@@ -120,7 +121,7 @@ interface CRMSettingsPanelProps {
   variant?: 'modal' | 'page';
 }
 
-type Tab = 'connection' | 'rules' | 'routing' | 'stages' | 'cards' | 'fields' | 'users' | 'audit';
+type Tab = 'connection' | 'rules' | 'routing' | 'stages' | 'cards' | 'fields' | 'notifications' | 'users' | 'audit';
 
 const TABS: { id: Tab; label: string; icon: React.ReactNode; reqRole?: string[] }[] = [
   { id: 'connection', label: 'Bağlantı', icon: <Smartphone className="w-4 h-4" /> },
@@ -129,6 +130,7 @@ const TABS: { id: Tab; label: string; icon: React.ReactNode; reqRole?: string[] 
   { id: 'stages', label: 'Kanban Sütunları', icon: <List className="w-4 h-4" /> },
   { id: 'cards', label: 'Lead Kartları', icon: <LayoutGrid className="w-4 h-4" /> },
   { id: 'fields', label: 'Xüsusi Sahələr', icon: <Type className="w-4 h-4" /> },
+  { id: 'notifications', label: 'Bildirişlər & SLA', icon: <Bell className="w-4 h-4" /> },
   { id: 'users', label: 'İstifadəçilər', icon: <Users className="w-4 h-4" />, reqRole: ['admin', 'manager'] },
   { id: 'audit', label: 'Audit Log', icon: <Activity className="w-4 h-4" />, reqRole: ['admin'] },
 ];
@@ -256,6 +258,7 @@ export function CRMSettingsPanel({ onClose, variant = 'modal' }: CRMSettingsPane
       {activeTab === 'stages' ? <StagesTab settings={settings} setSettings={setSettings} /> : null}
       {activeTab === 'cards' ? <LeadCardsTab settings={settings} setSettings={setSettings} /> : null}
       {activeTab === 'fields' ? <CustomFieldsTab settings={settings} setSettings={setSettings} /> : null}
+      {activeTab === 'notifications' ? <NotificationsTab settings={settings} setSettings={setSettings} /> : null}
       {activeTab === 'users' ? <UsersSettings /> : null}
       {activeTab === 'audit' ? <AuditLogs /> : null}
     </SettingsShell>

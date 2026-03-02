@@ -1025,6 +1025,36 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
         setTimeout(() => setSavedOk(false), 1800);
     };
 
+    // Conversation close/reopen (pause delay/SLA until next inbound)
+    const [convBusy, setConvBusy] = useState(false);
+    const [convClosed, setConvClosed] = useState<boolean>(Boolean((lead as any)?.conversation_closed));
+    useEffect(() => {
+        setConvClosed(Boolean((lead as any)?.conversation_closed));
+    }, [lead.id]);
+
+    const toggleConversation = async () => {
+        if (!serverUrl || !lead?.id || convBusy) return;
+        if (currentUser?.role === 'viewer') return;
+        setConvBusy(true);
+        try {
+            const token = localStorage.getItem('crm_auth_token') || '';
+            const endpoint = convClosed ? 'reopen' : 'close';
+            const res = await fetch(`${serverUrl}/api/leads/${lead.id}/${endpoint}`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (res.ok) {
+                setConvClosed(!convClosed);
+                // Refresh story so the event appears immediately
+                setTimeout(() => loadStory(), 250);
+            }
+        } catch {
+            // non-fatal
+        } finally {
+            setConvBusy(false);
+        }
+    };
+
     // ─── UI Helpers ────────────────────────────────────────────────────────────
 
     const toDatetimeLocal = (raw: any) => {
@@ -1325,6 +1355,35 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                 </div>
                             </FieldGroup>
 
+                            {/* Conversation close/reopen */}
+                            <FieldGroup label="Söhbət" icon={<MessageSquare className="w-3 h-3" />}>
+                                <div className="flex items-center justify-between gap-2">
+                                    <span className={cn(
+                                        'text-[10px] font-extrabold uppercase tracking-wide',
+                                        convClosed ? 'text-amber-300' : 'text-emerald-300'
+                                    )}>
+                                        {convClosed ? 'Bağlı' : 'Açıq'}
+                                    </span>
+                                    <button
+                                        type="button"
+                                        onClick={toggleConversation}
+                                        disabled={convBusy || currentUser?.role === 'viewer'}
+                                        className={cn(
+                                            'px-3 py-2 rounded-lg text-[11px] font-extrabold border transition-colors disabled:opacity-60',
+                                            convClosed
+                                                ? 'border-emerald-800/40 bg-emerald-600/15 text-emerald-200 hover:bg-emerald-600/20'
+                                                : 'border-amber-800/40 bg-amber-600/15 text-amber-200 hover:bg-amber-600/20'
+                                        )}
+                                        title={convClosed ? 'Söhbəti yenidən aç' : 'Söhbəti bağla (gecikmə saymasın)'}
+                                    >
+                                        {convBusy ? '...' : (convClosed ? 'Aç' : 'Bağla')}
+                                    </button>
+                                </div>
+                                <p className="mt-1 text-[10px] text-slate-500">
+                                    Close edəndə gecikmə/SLA dayanır, yeni inbound gələndə avtomatik açılır.
+                                </p>
+                            </FieldGroup>
+
                             {/* Tarix */}
                             <FieldGroup label="Yaranma Tarixi" icon={<Clock className="w-3 h-3" />}>
                                 <p className="text-slate-400 text-xs">{dateStr}</p>
@@ -1578,6 +1637,42 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                                                     icon = <Edit3 className="w-3.5 h-3.5 text-amber-200" />;
                                                                     title = 'Qeyd';
                                                                     lines.push(String(details.note || ''));
+                                                                } else if (action === 'FOLLOWUP_CREATED') {
+                                                                    dot = 'bg-violet-500';
+                                                                    icon = <Clock className="w-3.5 h-3.5 text-violet-200" />;
+                                                                    title = 'Follow-up yaradıldı';
+                                                                    if (details.due_at) lines.push(`Vaxt: ${formatMaybeDatetime(details.due_at)}`);
+                                                                    if (details.note) lines.push(`Qeyd: ${String(details.note)}`);
+                                                                } else if (action === 'FOLLOWUP_RESCHEDULED') {
+                                                                    dot = 'bg-sky-500';
+                                                                    icon = <Clock className="w-3.5 h-3.5 text-sky-200" />;
+                                                                    title = 'Follow-up vaxtı dəyişdi';
+                                                                    if (details.due_at) lines.push(`Yeni vaxt: ${formatMaybeDatetime(details.due_at)}`);
+                                                                    if (details.note) lines.push(`Qeyd: ${String(details.note)}`);
+                                                                } else if (action === 'FOLLOWUP_DONE') {
+                                                                    dot = 'bg-emerald-500';
+                                                                    icon = <CheckCircle2 className="w-3.5 h-3.5 text-emerald-200" />;
+                                                                    title = 'Follow-up tamamlandı';
+                                                                    if (details.note) lines.push(`Qeyd: ${String(details.note)}`);
+                                                                } else if (action === 'FOLLOWUP_CANCELLED') {
+                                                                    dot = 'bg-rose-500';
+                                                                    icon = <Edit3 className="w-3.5 h-3.5 text-rose-100" />;
+                                                                    title = 'Follow-up ləğv edildi';
+                                                                    if (details.note) lines.push(`Qeyd: ${String(details.note)}`);
+                                                                } else if (action === 'FOLLOWUP_REASSIGNED') {
+                                                                    dot = 'bg-indigo-500';
+                                                                    icon = <User className="w-3.5 h-3.5 text-indigo-200" />;
+                                                                    title = 'Follow-up operatoru dəyişdi';
+                                                                } else if (action === 'CONVERSATION_CLOSED') {
+                                                                    dot = 'bg-amber-500';
+                                                                    icon = <MessageSquare className="w-3.5 h-3.5 text-amber-200" />;
+                                                                    title = 'Söhbət bağlandı';
+                                                                    lines.push('Gecikmə/SLA dayandırıldı');
+                                                                } else if (action === 'CONVERSATION_REOPENED') {
+                                                                    dot = 'bg-emerald-500';
+                                                                    icon = <MessageSquare className="w-3.5 h-3.5 text-emerald-200" />;
+                                                                    title = 'Söhbət açıldı';
+                                                                    lines.push('Gecikmə/SLA yenidən aktivdir');
                                                                 }
 
                                                                 return (

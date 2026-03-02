@@ -100,6 +100,8 @@ async function initDb() {
           last_read_at TIMESTAMP,
           last_inbound_at TIMESTAMP,
           last_outbound_at TIMESTAMP,
+          conversation_closed BOOLEAN DEFAULT false,
+          conversation_closed_at TIMESTAMP,
           tenant_id VARCHAR(50) DEFAULT 'admin',
           assignee_id UUID REFERENCES users(id) ON DELETE SET NULL,
           created_at TIMESTAMP DEFAULT NOW(),
@@ -184,10 +186,34 @@ async function initDb() {
           due_at TIMESTAMP NOT NULL,
           note TEXT,
           notified_at TIMESTAMP,
+          overdue_notified_at TIMESTAMP,
           done_at TIMESTAMP,
           created_at TIMESTAMP DEFAULT NOW(),
           updated_at TIMESTAMP DEFAULT NOW()
         );
+
+        CREATE TABLE IF NOT EXISTS notifications (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          tenant_id VARCHAR(50) NOT NULL,
+          user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+          type VARCHAR(40) NOT NULL,
+          title TEXT,
+          body TEXT,
+          payload JSONB DEFAULT '{}'::jsonb,
+          dedupe_key TEXT NOT NULL,
+          lead_id UUID REFERENCES leads(id) ON DELETE SET NULL,
+          followup_id UUID REFERENCES follow_ups(id) ON DELETE SET NULL,
+          created_at TIMESTAMP DEFAULT NOW(),
+          read_at TIMESTAMP
+        );
+
+        -- Idempotency/dedupe: do not spam the same user for the same event
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_tenant_user_dedupe
+          ON notifications (tenant_id, user_id, dedupe_key);
+        CREATE INDEX IF NOT EXISTS idx_notifications_tenant_user_created
+          ON notifications (tenant_id, user_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_notifications_tenant_user_unread
+          ON notifications (tenant_id, user_id, read_at, created_at DESC);
       `;
 
         await client.query(createTableQuery);
@@ -286,21 +312,22 @@ async function initDb() {
                   last_error TEXT,
                   updated_at TIMESTAMP DEFAULT NOW()
                 );
-                -- Follow-ups / tasks (per-tenant)
-                CREATE TABLE IF NOT EXISTS follow_ups (
-                  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                  tenant_id VARCHAR(50) NOT NULL,
-                  lead_id UUID NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
-                  assignee_id UUID REFERENCES users(id) ON DELETE SET NULL,
-                  created_by UUID REFERENCES users(id) ON DELETE SET NULL,
-                  status VARCHAR(20) NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'done', 'cancelled')),
-                  due_at TIMESTAMP NOT NULL,
-                  note TEXT,
-                  notified_at TIMESTAMP,
-                  done_at TIMESTAMP,
-                  created_at TIMESTAMP DEFAULT NOW(),
-                  updated_at TIMESTAMP DEFAULT NOW()
-                );
+                 -- Follow-ups / tasks (per-tenant)
+                 CREATE TABLE IF NOT EXISTS follow_ups (
+                   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                   tenant_id VARCHAR(50) NOT NULL,
+                   lead_id UUID NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+                   assignee_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                   created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+                   status VARCHAR(20) NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'done', 'cancelled')),
+                   due_at TIMESTAMP NOT NULL,
+                   note TEXT,
+                   notified_at TIMESTAMP,
+                   overdue_notified_at TIMESTAMP,
+                   done_at TIMESTAMP,
+                   created_at TIMESTAMP DEFAULT NOW(),
+                   updated_at TIMESTAMP DEFAULT NOW()
+                 );
             `);
         } catch (e) {
             console.error("Migration warning (can be ignored on fresh install):", e.message);
@@ -337,6 +364,8 @@ async function initDb() {
             await client.query('ALTER TABLE leads ADD COLUMN IF NOT EXISTS last_read_at TIMESTAMP;');
             await client.query('ALTER TABLE leads ADD COLUMN IF NOT EXISTS last_inbound_at TIMESTAMP;');
             await client.query('ALTER TABLE leads ADD COLUMN IF NOT EXISTS last_outbound_at TIMESTAMP;');
+            await client.query('ALTER TABLE leads ADD COLUMN IF NOT EXISTS conversation_closed BOOLEAN DEFAULT false;');
+            await client.query('ALTER TABLE leads ADD COLUMN IF NOT EXISTS conversation_closed_at TIMESTAMP;');
         } catch (e) {
             console.error('Migration warning (unread columns):', e.message);
         }
@@ -354,16 +383,43 @@ async function initDb() {
                 due_at TIMESTAMP NOT NULL,
                 note TEXT,
                 notified_at TIMESTAMP,
+                overdue_notified_at TIMESTAMP,
                 done_at TIMESTAMP,
                 created_at TIMESTAMP DEFAULT NOW(),
                 updated_at TIMESTAMP DEFAULT NOW()
               );
             `);
+            await client.query('ALTER TABLE follow_ups ADD COLUMN IF NOT EXISTS overdue_notified_at TIMESTAMP;');
             await client.query('CREATE INDEX IF NOT EXISTS idx_followups_tenant_due ON follow_ups (tenant_id, status, due_at);');
             await client.query('CREATE INDEX IF NOT EXISTS idx_followups_tenant_lead ON follow_ups (tenant_id, lead_id, due_at);');
             await client.query('CREATE INDEX IF NOT EXISTS idx_followups_tenant_assignee_due ON follow_ups (tenant_id, assignee_id, due_at);');
         } catch (e) {
             console.warn('⚠️ Migration warning (follow_ups):', e.message);
+        }
+
+        // Ensure notifications table exists (persistent in-app alerts)
+        try {
+            await client.query(`
+              CREATE TABLE IF NOT EXISTS notifications (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                tenant_id VARCHAR(50) NOT NULL,
+                user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+                type VARCHAR(40) NOT NULL,
+                title TEXT,
+                body TEXT,
+                payload JSONB DEFAULT '{}'::jsonb,
+                dedupe_key TEXT NOT NULL,
+                lead_id UUID REFERENCES leads(id) ON DELETE SET NULL,
+                followup_id UUID REFERENCES follow_ups(id) ON DELETE SET NULL,
+                created_at TIMESTAMP DEFAULT NOW(),
+                read_at TIMESTAMP
+              );
+            `);
+            await client.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_tenant_user_dedupe ON notifications (tenant_id, user_id, dedupe_key);');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_notifications_tenant_user_created ON notifications (tenant_id, user_id, created_at DESC);');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_notifications_tenant_user_unread ON notifications (tenant_id, user_id, read_at, created_at DESC);');
+        } catch (e) {
+            console.warn('⚠️ Migration warning (notifications):', e.message);
         }
 
         // Ensure messages.metadata exists
@@ -786,6 +842,8 @@ async function updateLeadMessage(phone, message, whatsappId, name = null, tenant
             unread_count = CASE WHEN $7 = 'in' THEN COALESCE(unread_count, 0) + 1 ELSE unread_count END,
             last_inbound_at = CASE WHEN $7 = 'in' THEN NOW() ELSE last_inbound_at END,
             last_outbound_at = CASE WHEN $7 = 'out' THEN NOW() ELSE last_outbound_at END,
+            conversation_closed = CASE WHEN $7 = 'in' THEN false ELSE conversation_closed END,
+            conversation_closed_at = CASE WHEN $7 = 'in' THEN NULL ELSE conversation_closed_at END,
             updated_at = NOW()
         WHERE phone = $4 AND tenant_id = $5
         RETURNING *;
@@ -1007,7 +1065,10 @@ async function getLeads(filters = {}, tenantId = 'admin') {
     try {
         let query = `
           SELECT l.*,
-                 fu.next_due_at AS next_followup_due_at
+                 fu.next_due_at AS next_followup_due_at,
+                 CASE WHEN l.last_inbound_at IS NOT NULL THEN (EXTRACT(EPOCH FROM l.last_inbound_at) * 1000)::bigint ELSE NULL END AS last_inbound_ms,
+                 CASE WHEN l.last_outbound_at IS NOT NULL THEN (EXTRACT(EPOCH FROM l.last_outbound_at) * 1000)::bigint ELSE NULL END AS last_outbound_ms,
+                 CASE WHEN fu.next_due_at IS NOT NULL THEN (EXTRACT(EPOCH FROM fu.next_due_at) * 1000)::bigint ELSE NULL END AS next_followup_due_ms
           FROM leads l
           LEFT JOIN LATERAL (
             SELECT MIN(due_at) AS next_due_at

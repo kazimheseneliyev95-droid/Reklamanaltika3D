@@ -2,6 +2,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { LayoutDashboard, Calculator, ShieldCheck, LogOut, BarChart3, Settings, Timer } from 'lucide-react';
 import { useAppStore } from '../context/Store';
 import { cn } from '../lib/utils';
+import { NotificationBell } from './NotificationBell';
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   const location = useLocation();
@@ -42,13 +43,16 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           )}
         </div>
         {currentUser?.role !== 'superadmin' && (
-          <button
-            onClick={logout}
-            className="p-2 text-rose-400 hover:text-rose-300"
-            title="Çıxış"
-          >
-            <LogOut className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-1">
+            <NotificationBell className="text-slate-200" />
+            <button
+              onClick={logout}
+              className="p-2 text-rose-400 hover:text-rose-300"
+              title="Çıxış"
+            >
+              <LogOut className="w-5 h-5" />
+            </button>
+          </div>
         )}
       </div>
 
@@ -88,10 +92,17 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       {/* Desktop Sidebar */}
        <aside className="hidden md:flex md:w-64 bg-slate-900 border-r border-slate-800 flex-shrink-0 flex-col">
         <div className="p-6 border-b border-slate-800">
-          <h1 className="text-xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
-            ReklamAnalitika
-          </h1>
-          <p className="text-xs text-slate-500 mt-1">{currentUser?.display_name || 'Ads & CRM Suite'}</p>
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h1 className="text-xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
+                ReklamAnalitika
+              </h1>
+              <p className="text-xs text-slate-500 mt-1 truncate">{currentUser?.display_name || 'Ads & CRM Suite'}</p>
+            </div>
+            {currentUser?.role !== 'superadmin' ? (
+              <NotificationBell className="text-slate-200" />
+            ) : null}
+          </div>
         </div>
 
         <nav className="p-4 space-y-2 flex-1">
