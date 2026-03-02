@@ -2383,15 +2383,22 @@ app.get('/api/analytics/response-times', requireTenantAuth, asyncHandler(async (
         AND COALESCE((m.metadata->>'bot')::boolean, false) = false
         AND COALESCE((m.metadata->>'automated')::boolean, false) = false
     ),
-    ordered AS (
+    ordered1 AS (
       SELECT
         f.*,
-        lag(f.direction) OVER (PARTITION BY f.lead_id ORDER BY f.created_at, f.id) AS prev_dir,
-        SUM(CASE WHEN f.direction = 'in'
-                  AND (lag(f.direction) OVER (PARTITION BY f.lead_id ORDER BY f.created_at, f.id) IS DISTINCT FROM 'in')
-                 THEN 1 ELSE 0 END)
-          OVER (PARTITION BY f.lead_id ORDER BY f.created_at, f.id) AS in_block
+        lag(f.direction) OVER (PARTITION BY f.lead_id ORDER BY f.created_at, f.id) AS prev_dir
       FROM filtered f
+    ),
+    ordered AS (
+      SELECT
+        o.*,
+        SUM(
+          CASE
+            WHEN o.direction = 'in' AND (o.prev_dir IS DISTINCT FROM 'in') THEN 1
+            ELSE 0
+          END
+        ) OVER (PARTITION BY o.lead_id ORDER BY o.created_at, o.id) AS in_block
+      FROM ordered1 o
     ),
     inbound_ends AS (
       SELECT lead_id, in_block, MAX(created_at) AS inbound_end_at

@@ -197,6 +197,7 @@ async function initDb() {
                 ALTER TABLE leads ADD COLUMN IF NOT EXISTS unread_count INTEGER DEFAULT 0;
                 ALTER TABLE leads ADD COLUMN IF NOT EXISTS last_read_at TIMESTAMP;
                 ALTER TABLE leads ADD COLUMN IF NOT EXISTS last_inbound_at TIMESTAMP;
+                ALTER TABLE leads ADD COLUMN IF NOT EXISTS last_outbound_at TIMESTAMP;
                 ALTER TABLE messages ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'delivered';
                 ALTER TABLE messages ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
                 ALTER TABLE messages ADD COLUMN IF NOT EXISTS attempts INTEGER DEFAULT 0;
@@ -269,6 +270,21 @@ async function initDb() {
                   last_error TEXT,
                   updated_at TIMESTAMP DEFAULT NOW()
                 );
+                -- Follow-ups / tasks (per-tenant)
+                CREATE TABLE IF NOT EXISTS follow_ups (
+                  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                  tenant_id VARCHAR(50) NOT NULL,
+                  lead_id UUID NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+                  assignee_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                  created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+                  status VARCHAR(20) NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'done', 'cancelled')),
+                  due_at TIMESTAMP NOT NULL,
+                  note TEXT,
+                  notified_at TIMESTAMP,
+                  done_at TIMESTAMP,
+                  created_at TIMESTAMP DEFAULT NOW(),
+                  updated_at TIMESTAMP DEFAULT NOW()
+                );
             `);
         } catch (e) {
             console.error("Migration warning (can be ignored on fresh install):", e.message);
@@ -304,8 +320,34 @@ async function initDb() {
             await client.query('ALTER TABLE leads ADD COLUMN IF NOT EXISTS unread_count INTEGER DEFAULT 0;');
             await client.query('ALTER TABLE leads ADD COLUMN IF NOT EXISTS last_read_at TIMESTAMP;');
             await client.query('ALTER TABLE leads ADD COLUMN IF NOT EXISTS last_inbound_at TIMESTAMP;');
+            await client.query('ALTER TABLE leads ADD COLUMN IF NOT EXISTS last_outbound_at TIMESTAMP;');
         } catch (e) {
             console.error('Migration warning (unread columns):', e.message);
+        }
+
+        // Ensure follow_ups table exists
+        try {
+            await client.query(`
+              CREATE TABLE IF NOT EXISTS follow_ups (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                tenant_id VARCHAR(50) NOT NULL,
+                lead_id UUID NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+                assignee_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+                status VARCHAR(20) NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'done', 'cancelled')),
+                due_at TIMESTAMP NOT NULL,
+                note TEXT,
+                notified_at TIMESTAMP,
+                done_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+              );
+            `);
+            await client.query('CREATE INDEX IF NOT EXISTS idx_followups_tenant_due ON follow_ups (tenant_id, status, due_at);');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_followups_tenant_lead ON follow_ups (tenant_id, lead_id, due_at);');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_followups_tenant_assignee_due ON follow_ups (tenant_id, assignee_id, due_at);');
+        } catch (e) {
+            console.warn('⚠️ Migration warning (follow_ups):', e.message);
         }
 
         // Ensure messages.metadata exists
