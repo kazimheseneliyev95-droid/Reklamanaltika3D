@@ -5,7 +5,7 @@ import { Badge } from '../components/ui/Badge';
 import { Trash2, Calendar, Filter, RefreshCcw, Pencil, ShoppingBag, DollarSign, TrendingUp, Users, MessageSquare, UserPlus, CheckCircle, XCircle, Phone, Bell, GripVertical } from 'lucide-react';
 import { cn, formatCurrency } from '../lib/utils';
 import { LeadDetailsPanel } from '../components/LeadDetailsPanel';
-import { loadCRMSettings, CustomField, LeadCardUISettings } from '../lib/crmSettings';
+import { loadCRMSettings, CustomField, LeadCardUISettings, DelayDotsSettings } from '../lib/crmSettings';
 import { CRMFilterSidebar, countActiveFilters, makeDefaultCRMFilters, type CRMFilters } from '../components/CRMFilterSidebar';
 import { CrmService } from '../services/CrmService';
 
@@ -27,6 +27,7 @@ export default function CRMPage() {
 
   const { pipelineStages, customFields, ui } = loadCRMSettings();
   const leadCardUi = ui?.leadCard;
+  const delayDotsUi = ui?.delayDots;
 
   const pipelineSig = useMemo(() => (pipelineStages || []).map(s => s.id).join('|'), [pipelineStages]);
 
@@ -576,6 +577,7 @@ export default function CRMPage() {
                   teamMembers={teamMembers}
                   pipelineStages={pipelineStages}
                   leadCardUi={leadCardUi}
+                  delayDots={delayDotsUi}
                 />
               ))}
               {filteredLeads.filter(l => l.status === col.id).length === 0 && (
@@ -648,6 +650,7 @@ function LeadCard({
   teamMembers,
   pipelineStages,
   leadCardUi,
+  delayDots,
 }: {
   lead: Lead;
   onRemove: any;
@@ -657,6 +660,7 @@ function LeadCard({
   teamMembers: any[];
   pipelineStages: { id: string; label: string; color: string }[];
   leadCardUi?: LeadCardUISettings;
+  delayDots?: DelayDotsSettings;
 }) {
   const dateStr = new Date(lead.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   const unread = (lead as any).unread_count ? Number((lead as any).unread_count) : 0;
@@ -751,9 +755,9 @@ function LeadCard({
   const waiting = !isClosed && Boolean(lastInMs && (!lastOutMs || (lastOutMs < (lastInMs as number))));
   const waitingMin = waiting && lastInMs ? (nowMs - lastInMs) / 60000 : 0;
 
-  const delayDots = (ui as any)?.delayDots || {};
-  const greenMax = Number.isFinite(Number(delayDots.greenMaxMinutes)) ? Math.max(1, Math.round(Number(delayDots.greenMaxMinutes))) : 10;
-  const yellowMax = Number.isFinite(Number(delayDots.yellowMaxMinutes)) ? Math.max(greenMax + 1, Math.round(Number(delayDots.yellowMaxMinutes))) : 30;
+  const dd = (delayDots && typeof delayDots === 'object') ? delayDots : {};
+  const greenMax = Number.isFinite(Number((dd as any).greenMaxMinutes)) ? Math.max(1, Math.round(Number((dd as any).greenMaxMinutes))) : 10;
+  const yellowMax = Number.isFinite(Number((dd as any).yellowMaxMinutes)) ? Math.max(greenMax + 1, Math.round(Number((dd as any).yellowMaxMinutes))) : 30;
 
   let responseDot = null as null | { color: string; title: string };
   if (waiting) {
