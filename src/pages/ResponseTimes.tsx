@@ -1,12 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Timer, Users, TrendingUp, Activity } from 'lucide-react';
+import { Timer, Users, Activity, AlarmClock } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { useAppStore } from '../context/Store';
 import { CrmService } from '../services/CrmService';
 
 type Stats = {
   range: { start: string; end: string };
-  overall: {
+  filters: { channels: string[]; sla_minutes: number };
+  frt: {
     count: number;
     avg_minutes: number | null;
     min_minutes: number | null;
@@ -14,31 +14,31 @@ type Stats = {
     p50_minutes: number | null;
     p90_minutes: number | null;
   };
-  categories: {
-    new: any;
-    conversation: any;
+  cgt: {
+    count: number;
+    avg_minutes: number | null;
+    min_minutes: number | null;
+    max_minutes: number | null;
+    p50_minutes: number | null;
+    p90_minutes: number | null;
+  };
+  art: { avg_minutes: number | null; count: number };
+  sla: {
+    sla_minutes: number;
+    within_count: number;
+    outside_count: number;
+    within_pct: number | null;
+    outside_pct: number | null;
   };
   by_operator: Array<{
     user_id: string | null;
     name: string;
-    count: number;
-    avg_minutes: number | null;
-    min_minutes: number | null;
-    max_minutes: number | null;
-    p50_minutes: number | null;
-    p90_minutes: number | null;
+    frt_count: number;
+    frt_avg_minutes: number | null;
+    art_avg_minutes: number | null;
+    cgt_count: number;
+    cgt_max_minutes: number | null;
   }>;
-  conversion: {
-    stage_id: string | null;
-    stage_rule: string;
-    buckets: Array<{
-      bucket: string;
-      leads: number;
-      converted: number;
-      conversion_rate: number | null;
-      avg_first_response_minutes: number | null;
-    }>;
-  };
 };
 
 function fmtMinutes(mins: number | null): string {
@@ -79,19 +79,34 @@ function MetricCard({
 }
 
 export default function ResponseTimesPage() {
-  const { dateRange } = useAppStore();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [stats, setStats] = useState<Stats | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
 
+  const [preset, setPreset] = useState<'today' | '7d' | '30d'>('7d');
+  const [channels, setChannels] = useState<string[]>(['whatsapp', 'instagram', 'facebook', 'telegram']);
+
+  const toggleChannel = (ch: string) => {
+    setChannels((prev) => {
+      const has = prev.includes(ch);
+      const next = has ? prev.filter(x => x !== ch) : [...prev, ch];
+      return next.length ? next : prev;
+    });
+  };
+
   const range = useMemo(() => {
-    const end = dateRange?.end ? new Date(`${dateRange.end}T23:59:59.999Z`) : new Date();
-    const start = dateRange?.start
-      ? new Date(`${dateRange.start}T00:00:00.000Z`)
-      : new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const now = new Date();
+    const end = new Date(now);
+    let start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
+    if (preset === 'today') {
+      start = new Date(end);
+      start.setHours(0, 0, 0, 0);
+    } else if (preset === '30d') {
+      start = new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000);
+    }
     return { start, end };
-  }, [dateRange?.start, dateRange?.end]);
+  }, [preset]);
 
   useEffect(() => {
     const run = async () => {
@@ -105,6 +120,7 @@ export default function ResponseTimesPage() {
         const qs = new URLSearchParams({
           start: range.start.toISOString(),
           end: range.end.toISOString(),
+          channels: channels.join(','),
         });
         const res = await fetch(`${url}/api/analytics/response-times?${qs.toString()}`, {
           headers: { 'Authorization': `Bearer ${token}` },
@@ -120,7 +136,11 @@ export default function ResponseTimesPage() {
       }
     };
     run();
-  }, [range.start, range.end, refreshKey]);
+  }, [range.start, range.end, refreshKey, channels.join(',')]);
+
+  const slaPct = stats?.sla?.within_pct === null || stats?.sla?.within_pct === undefined
+    ? null
+    : Math.round(stats.sla.within_pct * 100);
 
   return (
     <div className="p-4 sm:p-6">
@@ -133,7 +153,7 @@ export default function ResponseTimesPage() {
             <div>
               <div className="text-2xl font-extrabold text-slate-100">Cavab Sureleri</div>
               <div className="mt-0.5 text-[12px] text-slate-500">
-                Musteri mesajindan sonra ilk cavaba qeder olan vaxt (dk).
+                FRT (ilk cavab) + CGT (gap) + ART (gap ortalamasi).
               </div>
             </div>
           </div>
@@ -148,34 +168,77 @@ export default function ResponseTimesPage() {
         </button>
       </div>
 
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <div className="inline-flex rounded-xl border border-slate-800 bg-slate-950/25 p-1">
+          {([
+            { key: 'today', label: 'Bugun' },
+            { key: '7d', label: 'Son 7 gun' },
+            { key: '30d', label: 'Son 30 gun' },
+          ] as const).map((b) => (
+            <button
+              key={b.key}
+              type="button"
+              onClick={() => setPreset(b.key)}
+              className={cn(
+                'px-3 py-1.5 rounded-lg text-[11px] font-extrabold transition-colors',
+                preset === b.key ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-900'
+              )}
+            >
+              {b.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          {['whatsapp', 'instagram', 'facebook', 'telegram'].map((ch) => {
+            const on = channels.includes(ch);
+            return (
+              <button
+                key={ch}
+                type="button"
+                onClick={() => toggleChannel(ch)}
+                className={cn(
+                  'px-3 py-1.5 rounded-full border text-[11px] font-extrabold transition-colors',
+                  on
+                    ? 'border-slate-700 bg-slate-950/40 text-slate-100'
+                    : 'border-slate-800 bg-slate-950/10 text-slate-500 hover:text-slate-200'
+                )}
+              >
+                {ch.toUpperCase()}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       {error ? (
         <div className="mt-4 rounded-xl border border-red-900/50 bg-red-950/15 px-4 py-3 text-sm text-red-300">{error}</div>
       ) : null}
 
       <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
         <MetricCard
-          title="Ortalama"
-          value={loading ? '...' : fmtMinutes(stats?.overall?.avg_minutes ?? null)}
-          sub={loading ? '' : `p50: ${fmtMinutes(stats?.overall?.p50_minutes ?? null)} · p90: ${fmtMinutes(stats?.overall?.p90_minutes ?? null)}`}
+          title="Ortalama FRT"
+          value={loading ? '...' : fmtMinutes(stats?.frt?.avg_minutes ?? null)}
+          sub={loading ? '' : `min: ${fmtMinutes(stats?.frt?.min_minutes ?? null)} · max: ${fmtMinutes(stats?.frt?.max_minutes ?? null)}`}
           icon={<Activity className="w-5 h-5" />}
         />
         <MetricCard
-          title="En Qisa"
-          value={loading ? '...' : fmtMinutes(stats?.overall?.min_minutes ?? null)}
-          sub={loading ? '' : 'Bu araliqda'}
-          icon={<TrendingUp className="w-5 h-5" />}
+          title="Ortalama ART"
+          value={loading ? '...' : fmtMinutes(stats?.art?.avg_minutes ?? null)}
+          sub={loading ? '' : `CGT say: ${stats?.cgt?.count ?? 0}`}
+          icon={<Users className="w-5 h-5" />}
         />
         <MetricCard
-          title="En Uzun"
-          value={loading ? '...' : fmtMinutes(stats?.overall?.max_minutes ?? null)}
-          sub={loading ? '' : 'Bu araliqda'}
+          title="CGT (Gap)"
+          value={loading ? '...' : (stats?.cgt?.p50_minutes !== null && stats?.cgt?.p50_minutes !== undefined ? fmtMinutes(stats?.cgt?.p50_minutes) : '-')}
+          sub={loading ? '' : `min: ${fmtMinutes(stats?.cgt?.min_minutes ?? null)} · max: ${fmtMinutes(stats?.cgt?.max_minutes ?? null)}`}
           icon={<Timer className="w-5 h-5" />}
         />
         <MetricCard
-          title="Cavab Say"
-          value={loading ? '...' : String(stats?.overall?.count ?? 0)}
-          sub={loading ? '' : `Yeni: ${stats?.categories?.new?.count ?? 0} · Davam: ${stats?.categories?.conversation?.count ?? 0}`}
-          icon={<Users className="w-5 h-5" />}
+          title={`SLA (<= ${stats?.sla?.sla_minutes ?? 10} dk)`}
+          value={loading ? '...' : (slaPct === null ? '-' : `${slaPct}%`)}
+          sub={loading ? '' : `icinde: ${stats?.sla?.within_count ?? 0} · disi: ${stats?.sla?.outside_count ?? 0}`}
+          icon={<AlarmClock className="w-5 h-5" />}
         />
       </div>
 
@@ -187,20 +250,20 @@ export default function ResponseTimesPage() {
               <thead>
                 <tr className="text-left text-[11px] text-slate-500">
                   <th className="py-2 pr-3">Operator</th>
-                  <th className="py-2 pr-3">Say</th>
-                  <th className="py-2 pr-3">Ort</th>
-                  <th className="py-2 pr-3">Min</th>
-                  <th className="py-2">Max</th>
+                  <th className="py-2 pr-3">FRT say</th>
+                  <th className="py-2 pr-3">Ort FRT</th>
+                  <th className="py-2 pr-3">Ort ART</th>
+                  <th className="py-2">Max CGT</th>
                 </tr>
               </thead>
               <tbody className="text-slate-200">
-                {(stats?.by_operator || []).slice(0, 20).map((r) => (
+                {(stats?.by_operator || []).slice(0, 25).map((r) => (
                   <tr key={r.user_id || r.name} className="border-t border-slate-800/70">
                     <td className="py-2 pr-3 font-semibold text-slate-100">{r.name}</td>
-                    <td className="py-2 pr-3 tabular-nums text-slate-300">{r.count}</td>
-                    <td className="py-2 pr-3 tabular-nums">{fmtMinutes(r.avg_minutes)}</td>
-                    <td className="py-2 pr-3 tabular-nums text-slate-400">{fmtMinutes(r.min_minutes)}</td>
-                    <td className="py-2 tabular-nums text-slate-400">{fmtMinutes(r.max_minutes)}</td>
+                    <td className="py-2 pr-3 tabular-nums text-slate-300">{r.frt_count}</td>
+                    <td className="py-2 pr-3 tabular-nums">{fmtMinutes(r.frt_avg_minutes)}</td>
+                    <td className="py-2 pr-3 tabular-nums text-slate-300">{fmtMinutes(r.art_avg_minutes)}</td>
+                    <td className="py-2 tabular-nums text-slate-400">{fmtMinutes(r.cgt_max_minutes)}</td>
                   </tr>
                 ))}
                 {!loading && (stats?.by_operator || []).length === 0 ? (
@@ -212,30 +275,20 @@ export default function ResponseTimesPage() {
         </div>
 
         <div className="rounded-2xl border border-slate-800 bg-slate-950/20 p-4">
-          <div className="text-[11px] uppercase tracking-wide font-bold text-slate-500">Ilk cavab sureleri vs konversiya</div>
-          <div className="mt-2 text-[11px] text-slate-500">
-            Rule: <span className="text-slate-200 font-semibold">{stats?.conversion?.stage_rule || '-'}</span>
-            {stats?.conversion?.stage_id ? <span className="text-slate-600"> · stage: {stats.conversion.stage_id}</span> : null}
-          </div>
-
-          <div className="mt-3 space-y-2">
-            {(stats?.conversion?.buckets || []).map((b) => {
-              const pct = b.conversion_rate === null ? 0 : Math.round(b.conversion_rate * 100);
-              return (
-                <div key={b.bucket} className="rounded-xl border border-slate-800 bg-slate-950/25 px-3 py-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-[12px] font-bold text-slate-100">{b.bucket} dk</div>
-                    <div className="text-[11px] text-slate-400 tabular-nums">
-                      {b.converted}/{b.leads} · <span className="text-slate-200 font-semibold">{b.conversion_rate === null ? '-' : `${pct}%`}</span>
-                    </div>
-                  </div>
-                  <div className="mt-2 h-2 rounded-full bg-slate-900 overflow-hidden border border-slate-800">
-                    <div className="h-full bg-emerald-500/60" style={{ width: `${Math.min(100, Math.max(0, pct))}%` }} />
-                  </div>
-                  <div className="mt-1 text-[10px] text-slate-600">Ortalama ilk cavab: {fmtMinutes(b.avg_first_response_minutes)}</div>
-                </div>
-              );
-            })}
+          <div className="text-[11px] uppercase tracking-wide font-bold text-slate-500">Tanim</div>
+          <div className="mt-3 space-y-2 text-[12px] text-slate-300">
+            <div className="rounded-xl border border-slate-800 bg-slate-950/25 px-3 py-2">
+              <div className="font-extrabold text-slate-100">FRT</div>
+              <div className="text-slate-400">Musterinin ilk mesaji → ilk agent cavabi.</div>
+            </div>
+            <div className="rounded-xl border border-slate-800 bg-slate-950/25 px-3 py-2">
+              <div className="font-extrabold text-slate-100">CGT</div>
+              <div className="text-slate-400">Musteri mesaj bloku (son mesaj) → agentin ilk cavabi.</div>
+            </div>
+            <div className="rounded-xl border border-slate-800 bg-slate-950/25 px-3 py-2">
+              <div className="font-extrabold text-slate-100">ART</div>
+              <div className="text-slate-400">Butun CGT dongulerinin ortalamasi.</div>
+            </div>
           </div>
         </div>
       </div>

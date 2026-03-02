@@ -2280,14 +2280,23 @@ app.get('/api/analytics/response-times', requireTenantAuth, asyncHandler(async (
   const end = parseIsoDateOrNull(req.query.end) || new Date();
   const start = parseIsoDateOrNull(req.query.start) || new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
 
+  const channelsRaw = String(req.query.channels || '').trim();
+  const requestedChannels = channelsRaw
+    ? channelsRaw.split(',').map(s => String(s || '').trim().toLowerCase()).filter(Boolean)
+    : [];
+
+  // SLA is evaluated only for First Response Time
+  const slaMinutes = (() => {
+    const n = parseInt(String(req.query.sla_minutes || ''), 10);
+    if (Number.isFinite(n) && n > 0) return Math.min(n, 240);
+    return 10;
+  })();
+
   // Clamp: max 90 days
   const maxSpanMs = 90 * 24 * 60 * 60 * 1000;
   if ((end.getTime() - start.getTime()) > maxSpanMs) {
     return res.status(400).json({ error: 'Date range too large (max 90 days)' });
   }
-
-  const settings = await db.getCRMSettings(req.tenantId).catch(() => null);
-  const conversionStageId = toStageIdForConversion(settings);
 
   const tenantId = req.tenantId;
 
@@ -2326,99 +2335,178 @@ app.get('/api/analytics/response-times', requireTenantAuth, asyncHandler(async (
     }
   }
 
-  // Response events: each outbound that replies to the first inbound since previous outbound.
-  const senderExpr = hasSenderUserId ? 'm.sender_user_id' : 'NULL::uuid AS sender_user_id';
-
-  const responseSql = `
-    WITH leads_in_range AS (
-      SELECT DISTINCT lead_id
-      FROM messages
-      WHERE tenant_id = $1
-        AND direction = 'out'
-        AND created_at BETWEEN $2::timestamptz AND $3::timestamptz
-    ),
-    ordered AS (
-      SELECT
-        m.id,
-        m.lead_id,
-        m.direction,
-        m.created_at,
-        ${senderExpr},
-        COUNT(CASE WHEN m.direction = 'out' THEN 1 END) OVER (
-          PARTITION BY m.lead_id
-          ORDER BY m.created_at, m.id
-        ) AS out_count
-      FROM messages m
-      JOIN leads_in_range r ON r.lead_id = m.lead_id
-      WHERE m.tenant_id = $1
-    ),
-    inbound_groups AS (
-      SELECT lead_id, out_count, MIN(created_at) AS inbound_at
-      FROM ordered
-      WHERE direction = 'in'
-      GROUP BY lead_id, out_count
-    ),
-    responses AS (
-      SELECT
-        o.lead_id,
-        o.id AS outbound_id,
-        o.created_at AS replied_at,
-        o.sender_user_id,
-        o.out_count,
-        ig.inbound_at
-      FROM ordered o
-      JOIN inbound_groups ig
-        ON ig.lead_id = o.lead_id
-       AND ig.out_count = o.out_count - 1
-      WHERE o.direction = 'out'
-        AND o.created_at BETWEEN $2::timestamptz AND $3::timestamptz
-        AND ig.inbound_at IS NOT NULL
-    )
-    SELECT
-      r.lead_id,
-      r.outbound_id,
-      r.sender_user_id,
-      r.out_count,
-      r.inbound_at,
-      r.replied_at,
-      EXTRACT(EPOCH FROM (r.replied_at - r.inbound_at)) / 60.0 AS response_minutes
-    FROM responses r
-    ORDER BY r.replied_at ASC;
-  `;
-
-  const rows = await db.pool.query(responseSql, [tenantId, start.toISOString(), end.toISOString()]);
-  const events = rows.rows || [];
-
-  // Basic stats helpers
-  const minutes = events.map((e) => Number(e.response_minutes)).filter((n) => Number.isFinite(n) && n >= 0);
-  minutes.sort((a, b) => a - b);
-
   const pick = (arr, q) => {
     if (!arr.length) return null;
     const idx = Math.min(arr.length - 1, Math.max(0, Math.floor(q * (arr.length - 1))));
     return arr[idx];
   };
 
-  const overall = {
-    count: minutes.length,
-    avg_minutes: minutes.length ? (minutes.reduce((s, x) => s + x, 0) / minutes.length) : null,
-    min_minutes: minutes.length ? minutes[0] : null,
-    max_minutes: minutes.length ? minutes[minutes.length - 1] : null,
-    p50_minutes: pick(minutes, 0.50),
-    p90_minutes: pick(minutes, 0.90),
+  const makeStats = (arr) => {
+    const a = arr.slice().filter((n) => Number.isFinite(n) && n >= 0).sort((x, y) => x - y);
+    return {
+      count: a.length,
+      avg_minutes: a.length ? (a.reduce((s, x) => s + x, 0) / a.length) : null,
+      min_minutes: a.length ? a[0] : null,
+      max_minutes: a.length ? a[a.length - 1] : null,
+      p50_minutes: pick(a, 0.50),
+      p90_minutes: pick(a, 0.90),
+    };
   };
 
-  // By operator
-  const byUser = new Map();
-  for (const e of events) {
-    const uid = e.sender_user_id ? String(e.sender_user_id) : 'unknown';
-    const m = Number(e.response_minutes);
-    if (!Number.isFinite(m) || m < 0) continue;
-    if (!byUser.has(uid)) byUser.set(uid, []);
-    byUser.get(uid).push(m);
+  const uuidFromMetaExpr = `CASE
+    WHEN (m.metadata->>'operator_id') ~ '^[0-9a-fA-F-]{36}$' THEN (m.metadata->>'operator_id')::uuid
+    ELSE NULL
+  END`;
+  const responderExpr = hasSenderUserId
+    ? `COALESCE(m.sender_user_id, ${uuidFromMetaExpr})`
+    : `${uuidFromMetaExpr}`;
+
+  // Default channels if none specified
+  const allChannels = ['whatsapp', 'instagram', 'facebook', 'telegram', 'manual'];
+  const channels = requestedChannels.length ? requestedChannels : allChannels;
+
+  const baseCte = `
+    WITH filtered AS (
+      SELECT
+        m.id,
+        m.lead_id,
+        m.direction,
+        m.created_at,
+        ${responderExpr} AS responder_user_id,
+        l.source
+      FROM messages m
+      JOIN leads l ON l.id = m.lead_id AND l.tenant_id = m.tenant_id
+      WHERE m.tenant_id = $1
+        AND m.created_at <= $3::timestamptz
+        AND l.source = ANY($4::text[])
+        AND COALESCE((m.metadata->>'synthetic')::boolean, false) = false
+        AND COALESCE((m.metadata->>'bot')::boolean, false) = false
+        AND COALESCE((m.metadata->>'automated')::boolean, false) = false
+    ),
+    ordered AS (
+      SELECT
+        f.*,
+        lag(f.direction) OVER (PARTITION BY f.lead_id ORDER BY f.created_at, f.id) AS prev_dir,
+        SUM(CASE WHEN f.direction = 'in'
+                  AND (lag(f.direction) OVER (PARTITION BY f.lead_id ORDER BY f.created_at, f.id) IS DISTINCT FROM 'in')
+                 THEN 1 ELSE 0 END)
+          OVER (PARTITION BY f.lead_id ORDER BY f.created_at, f.id) AS in_block
+      FROM filtered f
+    ),
+    inbound_ends AS (
+      SELECT lead_id, in_block, MAX(created_at) AS inbound_end_at
+      FROM ordered
+      WHERE direction = 'in'
+      GROUP BY lead_id, in_block
+    ),
+    lead_first_inbound AS (
+      SELECT lead_id, MIN(created_at) AS first_inbound_at
+      FROM ordered
+      WHERE direction = 'in'
+      GROUP BY lead_id
+    ),
+    lead_first_block AS (
+      SELECT ie.lead_id, MIN(ie.inbound_end_at) AS first_block_end_at
+      FROM inbound_ends ie
+      GROUP BY ie.lead_id
+    ),
+    frt_events AS (
+      SELECT
+        fi.lead_id,
+        fi.first_inbound_at,
+        fb.first_block_end_at AS inbound_end_at,
+        o_out.created_at AS replied_at,
+        o_out.responder_user_id,
+        EXTRACT(EPOCH FROM (o_out.created_at - fb.first_block_end_at)) / 60.0 AS frt_minutes
+      FROM lead_first_inbound fi
+      JOIN lead_first_block fb ON fb.lead_id = fi.lead_id
+      JOIN LATERAL (
+        SELECT id, created_at, responder_user_id
+        FROM ordered o
+        WHERE o.lead_id = fb.lead_id
+          AND o.direction = 'out'
+          AND o.created_at > fb.first_block_end_at
+        ORDER BY o.created_at ASC, o.id ASC
+        LIMIT 1
+      ) o_out ON true
+      WHERE fi.first_inbound_at BETWEEN $2::timestamptz AND $3::timestamptz
+        AND o_out.created_at <= $3::timestamptz
+    ),
+    cgt_cycles AS (
+      SELECT
+        ie.lead_id,
+        ie.in_block,
+        ie.inbound_end_at,
+        o_out.created_at AS replied_at,
+        o_out.responder_user_id,
+        EXTRACT(EPOCH FROM (o_out.created_at - ie.inbound_end_at)) / 60.0 AS cgt_minutes
+      FROM inbound_ends ie
+      JOIN LATERAL (
+        SELECT id, created_at, responder_user_id
+        FROM ordered o
+        WHERE o.lead_id = ie.lead_id
+          AND o.direction = 'out'
+          AND o.created_at > ie.inbound_end_at
+        ORDER BY o.created_at ASC, o.id ASC
+        LIMIT 1
+      ) o_out ON true
+      WHERE ie.inbound_end_at BETWEEN $2::timestamptz AND $3::timestamptz
+        AND o_out.created_at <= $3::timestamptz
+    )
+  `;
+
+  const frtSql = `${baseCte}
+    SELECT lead_id, responder_user_id, frt_minutes
+    FROM frt_events;
+  `;
+  const cgtSql = `${baseCte}
+    SELECT lead_id, responder_user_id, cgt_minutes
+    FROM cgt_cycles;
+  `;
+
+  const [frtRes, cgtRes] = await Promise.all([
+    db.pool.query(frtSql, [tenantId, start.toISOString(), end.toISOString(), channels]),
+    db.pool.query(cgtSql, [tenantId, start.toISOString(), end.toISOString(), channels])
+  ]);
+
+  const frtRows = frtRes.rows || [];
+  const cgtRows = cgtRes.rows || [];
+
+  const frtMinutes = frtRows.map(r => Number(r.frt_minutes)).filter(n => Number.isFinite(n) && n >= 0);
+  const cgtMinutes = cgtRows.map(r => Number(r.cgt_minutes)).filter(n => Number.isFinite(n) && n >= 0);
+
+  const frt = makeStats(frtMinutes);
+  const cgt = makeStats(cgtMinutes);
+  const art = { avg_minutes: cgt.count ? cgt.avg_minutes : null, count: cgt.count };
+
+  const slaWithin = frtRows.filter(r => Number.isFinite(Number(r.frt_minutes)) && Number(r.frt_minutes) <= slaMinutes).length;
+  const slaOutside = frt.count - slaWithin;
+  const sla = {
+    sla_minutes: slaMinutes,
+    within_count: slaWithin,
+    outside_count: slaOutside,
+    within_pct: frt.count ? (slaWithin / frt.count) : null,
+    outside_pct: frt.count ? (slaOutside / frt.count) : null,
+  };
+
+  // Operator aggregation
+  const op = new Map();
+  const toKey = (uid) => uid ? String(uid) : 'unknown';
+
+  for (const r of frtRows) {
+    const k = toKey(r.responder_user_id);
+    if (!op.has(k)) op.set(k, { frt: [], cgt: [] });
+    const m = Number(r.frt_minutes);
+    if (Number.isFinite(m) && m >= 0) op.get(k).frt.push(m);
+  }
+  for (const r of cgtRows) {
+    const k = toKey(r.responder_user_id);
+    if (!op.has(k)) op.set(k, { frt: [], cgt: [] });
+    const m = Number(r.cgt_minutes);
+    if (Number.isFinite(m) && m >= 0) op.get(k).cgt.push(m);
   }
 
-  const userIds = Array.from(byUser.keys()).filter((id) => id !== 'unknown');
+  const userIds = Array.from(op.keys()).filter((id) => id !== 'unknown');
   let usersById = {};
   if (userIds.length > 0) {
     const ures = await db.pool.query(
@@ -2430,115 +2518,28 @@ app.get('/api/analytics/response-times', requireTenantAuth, asyncHandler(async (
     }
   }
 
-  const by_operator = Array.from(byUser.entries()).map(([id, arr]) => {
-    arr.sort((a, b) => a - b);
-    const avg = arr.length ? (arr.reduce((s, x) => s + x, 0) / arr.length) : null;
+  const by_operator = Array.from(op.entries()).map(([id, data]) => {
+    const fr = makeStats(data.frt);
+    const cg = makeStats(data.cgt);
     return {
       user_id: id === 'unknown' ? null : id,
       name: id === 'unknown' ? 'Unknown' : (usersById[id] || id),
-      count: arr.length,
-      avg_minutes: avg,
-      min_minutes: arr.length ? arr[0] : null,
-      max_minutes: arr.length ? arr[arr.length - 1] : null,
-      p50_minutes: pick(arr, 0.50),
-      p90_minutes: pick(arr, 0.90),
+      frt_count: fr.count,
+      frt_avg_minutes: fr.avg_minutes,
+      art_avg_minutes: cg.avg_minutes,
+      cgt_count: cg.count,
+      cgt_max_minutes: cg.max_minutes,
     };
-  }).sort((a, b) => (b.count || 0) - (a.count || 0));
-
-  // Category split: first outbound reply for a lead is treated as "new"
-  const cat = { new: [], conversation: [] };
-  for (const e of events) {
-    const m = Number(e.response_minutes);
-    if (!Number.isFinite(m) || m < 0) continue;
-    if (Number(e.out_count) === 1) cat.new.push(m);
-    else cat.conversation.push(m);
-  }
-  const makeStats = (arr) => {
-    const a = arr.slice().sort((x, y) => x - y);
-    return {
-      count: a.length,
-      avg_minutes: a.length ? (a.reduce((s, x) => s + x, 0) / a.length) : null,
-      min_minutes: a.length ? a[0] : null,
-      max_minutes: a.length ? a[a.length - 1] : null,
-      p50_minutes: pick(a, 0.50),
-      p90_minutes: pick(a, 0.90),
-    };
-  };
-  const categories = { new: makeStats(cat.new), conversation: makeStats(cat.conversation) };
-
-  // Conversion correlation: bucket first response time per lead vs current lead status
-  const firstByLead = new Map();
-  for (const e of events) {
-    const lid = String(e.lead_id);
-    const outCount = Number(e.out_count);
-    const m = Number(e.response_minutes);
-    if (!Number.isFinite(m) || m < 0) continue;
-    // first reply only
-    if (outCount === 1 && !firstByLead.has(lid)) firstByLead.set(lid, m);
-  }
-  const leadIds = Array.from(firstByLead.keys());
-  let leadStatus = {};
-  if (leadIds.length > 0) {
-    const lres = await db.pool.query(
-      'SELECT id, status, value FROM leads WHERE tenant_id = $1 AND id = ANY($2::uuid[])',
-      [tenantId, leadIds]
-    );
-    for (const r of (lres.rows || [])) {
-      leadStatus[String(r.id)] = { status: r.status ? String(r.status) : '', value: Number(r.value || 0) };
-    }
-  }
-
-  const buckets = [
-    { key: '0-5', min: 0, max: 5 },
-    { key: '5-15', min: 5, max: 15 },
-    { key: '15-60', min: 15, max: 60 },
-    { key: '60-240', min: 60, max: 240 },
-    { key: '240+', min: 240, max: Infinity },
-  ];
-  const bucketStats = buckets.map((b) => ({
-    bucket: b.key,
-    leads: 0,
-    converted: 0,
-    conversion_rate: null,
-    avg_first_response_minutes: null,
-  }));
-  const accum = new Map(bucketStats.map((b) => [b.bucket, { times: [], leads: 0, conv: 0 }]));
-
-  const isConverted = (lid) => {
-    const st = leadStatus[lid];
-    if (!st) return false;
-    if (conversionStageId) return String(st.status) === String(conversionStageId);
-    return Number(st.value || 0) > 0;
-  };
-
-  for (const [lid, m] of firstByLead.entries()) {
-    const mm = Number(m);
-    if (!Number.isFinite(mm) || mm < 0) continue;
-    const b = buckets.find((x) => mm >= x.min && mm < x.max) || buckets[buckets.length - 1];
-    const slot = accum.get(b.key);
-    slot.leads += 1;
-    slot.times.push(mm);
-    if (isConverted(lid)) slot.conv += 1;
-  }
-
-  for (const b of bucketStats) {
-    const slot = accum.get(b.bucket);
-    b.leads = slot.leads;
-    b.converted = slot.conv;
-    b.conversion_rate = slot.leads ? (slot.conv / slot.leads) : null;
-    b.avg_first_response_minutes = slot.times.length ? (slot.times.reduce((s, x) => s + x, 0) / slot.times.length) : null;
-  }
+  }).sort((a, b) => (b.frt_count || 0) - (a.frt_count || 0));
 
   res.json({
     range: { start: start.toISOString(), end: end.toISOString() },
-    overall,
-    categories,
+    filters: { channels, sla_minutes: slaMinutes },
+    frt,
+    cgt,
+    art,
+    sla,
     by_operator,
-    conversion: {
-      stage_id: conversionStageId,
-      stage_rule: conversionStageId ? 'status==stage' : 'value>0',
-      buckets: bucketStats,
-    }
   });
 }));
 
