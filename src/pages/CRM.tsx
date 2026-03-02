@@ -806,13 +806,20 @@ function LeadCard({
             </div>
           </div>
 
-          <div className="mt-2 flex items-center justify-between gap-2">
-            <div className="min-w-0 text-[11px] text-slate-400 font-semibold truncate">
-              {cfg.showAssignee !== false ? assigneeLabel : ''}
-              {(cfg.showAssignee !== false && cfg.showSource !== false) ? ' · ' : ''}
-              {cfg.showSource !== false ? sourceLabel : ''}
+          <div className="mt-2">
+            <div className="flex items-center gap-2 min-w-0">
+              {cfg.showAssignee !== false ? (
+                <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-bold bg-slate-950/50 text-slate-300 border border-slate-800 min-w-0">
+                  <span className="truncate max-w-[160px]">{assigneeLabel}</span>
+                </span>
+              ) : null}
+              {cfg.showSource !== false ? (
+                <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-bold bg-slate-950/50 text-slate-300 border border-slate-800">
+                  {sourceLabel}
+                </span>
+              ) : null}
             </div>
-            <div className="shrink-0 text-[10px] text-slate-500 tabular-nums">{dateStr}</div>
+            <div className="mt-1 text-[10px] text-slate-500 tabular-nums">{dateStr}</div>
           </div>
 
         </div>

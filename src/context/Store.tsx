@@ -14,6 +14,9 @@ interface AppContextType {
   // Settings revision (forces UI re-read from localStorage after server sync)
   crmSettingsRev: number;
 
+  // Force pages to re-read CRM settings (localStorage)
+  bumpCrmSettingsRev: () => void;
+
   // Auth State
   isAuthenticated: boolean;
   isLoadingAuth: boolean;
@@ -52,6 +55,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [isWhatsAppConnected, setIsWhatsAppConnected] = useState(false);
 
   const [crmSettingsRev, setCrmSettingsRev] = useState(0);
+
+  const bumpCrmSettingsRev = useCallback(() => {
+    setCrmSettingsRev((v) => v + 1);
+  }, []);
 
   // 🆕 Ref for tracking leads to prevent stale closures
   const leadsRef = useRef<Lead[]>([]);
@@ -659,6 +666,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       teamMembers,
 
       crmSettingsRev,
+      bumpCrmSettingsRev,
 
       isAuthenticated,
       isLoadingAuth,

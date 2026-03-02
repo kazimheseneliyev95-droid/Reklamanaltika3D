@@ -135,7 +135,7 @@ const TABS: { id: Tab; label: string; icon: React.ReactNode; reqRole?: string[] 
 
 export function CRMSettingsPanel({ onClose, variant = 'modal' }: CRMSettingsPanelProps) {
   const safeOnClose = onClose || (() => {});
-  const { currentUser, isWhatsAppConnected } = useAppStore();
+  const { currentUser, isWhatsAppConnected, bumpCrmSettingsRev } = useAppStore();
 
   const [settings, setSettings] = useState<CRMSettings>(loadCRMSettings());
   const [saved, setSaved] = useState(false);
@@ -179,10 +179,10 @@ export function CRMSettingsPanel({ onClose, variant = 'modal' }: CRMSettingsPane
       if (!canSaveToDb) throw new Error('Ayarları yadda saxlamaq üçün Admin icazəsi lazımdır');
       await saveCRMSettings(settings);
       setSaved(true);
-      setTimeout(() => {
-        setSaved(false);
-        window.location.reload();
-      }, 900);
+      // Do NOT hard-reload the app: it can look like a redirect to Connection tab.
+      // Just bump settings revision so pages re-read from localStorage.
+      bumpCrmSettingsRev();
+      setTimeout(() => setSaved(false), 900);
     } catch (e: any) {
       setSaveError(e?.message || 'Saxlama zamanı xəta baş verdi');
     } finally {
