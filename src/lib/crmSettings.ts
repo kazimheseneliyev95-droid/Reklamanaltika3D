@@ -69,6 +69,17 @@ export interface LeadCardUISettings {
 export interface NotificationsSettings {
     // SLA: warn if last inbound is unanswered for N minutes
     replySlaMinutes?: number;
+    // Leads in these pipeline stages are ignored for SLA and response-delay dots
+    // (typical CRM behavior: ignore Won/Closed/Lost columns).
+    slaIgnoreStages?: string[];
+    // If enabled, SLA/delay counts only within business hours.
+    businessHours?: {
+        enabled?: boolean;
+        timezone?: string; // IANA timezone, e.g. Asia/Baku
+        days?: number[]; // 0=Sun ... 6=Sat
+        start?: string; // HH:mm
+        end?: string; // HH:mm
+    };
     // Follow-up overdue escalation (minutes after due_at)
     followupOverdueMinutes?: number;
     // Who receives notifications
@@ -135,6 +146,14 @@ const DEFAULT_LEAD_CARD_UI: LeadCardUISettings = {
 
 const DEFAULT_NOTIFICATIONS: NotificationsSettings = {
     replySlaMinutes: 5,
+    slaIgnoreStages: ['won'],
+    businessHours: {
+        enabled: false,
+        timezone: 'Asia/Baku',
+        days: [1, 2, 3, 4, 5],
+        start: '09:00',
+        end: '18:00',
+    },
     followupOverdueMinutes: 15,
     notifyAdmins: true,
     notifyAssignee: true,
@@ -221,7 +240,12 @@ export function loadCRMSettings(): CRMSettings {
             }
 
             if (!parsed.notifications) parsed.notifications = { ...DEFAULT_NOTIFICATIONS };
-            else parsed.notifications = { ...DEFAULT_NOTIFICATIONS, ...parsed.notifications };
+            else {
+                parsed.notifications = { ...DEFAULT_NOTIFICATIONS, ...parsed.notifications };
+                // Deep-merge nested objects
+                const bh = (parsed.notifications as any).businessHours;
+                (parsed.notifications as any).businessHours = { ...DEFAULT_NOTIFICATIONS.businessHours, ...(bh || {}) };
+            }
 
             // Automation defaults (back-compat)
             if (!parsed.automation) parsed.automation = DEFAULT_AUTOMATION(firstStageId);

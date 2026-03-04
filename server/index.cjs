@@ -418,6 +418,20 @@ function pickNotificationSettingsFromCrmSettings(settings) {
   const notifyAssignee = n.notifyAssignee !== false;
   const notifyCreator = n.notifyCreator !== false;
 
+  const hasIgnoreKey = Object.prototype.hasOwnProperty.call(n || {}, 'slaIgnoreStages');
+  const slaIgnoreStages = Array.isArray(n.slaIgnoreStages)
+    ? n.slaIgnoreStages.map((x) => String(x || '').trim()).filter(Boolean)
+    : (hasIgnoreKey ? [] : ['won']);
+
+  const bh = (n.businessHours && typeof n.businessHours === 'object') ? n.businessHours : {};
+  const bhEnabled = bh.enabled === true;
+  const bhTimezone = bh.timezone ? String(bh.timezone).trim() : 'Asia/Baku';
+  const bhStart = bh.start ? String(bh.start).trim() : '09:00';
+  const bhEnd = bh.end ? String(bh.end).trim() : '18:00';
+  const bhDays = Array.isArray(bh.days)
+    ? bh.days.map((x) => Number(x)).filter((x) => Number.isFinite(x))
+    : [1, 2, 3, 4, 5];
+
   const delayGreenMaxMinutes = (() => {
     const v = Number(delay.greenMaxMinutes);
     if (Number.isFinite(v) && v > 0) return Math.max(1, Math.min(240, Math.round(v)));
@@ -431,6 +445,14 @@ function pickNotificationSettingsFromCrmSettings(settings) {
 
   return {
     replySlaMinutes,
+    slaIgnoreStages,
+    businessHours: {
+      enabled: bhEnabled,
+      timezone: bhTimezone || 'Asia/Baku',
+      start: bhStart || '09:00',
+      end: bhEnd || '18:00',
+      days: bhDays,
+    },
     followupOverdueMinutes,
     notifyAdmins,
     notifyAssignee,
@@ -648,7 +670,7 @@ async function followUpTick() {
 
     // 3) SLA reply warning: last inbound unanswered for N minutes
     const slaCandidates = await db.pool.query(
-      `SELECT id, tenant_id, phone, name, assignee_id, last_inbound_at, last_outbound_at
+      `SELECT id, tenant_id, phone, name, assignee_id, status, last_inbound_at, last_outbound_at
        FROM leads
        WHERE conversation_closed = false
          AND last_inbound_at IS NOT NULL
@@ -661,11 +683,13 @@ async function followUpTick() {
     for (const l of (slaCandidates.rows || [])) {
       const tenantId = String(l.tenant_id || '').trim() || 'admin';
       const cfg = await getTenantNotificationSettings(tenantId);
+      const status = l && l.status ? String(l.status).trim() : '';
+      if (status && Array.isArray(cfg.slaIgnoreStages) && cfg.slaIgnoreStages.includes(status)) continue;
       const slaMin = Number(cfg.replySlaMinutes || 5);
       const inMs = l.last_inbound_at ? new Date(l.last_inbound_at).getTime() : null;
       if (!inMs || !Number.isFinite(inMs)) continue;
-      const waitedMs = nowMs - inMs;
-      if (waitedMs < slaMin * 60 * 1000) continue;
+      const waitedMin = businessMinutesBetween(inMs, nowMs, cfg.businessHours || null);
+      if (waitedMin < slaMin) continue;
 
       const admins = cfg.notifyAdmins ? await getTenantAdminUserIds(tenantId) : [];
       const recipients = new Set();
@@ -673,7 +697,7 @@ async function followUpTick() {
       for (const a of (admins || [])) recipients.add(String(a));
 
       const leadName = l.name || l.phone || null;
-      const minutes = Math.max(0, Math.floor(waitedMs / 60000));
+      const minutes = Math.max(0, Math.floor(waitedMin));
       const dedupeKey = `sla_reply:${l.id}:${new Date(inMs).toISOString()}`;
 
       const inserted = await insertNotificationsForUsers({
@@ -709,6 +733,131 @@ function startFollowUpScheduler() {
   followUpTimer = setInterval(() => {
     followUpTick().catch(() => { });
   }, 20000);
+}
+
+function parseTimeToMinutes(hhmm, fallbackMin) {
+  const s = String(hhmm || '').trim();
+  const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(s);
+  if (!m) return fallbackMin;
+  return Number(m[1]) * 60 + Number(m[2]);
+}
+
+function getZonedParts(ms, timeZone) {
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+  const parts = dtf.formatToParts(new Date(ms));
+  const out = {};
+  for (const p of parts) {
+    if (p.type !== 'literal') out[p.type] = p.value;
+  }
+  return {
+    year: Number(out.year),
+    month: Number(out.month),
+    day: Number(out.day),
+    hour: Number(out.hour),
+    minute: Number(out.minute),
+    second: Number(out.second),
+  };
+}
+
+function getTimeZoneOffsetMs(ms, timeZone) {
+  const p = getZonedParts(ms, timeZone);
+  const asUTC = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
+  return asUTC - ms;
+}
+
+function zonedLocalToUtcMs(y, m, d, hh, mm, timeZone) {
+  let guess = Date.UTC(y, m - 1, d, hh, mm, 0);
+  for (let i = 0; i < 3; i++) {
+    const off = getTimeZoneOffsetMs(guess, timeZone);
+    const next = Date.UTC(y, m - 1, d, hh, mm, 0) - off;
+    if (Math.abs(next - guess) < 1000) {
+      guess = next;
+      break;
+    }
+    guess = next;
+  }
+  return guess;
+}
+
+function addDaysYMD(y, m, d, days) {
+  const t = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  t.setUTCDate(t.getUTCDate() + days);
+  return { y: t.getUTCFullYear(), m: t.getUTCMonth() + 1, d: t.getUTCDate() };
+}
+
+function weekdayInZone(ms, timeZone) {
+  const w = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'short' }).format(new Date(ms));
+  switch (w) {
+    case 'Sun': return 0;
+    case 'Mon': return 1;
+    case 'Tue': return 2;
+    case 'Wed': return 3;
+    case 'Thu': return 4;
+    case 'Fri': return 5;
+    case 'Sat': return 6;
+    default: return 0;
+  }
+}
+
+function businessMinutesBetween(startMs, endMs, cfg) {
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return 0;
+  if (!cfg || cfg.enabled !== true) return (endMs - startMs) / 60000;
+
+  const tz = (() => {
+    const s = String((cfg && cfg.timezone) || 'Asia/Baku').trim() || 'UTC';
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: s }).format(0);
+      return s;
+    } catch {
+      return 'UTC';
+    }
+  })();
+  const days = Array.isArray(cfg.days) ? cfg.days.map((x) => Number(x)).filter((x) => Number.isFinite(x)) : [1, 2, 3, 4, 5];
+  const daySet = new Set(days);
+  const startMin = parseTimeToMinutes(cfg.start || '09:00', 9 * 60);
+  const endMin = parseTimeToMinutes(cfg.end || '18:00', 18 * 60);
+  if (startMin === endMin) return 0;
+
+  let total = 0;
+  let cursor = startMs;
+  for (let i = 0; i < 370; i++) {
+    if (cursor >= endMs) break;
+    const p = getZonedParts(cursor, tz);
+    const y = p.year;
+    const m = p.month;
+    const d = p.day;
+    const dow = weekdayInZone(cursor, tz);
+    const nextYMD = addDaysYMD(y, m, d, 1);
+    const dayStartUtc = zonedLocalToUtcMs(y, m, d, 0, 0, tz);
+    const nextDayStartUtc = zonedLocalToUtcMs(nextYMD.y, nextYMD.m, nextYMD.d, 0, 0, tz);
+
+    if (!daySet.has(dow)) {
+      cursor = nextDayStartUtc;
+      continue;
+    }
+
+    const winStartUtc = zonedLocalToUtcMs(y, m, d, Math.floor(startMin / 60), startMin % 60, tz);
+    let winEndUtc = zonedLocalToUtcMs(y, m, d, Math.floor(endMin / 60), endMin % 60, tz);
+    if (endMin < startMin) {
+      winEndUtc = zonedLocalToUtcMs(nextYMD.y, nextYMD.m, nextYMD.d, Math.floor(endMin / 60), endMin % 60, tz);
+    }
+
+    const a0 = Math.max(startMs, winStartUtc);
+    const a1 = Math.min(endMs, winEndUtc);
+    if (a1 > a0) total += (a1 - a0) / 60000;
+
+    cursor = Math.max(nextDayStartUtc, dayStartUtc + 24 * 60 * 60 * 1000);
+  }
+  return total;
 }
 
 startFollowUpScheduler();

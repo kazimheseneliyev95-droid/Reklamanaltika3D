@@ -4,6 +4,7 @@ import { Lead, LeadStatus } from '../types/crm';
 import { Badge } from '../components/ui/Badge';
 import { Trash2, Calendar, Filter, RefreshCcw, Pencil, ShoppingBag, DollarSign, TrendingUp, Users, MessageSquare, UserPlus, CheckCircle, XCircle, Phone, Bell, GripVertical } from 'lucide-react';
 import { cn, formatCurrency, toNumberSafe } from '../lib/utils';
+import { businessMinutesBetween, type BusinessHoursCfg } from '../lib/businessHours';
 import { LeadDetailsPanel } from '../components/LeadDetailsPanel';
 import { loadCRMSettings, CustomField, LeadCardUISettings, DelayDotsSettings } from '../lib/crmSettings';
 import { CRMFilterSidebar, countActiveFilters, makeDefaultCRMFilters, type CRMFilters } from '../components/CRMFilterSidebar';
@@ -25,9 +26,11 @@ export default function CRMPage() {
     currentUser
   } = useAppStore();
 
-  const { pipelineStages, customFields, ui } = loadCRMSettings();
+  const { pipelineStages, customFields, ui, notifications } = loadCRMSettings();
   const leadCardUi = ui?.leadCard;
   const delayDotsUi = ui?.delayDots;
+  const slaIgnoreStages = Array.isArray(notifications?.slaIgnoreStages) ? notifications!.slaIgnoreStages : ['won'];
+  const businessHours = notifications?.businessHours;
 
   const pipelineSig = useMemo(() => (pipelineStages || []).map(s => s.id).join('|'), [pipelineStages]);
 
@@ -541,19 +544,22 @@ export default function CRMPage() {
               </div>
 
               <div className="p-2.5 space-y-2.5 overflow-y-auto flex-1 custom-scrollbar">
-                {leadsInCol.map((lead) => (
-                  <LeadCard
-                    key={lead.id}
-                    lead={lead}
-                    onRemove={removeLead}
-                    onEdit={handleEdit}
-                    onViewMessage={() => setSelectedLead(lead)}
-                    customFields={customFields}
-                    teamMembers={teamMembers}
-                    pipelineStages={pipelineStages}
-                    leadCardUi={leadCardUi}
-                  />
-                ))}
+                 {leadsInCol.map((lead) => (
+                    <LeadCard
+                      key={lead.id}
+                      lead={lead}
+                      onRemove={removeLead}
+                      onEdit={handleEdit}
+                      onViewMessage={() => setSelectedLead(lead)}
+                      customFields={customFields}
+                      teamMembers={teamMembers}
+                      pipelineStages={pipelineStages}
+                      leadCardUi={leadCardUi}
+                      delayDots={delayDotsUi}
+                      slaIgnoreStages={slaIgnoreStages}
+                      businessHours={businessHours}
+                    />
+                  ))}
                 {colCount === 0 && (
                   <div className="text-center py-10 flex flex-col items-center gap-2 text-slate-600 text-xs border border-slate-800/70 bg-slate-950/10 rounded-xl">
                     <div className="w-10 h-10 rounded-2xl border border-slate-800 bg-slate-950/40 flex items-center justify-center text-slate-500">0</div>
@@ -592,6 +598,8 @@ export default function CRMPage() {
                   pipelineStages={pipelineStages}
                   leadCardUi={leadCardUi}
                   delayDots={delayDotsUi}
+                  slaIgnoreStages={slaIgnoreStages}
+                  businessHours={businessHours}
                 />
               ))}
               {filteredLeads.filter(l => l.status === col.id).length === 0 && (
@@ -665,6 +673,8 @@ function LeadCard({
   pipelineStages,
   leadCardUi,
   delayDots,
+  slaIgnoreStages,
+  businessHours,
 }: {
   lead: Lead;
   onRemove: any;
@@ -675,6 +685,8 @@ function LeadCard({
   pipelineStages: { id: string; label: string; color: string }[];
   leadCardUi?: LeadCardUISettings;
   delayDots?: DelayDotsSettings;
+  slaIgnoreStages?: string[];
+  businessHours?: BusinessHoursCfg;
 }) {
   const dateStr = new Date(lead.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   const unread = (lead as any).unread_count ? Number((lead as any).unread_count) : 0;
@@ -766,15 +778,20 @@ function LeadCard({
   const lastInMs = lead.last_inbound_at ? new Date(String(lead.last_inbound_at)).getTime() : null;
   const lastOutMs = (lead as any).last_outbound_at ? new Date(String((lead as any).last_outbound_at)).getTime() : null;
   const isClosed = Boolean((lead as any).conversation_closed);
-  const waiting = !isClosed && Boolean(lastInMs && (!lastOutMs || (lastOutMs < (lastInMs as number))));
-  const waitingMin = waiting && lastInMs ? (nowMs - lastInMs) / 60000 : 0;
+  const ignoredForSla = Array.isArray(slaIgnoreStages) && slaIgnoreStages.includes(String(lead.status || ''));
+  const waiting = !isClosed && !ignoredForSla && Boolean(lastInMs && (!lastOutMs || (lastOutMs < (lastInMs as number))));
+  const waitingMin = waiting && lastInMs
+    ? (businessHours?.enabled === true
+      ? businessMinutesBetween(lastInMs, nowMs, businessHours)
+      : (nowMs - lastInMs) / 60000)
+    : 0;
 
   const dd = (delayDots && typeof delayDots === 'object') ? delayDots : {};
   const greenMax = Number.isFinite(Number((dd as any).greenMaxMinutes)) ? Math.max(1, Math.round(Number((dd as any).greenMaxMinutes))) : 10;
   const yellowMax = Number.isFinite(Number((dd as any).yellowMaxMinutes)) ? Math.max(greenMax + 1, Math.round(Number((dd as any).yellowMaxMinutes))) : 30;
 
   let responseDot = null as null | { color: string; title: string };
-  if (waiting) {
+  if (waiting && waitingMin > 0) {
     const m = waitingMin;
     if (m <= greenMax) responseDot = { color: '#22c55e', title: `Cavab gecikmesi: ${m.toFixed(0)} dk (yasil)` };
     else if (m <= yellowMax) responseDot = { color: '#f59e0b', title: `Cavab gecikmesi: ${m.toFixed(0)} dk (sari)` };

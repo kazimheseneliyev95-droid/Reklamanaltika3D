@@ -12,6 +12,7 @@ export function NotificationsTab({
 }) {
   const notif = settings.notifications || {};
   const delayDots = settings.ui?.delayDots || {};
+  const stages = settings.pipelineStages || [];
 
   const setNotif = (patch: Partial<NonNullable<CRMSettings['notifications']>>) => {
     setSettings((prev) => ({
@@ -34,6 +35,28 @@ export function NotificationsTab({
   const followupOverdueMinutes = Number(notif.followupOverdueMinutes ?? 15);
   const greenMaxMinutes = Number(delayDots.greenMaxMinutes ?? 10);
   const yellowMaxMinutes = Number(delayDots.yellowMaxMinutes ?? 30);
+  const slaIgnoreStages = Array.isArray((notif as any).slaIgnoreStages) ? (notif as any).slaIgnoreStages as string[] : [];
+  const bh = ((notif as any).businessHours && typeof (notif as any).businessHours === 'object') ? (notif as any).businessHours : {};
+  const bhEnabled = bh.enabled === true;
+  const bhTimezone = String(bh.timezone || 'Asia/Baku');
+  const bhStart = String(bh.start || '09:00');
+  const bhEnd = String(bh.end || '18:00');
+  const bhDays = Array.isArray(bh.days) ? (bh.days as number[]).filter((x) => Number.isFinite(Number(x))) : [1, 2, 3, 4, 5];
+
+  const setBusinessHours = (patch: any) => {
+    const next = { ...(bh || {}), ...(patch || {}) };
+    setNotif({ businessHours: next } as any);
+  };
+
+  const dayOptions: Array<{ id: number; label: string }> = [
+    { id: 1, label: 'Mon' },
+    { id: 2, label: 'Tue' },
+    { id: 3, label: 'Wed' },
+    { id: 4, label: 'Thu' },
+    { id: 5, label: 'Fri' },
+    { id: 6, label: 'Sat' },
+    { id: 0, label: 'Sun' },
+  ];
 
   return (
     <div className="space-y-4">
@@ -77,6 +100,138 @@ export function NotificationsTab({
                 Admin/Manager roluna
               </label>
             </div>
+          </div>
+        </div>
+
+        <div className="mt-4 rounded-xl border border-slate-800 bg-slate-950/30 p-3">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[11px] font-extrabold text-slate-200">İş saatları (Business hours)</p>
+            <label className="flex items-center gap-2 text-xs text-slate-300">
+              <input
+                type="checkbox"
+                checked={bhEnabled}
+                onChange={(e) => setBusinessHours({ enabled: e.target.checked })}
+              />
+              Aktiv
+            </label>
+          </div>
+          <p className="mt-1 text-[11px] text-slate-500">Aktiv olanda SLA gecikməsi yalnız seçilmiş günlər/saatlarda hesablanır (digər vaxtlarda 0 sayılır).</p>
+
+          <div className={cn('mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3', !bhEnabled && 'opacity-50 pointer-events-none')}>
+            <div>
+              <label className="text-[11px] font-bold text-slate-400">Timezone</label>
+              <input
+                list="tz-list"
+                value={bhTimezone}
+                onChange={(e) => setBusinessHours({ timezone: e.target.value })}
+                className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                placeholder="Asia/Baku"
+              />
+              <datalist id="tz-list">
+                <option value="Asia/Baku" />
+                <option value="Europe/Istanbul" />
+                <option value="Europe/Moscow" />
+                <option value="Europe/London" />
+                <option value="Europe/Berlin" />
+                <option value="UTC" />
+              </datalist>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-[11px] font-bold text-slate-400">Start</label>
+                <input
+                  type="time"
+                  value={bhStart}
+                  onChange={(e) => setBusinessHours({ start: e.target.value })}
+                  className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="text-[11px] font-bold text-slate-400">End</label>
+                <input
+                  type="time"
+                  value={bhEnd}
+                  onChange={(e) => setBusinessHours({ end: e.target.value })}
+                  className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className={cn('mt-3 flex flex-wrap gap-2', !bhEnabled && 'opacity-50 pointer-events-none')}>
+            {dayOptions.map((d) => {
+              const checked = bhDays.includes(d.id);
+              return (
+                <button
+                  key={d.id}
+                  type="button"
+                  onClick={() => {
+                    const cur = bhDays.slice();
+                    const next = checked ? cur.filter((x) => x !== d.id) : Array.from(new Set([...cur, d.id]));
+                    setBusinessHours({ days: next });
+                  }}
+                  className={cn(
+                    'px-2 py-1 rounded-lg border text-[11px] font-extrabold transition-colors',
+                    checked
+                      ? 'border-blue-500/30 bg-blue-600/15 text-blue-200'
+                      : 'border-slate-800 bg-slate-950/30 text-slate-300 hover:bg-slate-900/50'
+                  )}
+                  title={checked ? 'Seçilib' : 'Seç'}
+                >
+                  {d.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="mt-4 rounded-xl border border-slate-800 bg-slate-950/30 p-3">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[11px] font-extrabold text-slate-200">Gecikmə istisnaları (SLA + dot)</p>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setNotif({ slaIgnoreStages: [] })}
+                className="text-[10px] font-extrabold text-slate-300 hover:text-white px-2 py-1 rounded-lg border border-slate-800 bg-slate-950/40 hover:bg-slate-900"
+                title="Hamısını sıfırla"
+              >
+                Sıfırla
+              </button>
+              <button
+                type="button"
+                onClick={() => setNotif({ slaIgnoreStages: ['won'] })}
+                className="text-[10px] font-extrabold text-emerald-200 hover:text-emerald-100 px-2 py-1 rounded-lg border border-emerald-900/30 bg-emerald-950/15 hover:bg-emerald-950/25"
+                title="Tipik: Satış (Won)"
+              >
+                Default
+              </button>
+            </div>
+          </div>
+          <p className="mt-1 text-[11px] text-slate-500">Seçilmiş sütunlarda olan lead-lər üçün cavab gecikməsi sayılmır və kanbanda gecikmə dot-u çıxmır.</p>
+          <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-44 overflow-auto pr-1">
+            {stages.map((s) => {
+              const checked = slaIgnoreStages.includes(s.id);
+              return (
+                <label key={s.id} className="flex items-center gap-2 text-xs text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={(e) => {
+                      const cur = Array.isArray(slaIgnoreStages) ? slaIgnoreStages.slice() : [];
+                      const next = e.target.checked
+                        ? Array.from(new Set([...cur, s.id]))
+                        : cur.filter((x) => x !== s.id);
+                      setNotif({ slaIgnoreStages: next });
+                    }}
+                  />
+                  <span className="truncate" title={s.label}>{s.label}</span>
+                </label>
+              );
+            })}
+            {stages.length === 0 ? (
+              <p className="text-[11px] text-slate-500">Əvvəl Kanban sütunlarını yaradın.</p>
+            ) : null}
           </div>
         </div>
       </div>

@@ -23,6 +23,8 @@ export function NotificationBell({ className }: { className?: string }) {
   const [unreadCount, setUnreadCount] = useState(0);
   const [toast, setToast] = useState<NotifRow | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const [panelPos, setPanelPos] = useState<{ top: number; left: number; width: number }>({ top: 0, left: 0, width: 360 });
 
   const refresh = async (opts?: { unreadOnly?: boolean }) => {
     const res = await CrmService.fetchNotifications({ unreadOnly: Boolean(opts?.unreadOnly), limit: 80 });
@@ -68,6 +70,26 @@ export function NotificationBell({ className }: { className?: string }) {
     };
     document.addEventListener('mousedown', onDoc);
     return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const compute = () => {
+      const w = Math.min(360, Math.max(280, Math.floor(window.innerWidth * 0.92)));
+      const rect = btnRef.current?.getBoundingClientRect();
+      const top = rect ? Math.min(window.innerHeight - 80, rect.bottom + 8) : 56;
+      const left = rect
+        ? Math.max(8, Math.min(window.innerWidth - w - 8, rect.right - w))
+        : Math.max(8, window.innerWidth - w - 8);
+      setPanelPos({ top, left, width: w });
+    };
+    compute();
+    window.addEventListener('resize', compute);
+    window.addEventListener('scroll', compute, true);
+    return () => {
+      window.removeEventListener('resize', compute);
+      window.removeEventListener('scroll', compute, true);
+    };
   }, [open]);
 
   const visible = useMemo(() => {
@@ -123,6 +145,7 @@ export function NotificationBell({ className }: { className?: string }) {
       ) : null}
 
       <button
+        ref={btnRef}
         type="button"
         onClick={() => {
           const next = !open;
@@ -141,7 +164,10 @@ export function NotificationBell({ className }: { className?: string }) {
       </button>
 
       {open ? (
-        <div className="absolute right-0 mt-2 w-[360px] max-w-[92vw] rounded-2xl border border-slate-800 bg-slate-950/95 backdrop-blur shadow-2xl overflow-hidden z-[70]">
+        <div
+          className="fixed rounded-2xl border border-slate-800 bg-slate-950/95 backdrop-blur shadow-2xl overflow-hidden z-[70] flex flex-col"
+          style={{ top: panelPos.top, left: panelPos.left, width: panelPos.width, maxHeight: `calc(100vh - ${Math.round(panelPos.top + 8)}px)` }}
+        >
           <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
             <div className="text-xs font-extrabold text-slate-200">Bildirisler</div>
             <button
@@ -153,7 +179,7 @@ export function NotificationBell({ className }: { className?: string }) {
             </button>
           </div>
 
-          <div className="max-h-[60vh] overflow-y-auto">
+          <div className="flex-1 min-h-0 overflow-y-auto">
             {visible.length === 0 ? (
               <div className="p-6 text-xs text-slate-500">Bildiris yoxdur</div>
             ) : (
