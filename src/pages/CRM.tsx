@@ -812,46 +812,52 @@ function LeadCard({
 
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <div className="flex items-center gap-2 min-w-0">
-            <div
-              draggable
-              onDragStart={(e) => {
-                try {
-                  e.dataTransfer.setData('leadId', lead.id);
-                  e.dataTransfer.effectAllowed = 'move';
-                } catch { }
-              }}
-              className="shrink-0 w-7 h-7 rounded-xl border border-slate-800 bg-slate-950/50 flex items-center justify-center cursor-grab active:cursor-grabbing"
-              title="Drag"
-            >
-              <GripVertical className="w-4 h-4 text-slate-600" />
-            </div>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 min-w-0">
-                <div className="flex-1 min-w-0 text-[13px] sm:text-[14px] font-extrabold text-slate-100 truncate" title={primaryTitle}>{primaryTitle}</div>
-                {unread > 0 ? (
-                  <span className="shrink-0 inline-flex items-center gap-1 rounded-full border border-rose-500/30 bg-rose-950/25 px-2 py-0.5 text-[10px] font-extrabold text-rose-200 tabular-nums">
-                    <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />
-                    {unread > 99 ? '99+' : unread}
-                  </span>
-                ) : null}
+           <div className="flex items-center gap-2 min-w-0">
+             <div
+               draggable
+               onDragStart={(e) => {
+                 try {
+                   e.dataTransfer.setData('leadId', lead.id);
+                   e.dataTransfer.effectAllowed = 'move';
+                 } catch { }
+               }}
+               className="shrink-0 w-7 h-7 rounded-xl border border-slate-800 bg-slate-950/50 flex items-center justify-center cursor-grab active:cursor-grabbing"
+               title="Drag"
+             >
+               <GripVertical className="w-4 h-4 text-slate-600" />
+             </div>
+            <div className="min-w-0 flex-1">
+              <div className="grid grid-cols-[1fr_auto] items-start gap-2 min-w-0">
+                <div className="min-w-0">
+                  <div className="text-[13px] sm:text-[14px] font-extrabold text-slate-100 truncate" title={primaryTitle}>{primaryTitle}</div>
+                </div>
 
-                {followDot || responseDot ? (
-                  <span className="shrink-0 inline-flex items-center gap-1">
-                    {followDot ? (
-                      <span className="w-2.5 h-2.5 rounded-full border border-black/30" style={{ background: followDot.color }} title={followDot.title} />
-                    ) : null}
-                    {responseDot ? (
-                      <span className="w-2.5 h-2.5 rounded-full border border-black/30" style={{ background: responseDot.color }} title={responseDot.title} />
-                    ) : null}
-                  </span>
-                ) : null}
-                {hasValue ? (
-                  <span className="shrink-0 inline-flex items-center gap-1 rounded-full border border-emerald-900/30 bg-emerald-950/15 px-2 py-0.5 text-[10px] font-extrabold text-emerald-200 tabular-nums">
-                    <DollarSign className="w-3 h-3" />
-                    {formatCurrency(Number(lead.value || 0), 'AZN')}
-                  </span>
-                ) : null}
+                <div className="min-w-0 flex flex-wrap items-center justify-end gap-1.5">
+                  {unread > 0 ? (
+                    <span className="shrink-0 inline-flex items-center gap-1 rounded-full border border-rose-500/30 bg-rose-950/25 px-2 py-0.5 text-[10px] font-extrabold text-rose-200 tabular-nums whitespace-nowrap">
+                      <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />
+                      {unread > 99 ? '99+' : unread}
+                    </span>
+                  ) : null}
+
+                  {followDot || responseDot ? (
+                    <span className="shrink-0 inline-flex items-center gap-1">
+                      {followDot ? (
+                        <span className="w-2.5 h-2.5 rounded-full border border-black/30" style={{ background: followDot.color }} title={followDot.title} />
+                      ) : null}
+                      {responseDot ? (
+                        <span className="w-2.5 h-2.5 rounded-full border border-black/30" style={{ background: responseDot.color }} title={responseDot.title} />
+                      ) : null}
+                    </span>
+                  ) : null}
+
+                  {hasValue ? (
+                    <span className="shrink-0 inline-flex items-center gap-1 rounded-full border border-emerald-900/30 bg-emerald-950/15 px-2 py-0.5 text-[10px] font-extrabold text-emerald-200 tabular-nums whitespace-nowrap">
+                      <DollarSign className="w-3 h-3" />
+                      {formatCurrency(Number(lead.value || 0), 'AZN')}
+                    </span>
+                  ) : null}
+                </div>
               </div>
               {secondary ? (
                 <div className="mt-0.5 text-[11px] text-slate-400 flex items-center gap-2 min-w-0">
@@ -865,12 +871,12 @@ function LeadCard({
           </div>
 
           <div className="mt-2">
-            <div className="flex items-center justify-between gap-2">
-              <div className="min-w-0 text-[11px] font-semibold text-slate-300 truncate">
+            <div className="grid grid-cols-[1fr_auto] items-center gap-2 min-w-0">
+              <div className="flex-1 min-w-0 text-[11px] font-semibold text-slate-300 truncate" title={assigneeLabel}>
                 {cfg.showAssignee !== false ? assigneeLabel : ''}
               </div>
               {cfg.showSource !== false ? (
-                <span className="shrink-0 inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-950/50 text-slate-300 border border-slate-800">
+                <span className="shrink-0 inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-950/50 text-slate-300 border border-slate-800 whitespace-nowrap">
                   {sourceLabel}
                 </span>
               ) : null}
