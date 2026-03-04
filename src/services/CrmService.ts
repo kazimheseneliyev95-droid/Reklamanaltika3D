@@ -1,6 +1,7 @@
 import { Lead, LeadStatus, DateRange } from '../types/crm';
 import { io, Socket } from 'socket.io-client';
 import { faker } from '@faker-js/faker';
+import { toNumberSafe } from '../lib/utils';
 
 const getStorageKey = () => `dualite_crm_leads_v3_${localStorage.getItem('crm_tenant_id') || 'admin'}`;
 const SERVER_URL_KEY = 'dualite_server_url';
@@ -33,6 +34,14 @@ class CrmServiceImpl {
   private processedMessageIds = new Map<string, number>();
 
   private listenerIdCounter = 0;
+
+  private normalizeLead(raw: any): Lead {
+    const lead: any = (raw && typeof raw === 'object') ? { ...raw } : {};
+    // PG numeric -> string; normalize for consistent client-side math
+    lead.value = toNumberSafe(lead.value, 0);
+    if (lead.unread_count !== undefined) lead.unread_count = toNumberSafe(lead.unread_count, 0);
+    return lead as Lead;
+  }
 
   // --- SERVER CONNECTION ---
   getServerUrl() {
@@ -429,40 +438,44 @@ class CrmServiceImpl {
       this.cleanupOldProcessedMessages();
 
       const savedLead = await this.addLead(newLead);
+      // Attach transient message metadata for the UI layer (not persisted in DB)
+      const enrichedLead = { ...(savedLead as any), __fromMe: Boolean(data.fromMe), __message_whatsapp_id: data.whatsapp_id || null } as any;
       console.log('✨ New lead saved:', savedLead.phone);
-      this.notifyMessageListeners(savedLead);
+      this.notifyMessageListeners(enrichedLead as any);
     });
 
 
     this.socket.on('lead_updated', async (updatedLead: Lead) => {
       console.log('🔄 SOCKET: lead_updated received', updatedLead);
 
+      const normalized = this.normalizeLead(updatedLead as any);
+
       // Update cache
       const cacheIndex = this.leadsCache.findIndex(l =>
-        l.id === updatedLead.id || l.phone === updatedLead.phone
+        l.id === normalized.id || l.phone === normalized.phone
       );
 
       if (cacheIndex !== -1) {
-        this.leadsCache[cacheIndex] = updatedLead;
+        this.leadsCache[cacheIndex] = normalized;
       } else {
-        this.leadsCache.unshift(updatedLead);
+        this.leadsCache.unshift(normalized);
       }
 
       // Update localStorage to match database (robust to event ordering)
       // NOTE: lead_updated may arrive before new_message for brand-new leads.
       const raw = localStorage.getItem(getStorageKey());
       const allLeads: Lead[] = raw ? JSON.parse(raw) : [];
-      const index = allLeads.findIndex(l => (l.id && updatedLead.id && l.id === updatedLead.id) || l.phone === updatedLead.phone);
+      const index = allLeads.findIndex(l => (l.id && normalized.id && l.id === normalized.id) || l.phone === normalized.phone);
 
       if (index !== -1) {
-        allLeads[index] = { ...allLeads[index], ...updatedLead } as any;
+        allLeads[index] = this.normalizeLead({ ...allLeads[index], ...normalized } as any) as any;
       } else {
-        allLeads.unshift(updatedLead);
+        allLeads.unshift(normalized);
       }
 
       localStorage.setItem(getStorageKey(), JSON.stringify(allLeads));
       console.log('✅ Lead synced with database');
-      this.notifyLeadUpdateListeners(updatedLead);
+      this.notifyLeadUpdateListeners(normalized);
     });
 
     this.socket.on('lead_deleted', (id: string) => {
@@ -826,7 +839,8 @@ class CrmServiceImpl {
           headers: this.getAuthHeaders()
         });
         if (response.ok) {
-          const leads = await response.json();
+          const leadsRaw = await response.json();
+          const leads = (Array.isArray(leadsRaw) ? leadsRaw : []).map((l) => this.normalizeLead(l));
           this.leadsCache = leads;
           localStorage.setItem(getStorageKey(), JSON.stringify(leads));
           return this.filterLeadsByDate(leads, dateRange);
@@ -838,7 +852,7 @@ class CrmServiceImpl {
 
     // Fallback to localStorage
     const raw = localStorage.getItem(getStorageKey());
-    let leads: Lead[] = raw ? JSON.parse(raw) : [];
+    let leads: Lead[] = (raw ? JSON.parse(raw) : []).map((l: any) => this.normalizeLead(l));
 
     this.leadsCache = leads;
 
@@ -878,7 +892,7 @@ class CrmServiceImpl {
         });
 
         if (response.ok) {
-          const savedLead = await response.json();
+          const savedLead = this.normalizeLead(await response.json());
           console.log('✅ Lead saved to database:', savedLead.phone);
           this.updateCacheAndStorage(savedLead);
           return savedLead;
@@ -931,22 +945,23 @@ class CrmServiceImpl {
   }
 
   private updateCacheAndStorage(lead: Lead) {
+    const normalized = this.normalizeLead(lead);
     // Update cache
-    const existingIndex = this.leadsCache.findIndex(l => l.phone === lead.phone);
+    const existingIndex = this.leadsCache.findIndex(l => l.phone === normalized.phone);
     if (existingIndex !== -1) {
-      this.leadsCache[existingIndex] = lead;
+      this.leadsCache[existingIndex] = normalized;
     } else {
-      this.leadsCache.unshift(lead);
+      this.leadsCache.unshift(normalized);
     }
 
     // Update localStorage
     const raw = localStorage.getItem(getStorageKey());
     const allLeads: Lead[] = raw ? JSON.parse(raw) : [];
-    const storageIndex = allLeads.findIndex(l => l.phone === lead.phone);
+    const storageIndex = allLeads.findIndex(l => l.phone === normalized.phone);
     if (storageIndex !== -1) {
-      allLeads[storageIndex] = lead;
+      allLeads[storageIndex] = normalized;
     } else {
-      allLeads.unshift(lead);
+      allLeads.unshift(normalized);
     }
     localStorage.setItem(getStorageKey(), JSON.stringify(allLeads));
   }

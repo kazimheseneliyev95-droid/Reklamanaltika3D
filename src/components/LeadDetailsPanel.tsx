@@ -5,7 +5,7 @@ import {
     User, Phone, Package, MessageSquare, Clock, Hash,
     Save, CheckCircle2, TrendingUp, BarChart2, Edit3, Check, Route
 } from 'lucide-react';
-import { cn } from '../lib/utils';
+import { cn, toNumberSafe } from '../lib/utils';
 import { loadCRMSettings } from '../lib/crmSettings';
 import { CrmService } from '../services/CrmService';
 import { useAppStore } from '../context/Store';
@@ -761,7 +761,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
     const [localStatus, setLocalStatus] = useState<LeadStatus>(lead.status);
     const [formData, setFormData] = useState({
         name: lead.name || '',
-        value: lead.value?.toString() || '0',
+        value: String(toNumberSafe((lead as any).value, 0)),
         product_name: lead.product_name || '',
         note: lead.last_message || '',
         assignee_id: lead.assignee_id || '',
@@ -981,7 +981,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
     useEffect(() => {
         setFormData({
             name: lead.name || '',
-            value: lead.value?.toString() || '0',
+            value: String(toNumberSafe((lead as any).value, 0)),
             product_name: lead.product_name || '',
             note: lead.last_message || '',
             assignee_id: lead.assignee_id || '',

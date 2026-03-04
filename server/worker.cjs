@@ -696,6 +696,9 @@ async function processMessage(tenantId, msg, isFromMe) {
         if (HAS_DATABASE && db) {
             try {
                 var existingLead = await db.findLeadByPhone(rawNumber, tenantId);
+                // Preserve pre-message state for automation rules in API server.
+                var wasClosedBefore = Boolean(existingLead && existingLead.conversation_closed);
+                var statusBefore = (existingLead && existingLead.status) ? String(existingLead.status) : '';
 
                 var savedLead;
                 if (existingLead) {
@@ -770,6 +773,8 @@ async function processMessage(tenantId, msg, isFromMe) {
             message: messageContent,
             whatsapp_id: whatsappId,
             fromMe: isFromMe,
+            was_closed: wasClosedBefore,
+            status_before: statusBefore,
             timestamp: new Date().toISOString(),
             source: 'whatsapp'
         });

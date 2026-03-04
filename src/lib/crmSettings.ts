@@ -82,12 +82,34 @@ export interface DelayDotsSettings {
     yellowMaxMinutes?: number;
 }
 
+export interface ReopenOnInboundSettings {
+    enabled?: boolean;
+    // If true, only triggers for leads that were manually closed (conversation_closed=true)
+    // before the inbound message arrived.
+    onlyWhenClosed?: boolean;
+    // If a lead is currently in any of these stages and an inbound customer message arrives,
+    // move the lead to `targetStage`.
+    fromStages?: string[];
+    // Stages that should never be moved back (e.g. Satış/won)
+    excludeStages?: string[];
+    targetStage?: string;
+}
+
+export interface CloseMovesToStageSettings {
+    enabled?: boolean;
+    targetStage?: string;
+}
+
 export interface CRMSettings {
     customFields: CustomField[];
     pipelineStages: PipelineStage[];
     autoRules: AutoRule[];
     routingRules?: RoutingRule[];
     notifications?: NotificationsSettings;
+    automation?: {
+        reopenOnInbound?: ReopenOnInboundSettings;
+        closeMovesToStage?: CloseMovesToStageSettings;
+    };
     ui?: {
         leadCard?: LeadCardUISettings;
         delayDots?: DelayDotsSettings;
@@ -123,6 +145,20 @@ const DEFAULT_DELAY_DOTS: DelayDotsSettings = {
     greenMaxMinutes: 10,
     yellowMaxMinutes: 30,
 };
+
+const DEFAULT_AUTOMATION = (firstStageId: string): CRMSettings['automation'] => ({
+    reopenOnInbound: {
+        enabled: false,
+        onlyWhenClosed: true,
+        fromStages: [],
+        excludeStages: ['won'],
+        targetStage: firstStageId || 'new',
+    },
+    closeMovesToStage: {
+        enabled: false,
+        targetStage: '',
+    }
+});
 
 function getApiBase(): string {
     const fromStorage = localStorage.getItem('crm_server_url') || '';
@@ -176,6 +212,7 @@ export function loadCRMSettings(): CRMSettings {
             if (!parsed.pipelineStages || parsed.pipelineStages.length === 0) {
                 parsed.pipelineStages = DEFAULT_STAGES;
             }
+            const firstStageId = parsed.pipelineStages?.[0]?.id || 'new';
             if (!parsed.autoRules) {
                 parsed.autoRules = DEFAULT_RULES;
             }
@@ -185,6 +222,16 @@ export function loadCRMSettings(): CRMSettings {
 
             if (!parsed.notifications) parsed.notifications = { ...DEFAULT_NOTIFICATIONS };
             else parsed.notifications = { ...DEFAULT_NOTIFICATIONS, ...parsed.notifications };
+
+            // Automation defaults (back-compat)
+            if (!parsed.automation) parsed.automation = DEFAULT_AUTOMATION(firstStageId);
+            else {
+                const d = DEFAULT_AUTOMATION(firstStageId);
+                parsed.automation = {
+                    reopenOnInbound: { ...d?.reopenOnInbound, ...(parsed.automation as any).reopenOnInbound },
+                    closeMovesToStage: { ...d?.closeMovesToStage, ...(parsed.automation as any).closeMovesToStage },
+                };
+            }
 
             // UI defaults (back-compat)
             if (!parsed.ui) parsed.ui = {};
@@ -196,12 +243,14 @@ export function loadCRMSettings(): CRMSettings {
             return parsed;
         }
     } catch { }
+    const firstStageId = DEFAULT_STAGES?.[0]?.id || 'new';
     return {
         customFields: DEFAULT_FIELDS,
         pipelineStages: DEFAULT_STAGES,
         autoRules: DEFAULT_RULES,
         routingRules: [],
         notifications: { ...DEFAULT_NOTIFICATIONS },
+        automation: DEFAULT_AUTOMATION(firstStageId),
         ui: { leadCard: { ...DEFAULT_LEAD_CARD_UI }, delayDots: { ...DEFAULT_DELAY_DOTS } }
     };
 }

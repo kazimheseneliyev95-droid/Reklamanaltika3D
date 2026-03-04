@@ -345,7 +345,55 @@ let followUpTickBusy = false;
 // Light caching to avoid hammering DB every 20s
 const tenantSettingsCache = new Map(); // tenantId -> { atMs, settings }
 const tenantAdminIdsCache = new Map(); // tenantId -> { atMs, userIds }
+const tenantAutomationCache = new Map(); // tenantId -> { atMs, settings }
 const SETTINGS_CACHE_TTL_MS = 60 * 1000;
+
+function pickAutomationSettingsFromCrmSettings(settings) {
+  const s = settings && typeof settings === 'object' ? settings : {};
+  const a = (s.automation && typeof s.automation === 'object') ? s.automation : {};
+  const reopen = (a.reopenOnInbound && typeof a.reopenOnInbound === 'object') ? a.reopenOnInbound : {};
+  const close = (a.closeMovesToStage && typeof a.closeMovesToStage === 'object') ? a.closeMovesToStage : {};
+
+  const fromStages = Array.isArray(reopen.fromStages)
+    ? reopen.fromStages.map((x) => String(x || '').trim()).filter(Boolean)
+    : [];
+
+  const hasExcludeKey = Object.prototype.hasOwnProperty.call(reopen || {}, 'excludeStages');
+  const excludeStages = Array.isArray(reopen.excludeStages)
+    ? reopen.excludeStages.map((x) => String(x || '').trim()).filter(Boolean)
+    : (hasExcludeKey ? [] : ['won']);
+
+  return {
+    reopenOnInbound: {
+      enabled: reopen.enabled === true,
+      onlyWhenClosed: reopen.onlyWhenClosed !== false,
+      fromStages,
+      excludeStages,
+      targetStage: reopen.targetStage ? String(reopen.targetStage).trim() : ''
+    },
+    closeMovesToStage: {
+      enabled: close.enabled === true,
+      targetStage: close.targetStage ? String(close.targetStage).trim() : ''
+    }
+  };
+}
+
+async function getTenantAutomationSettings(tenantId) {
+  const t = String(tenantId || '').trim() || 'admin';
+  const cached = tenantAutomationCache.get(t);
+  if (cached && (Date.now() - cached.atMs) < SETTINGS_CACHE_TTL_MS) return cached.settings;
+  let raw = null;
+  try {
+    if (db && typeof db.getCRMSettings === 'function') {
+      raw = await db.getCRMSettings(t);
+    }
+  } catch {
+    raw = null;
+  }
+  const picked = pickAutomationSettingsFromCrmSettings(raw || {});
+  tenantAutomationCache.set(t, { atMs: Date.now(), settings: picked });
+  return picked;
+}
 
 function pickNotificationSettingsFromCrmSettings(settings) {
   const s = settings && typeof settings === 'object' ? settings : {};
@@ -745,9 +793,12 @@ async function upsertMetaInbound({ tenantId, source, contactKey, displayName, te
     last_message: safeText,
     whatsapp_id: metaId,
     source: source,
-    status: 'new',
+    status: null,
     extra_data: { meta: meta || {} }
   }, tenantId);
+
+  const closedBefore = Boolean(lead && lead.conversation_closed);
+  const statusBefore = lead && lead.status ? String(lead.status).trim() : '';
 
   const updatedLead = await db.updateLeadMessage(lead.phone, safeText, metaId, displayName || null, tenantId, dir).catch(() => null);
   const finalLead = updatedLead || lead;
@@ -781,6 +832,30 @@ async function upsertMetaInbound({ tenantId, source, contactKey, displayName, te
       const routed = await maybeApplyRoutingRulesToLead(tenantId, finalLead, safeText, { whatsapp_id: metaId, fromMe: false });
       if (routed) {
         io.to(tenantId).emit('lead_updated', routed);
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // Auto return-to-stage on inbound message (configurable per tenant)
+  if (dir === 'in') {
+    try {
+      const auto = await getTenantAutomationSettings(tenantId);
+      const cfg = auto && auto.reopenOnInbound ? auto.reopenOnInbound : null;
+      const enabled = cfg && cfg.enabled === true;
+      const onlyWhenClosed = cfg && cfg.onlyWhenClosed !== false;
+      const targetStage = cfg && cfg.targetStage ? String(cfg.targetStage).trim() : '';
+      const fromStages = cfg && Array.isArray(cfg.fromStages) ? cfg.fromStages : [];
+      const excludeStages = cfg && Array.isArray(cfg.excludeStages) ? cfg.excludeStages : [];
+      const okClosed = onlyWhenClosed ? closedBefore : true;
+      const okFromStages = fromStages.length > 0 ? fromStages.includes(statusBefore) : true;
+      const okExclude = excludeStages.includes(statusBefore) ? false : true;
+      if (enabled && okClosed && targetStage && statusBefore && okFromStages && okExclude && statusBefore !== targetStage) {
+        const moved = await db.updateLeadStatus(finalLead.id, targetStage, tenantId).catch(() => null);
+        if (moved) {
+          io.to(tenantId).emit('lead_updated', moved);
+        }
       }
     } catch {
       // ignore
@@ -1643,11 +1718,19 @@ app.post('/api/internal/webhook', async (req, res) => {
   // Apply routing rules server-side (both incoming and outgoing)
   // This ensures first matching message assigns the field and won't change later.
   if (event === 'new_message' && process.env.DATABASE_URL && payload && payload.phone && payload.message) {
+    let leadForAutomation = null;
+    let statusBefore = '';
     try {
       const lead = (db && typeof db.findLeadByPhone === 'function')
         ? await db.findLeadByPhone(payload.phone, tenantId)
         : null;
       if (lead) {
+        leadForAutomation = lead;
+        statusBefore = lead && lead.status ? String(lead.status).trim() : '';
+        if (payload && payload.status_before !== undefined && payload.status_before !== null) {
+          const sb = String(payload.status_before || '').trim();
+          if (sb) statusBefore = sb;
+        }
         const updated = await maybeApplyRoutingRulesToLead(tenantId, lead, payload.message, payload);
         if (updated) {
           io.to(tenantId).emit('lead_updated', updated);
@@ -1655,6 +1738,34 @@ app.post('/api/internal/webhook', async (req, res) => {
       }
     } catch (e) {
       console.warn('⚠️ Routing apply failed (internal webhook):', e.message);
+    }
+
+    // Auto return-to-stage on inbound message (closed conversations -> Yeni)
+    try {
+      const isInbound = payload && payload.fromMe === false;
+      if (isInbound && leadForAutomation && statusBefore) {
+        const closedBefore = (payload && payload.was_closed === true)
+          ? true
+          : Boolean(leadForAutomation && leadForAutomation.conversation_closed);
+        const auto = await getTenantAutomationSettings(tenantId);
+        const cfg = auto && auto.reopenOnInbound ? auto.reopenOnInbound : null;
+        const enabled = cfg && cfg.enabled === true;
+        const onlyWhenClosed = cfg && cfg.onlyWhenClosed !== false;
+        const targetStage = cfg && cfg.targetStage ? String(cfg.targetStage).trim() : '';
+        const fromStages = cfg && Array.isArray(cfg.fromStages) ? cfg.fromStages : [];
+        const excludeStages = cfg && Array.isArray(cfg.excludeStages) ? cfg.excludeStages : [];
+        const okClosed = onlyWhenClosed ? closedBefore : true;
+        const okFromStages = fromStages.length > 0 ? fromStages.includes(statusBefore) : true;
+        const okExclude = excludeStages.includes(statusBefore) ? false : true;
+        if (enabled && okClosed && targetStage && okFromStages && okExclude && statusBefore !== targetStage) {
+          const moved = await db.updateLeadStatus(leadForAutomation.id, targetStage, tenantId).catch(() => null);
+          if (moved) {
+            io.to(tenantId).emit('lead_updated', moved);
+          }
+        }
+      }
+    } catch {
+      // ignore
     }
 
     // Telegram notifications for inbound WhatsApp messages
@@ -2523,13 +2634,28 @@ app.post('/api/leads/:id/close', requireTenantAuth, asyncHandler(async (req, res
   );
   if (upd.rowCount === 0) return res.status(404).json({ error: 'Lead not found' });
 
+  // Optional: also move to a dedicated stage when closed (configurable in CRM settings)
+  let movedToStage = '';
+  try {
+    const auto = await getTenantAutomationSettings(req.tenantId);
+    const cfg = auto && auto.closeMovesToStage ? auto.closeMovesToStage : null;
+    const enabled = cfg && cfg.enabled === true;
+    const targetStage = cfg && cfg.targetStage ? String(cfg.targetStage).trim() : '';
+    if (enabled && targetStage) {
+      const moved = await db.updateLeadStatus(leadId, targetStage, req.tenantId).catch(() => null);
+      if (moved) movedToStage = targetStage;
+    }
+  } catch {
+    // ignore
+  }
+
   await db.logAuditAction({
     tenantId: req.tenantId,
     userId: req.userId,
     action: 'CONVERSATION_CLOSED',
     entityType: 'lead',
     entityId: leadId,
-    details: {}
+    details: movedToStage ? { moved_to_stage: movedToStage } : {}
   }).catch(() => null);
 
   const decorated = await db.pool.query(
@@ -3364,6 +3490,10 @@ app.post('/api/settings', requireTenantAuth, requireAdmin, asyncHandler(async (r
   if (!settings) return res.status(400).json({ error: 'Settings object is required' });
 
   const updatedSettings = await db.updateCRMSettings(req.tenantId, settings);
+
+  // Bust per-tenant caches (settings affect automation/notifications)
+  try { tenantSettingsCache.delete(String(req.tenantId)); } catch { }
+  try { tenantAutomationCache.delete(String(req.tenantId)); } catch { }
 
   // Optionally, let all UI clients in the tenant know settings updated so they can reload
   io.to(req.tenantId).emit('settings_updated', updatedSettings);

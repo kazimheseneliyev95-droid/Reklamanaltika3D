@@ -3,7 +3,7 @@ import { useAppStore } from '../context/Store';
 import { Lead, LeadStatus } from '../types/crm';
 import { Badge } from '../components/ui/Badge';
 import { Trash2, Calendar, Filter, RefreshCcw, Pencil, ShoppingBag, DollarSign, TrendingUp, Users, MessageSquare, UserPlus, CheckCircle, XCircle, Phone, Bell, GripVertical } from 'lucide-react';
-import { cn, formatCurrency } from '../lib/utils';
+import { cn, formatCurrency, toNumberSafe } from '../lib/utils';
 import { LeadDetailsPanel } from '../components/LeadDetailsPanel';
 import { loadCRMSettings, CustomField, LeadCardUISettings, DelayDotsSettings } from '../lib/crmSettings';
 import { CRMFilterSidebar, countActiveFilters, makeDefaultCRMFilters, type CRMFilters } from '../components/CRMFilterSidebar';
@@ -178,12 +178,26 @@ export default function CRMPage() {
   // --- METRICS CALCULATION ---
   const metrics = useMemo(() => {
     const totalLeads = filteredLeads.length;
+
+    const normalizeLabel = (v: any) => String(v || '')
+      .toLowerCase()
+      .replace(/ı/g, 'i')
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const revenueStageId =
+      (pipelineStages || []).find((s) => s.id === 'won')?.id ||
+      (pipelineStages || []).find((s) => normalizeLabel(s.label) === 'satis')?.id ||
+      'won';
+
     const totalRevenue = filteredLeads
-      .filter(l => l.status === 'won')
-      .reduce((sum, l) => sum + (l.value || 0), 0);
+      .filter(l => String(l.status) === String(revenueStageId))
+      .reduce((sum, l) => sum + toNumberSafe((l as any).value, 0), 0);
 
     return { totalLeads, totalRevenue };
-  }, [filteredLeads]);
+  }, [filteredLeads, pipelineStages]);
 
   const handleEdit = (lead: Lead) => {
     setSelectedLead(lead);
@@ -492,7 +506,7 @@ export default function CRMPage() {
               const leadsInCol = filteredLeads.filter(l => l.status === col.id);
               const colCount = leadsInCol.length;
               const colValue = canViewBudget
-                ? leadsInCol.reduce((s, l) => s + (typeof (l as any).value === 'number' ? (l as any).value : (parseFloat(String((l as any).value ?? '0')) || 0)), 0)
+                ? leadsInCol.reduce((s, l) => s + toNumberSafe((l as any).value, 0), 0)
                 : 0;
 
               return (
@@ -814,7 +828,7 @@ function LeadCard({
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-2 min-w-0">
-                <div className="text-[13px] sm:text-[14px] font-extrabold text-slate-100 truncate" title={primaryTitle}>{primaryTitle}</div>
+                <div className="flex-1 min-w-0 text-[13px] sm:text-[14px] font-extrabold text-slate-100 truncate" title={primaryTitle}>{primaryTitle}</div>
                 {unread > 0 ? (
                   <span className="shrink-0 inline-flex items-center gap-1 rounded-full border border-rose-500/30 bg-rose-950/25 px-2 py-0.5 text-[10px] font-extrabold text-rose-200 tabular-nums">
                     <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />

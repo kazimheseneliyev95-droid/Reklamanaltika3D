@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { ChevronDown, ChevronUp, Plus, Save, ToggleLeft, ToggleRight, Trash2 } from 'lucide-react';
 import { cn } from '../../../lib/utils';
-import { AutoRule, CRMSettings, generateFieldId } from '../../../lib/crmSettings';
+import { AutoRule, CRMSettings, generateFieldId, type CloseMovesToStageSettings, type ReopenOnInboundSettings } from '../../../lib/crmSettings';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/Card';
 import { HelpCallout } from '../HelpCallout';
 import { SettingsAside, SettingsGrid, SettingsMain } from '../SettingsLayout';
@@ -17,6 +17,29 @@ export function AutoRulesTab({
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const stages = settings.pipelineStages || [];
+
+  const reopenCfg: ReopenOnInboundSettings = settings.automation?.reopenOnInbound || {};
+  const closeCfg: CloseMovesToStageSettings = settings.automation?.closeMovesToStage || {};
+
+  const updateReopenCfg = (updates: Partial<ReopenOnInboundSettings>) => {
+    setSettings((prev) => ({
+      ...prev,
+      automation: {
+        ...(prev.automation || {}),
+        reopenOnInbound: { ...(prev.automation?.reopenOnInbound || {}), ...updates },
+      },
+    }));
+  };
+
+  const updateCloseCfg = (updates: Partial<CloseMovesToStageSettings>) => {
+    setSettings((prev) => ({
+      ...prev,
+      automation: {
+        ...(prev.automation || {}),
+        closeMovesToStage: { ...(prev.automation?.closeMovesToStage || {}), ...updates },
+      },
+    }));
+  };
 
   const addRule = () => {
     const newRule: AutoRule = {
@@ -67,6 +90,120 @@ export function AutoRulesTab({
             </button>
           }
         />
+
+        <Card className="border-slate-800 bg-slate-950/30">
+          <CardHeader className="p-4">
+            <CardTitle className="text-xs text-slate-200">Gələn mesaja görə geri dönmə</CardTitle>
+          </CardHeader>
+          <CardContent className="p-4 pt-0 space-y-3">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => updateReopenCfg({ enabled: !(reopenCfg.enabled === true) })}
+                className={cn('shrink-0 transition-colors', reopenCfg.enabled === true ? 'text-emerald-300' : 'text-slate-600')}
+                title={reopenCfg.enabled === true ? 'Söndür' : 'Yandır'}
+              >
+                {reopenCfg.enabled === true ? <ToggleRight className="w-7 h-7" /> : <ToggleLeft className="w-7 h-7" />}
+              </button>
+              <div className="min-w-0">
+                <p className="text-xs text-slate-200 font-semibold">Close edilmiş sohbetə müştəri yenidən mesaj yazarsa, lead avtomatik “Yeni” (və ya seçdiyiniz) sütuna qayıdar</p>
+                <p className="text-[11px] text-slate-500">Məqsəd: yeni mesajı qaçırmamaq üçün lead yenidən önə çıxsın.</p>
+              </div>
+            </div>
+
+            <div className={cn(reopenCfg.enabled === true ? '' : 'opacity-50 pointer-events-none')}>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">Hədəf sütun</label>
+                  <select
+                    value={reopenCfg.targetStage || stages[0]?.id || 'new'}
+                    onChange={(e) => updateReopenCfg({ targetStage: e.target.value })}
+                    className="w-full bg-slate-900 border border-slate-800 text-white text-xs rounded-lg px-2 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500 appearance-none"
+                  >
+                    {stages.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.label}
+                      </option>
+                    ))}
+                  </select>
+
+                  <label className="mt-2 flex items-center gap-2 text-xs text-slate-200">
+                    <input
+                      type="checkbox"
+                      checked={reopenCfg.onlyWhenClosed !== false}
+                      onChange={(e) => updateReopenCfg({ onlyWhenClosed: e.target.checked })}
+                    />
+                    <span>Sadece Close edilmiş sohbetlerde çalışsın</span>
+                  </label>
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">İstisna sütunlar (qayıtmasın)</label>
+                  <div className="rounded-lg border border-slate-800 bg-slate-950/30 p-2 max-h-36 overflow-auto">
+                    {stages.map((s) => {
+                      const selected = (reopenCfg.excludeStages || []).includes(s.id);
+                      return (
+                        <label key={s.id} className="flex items-center gap-2 py-1 text-xs text-slate-200">
+                          <input
+                            type="checkbox"
+                            checked={selected}
+                            onChange={(e) => {
+                              const cur = Array.isArray(reopenCfg.excludeStages) ? reopenCfg.excludeStages.slice() : [];
+                              const next = e.target.checked
+                                ? Array.from(new Set([...cur, s.id]))
+                                : cur.filter((x) => x !== s.id);
+                              updateReopenCfg({ excludeStages: next });
+                            }}
+                          />
+                          <span className="truncate" title={s.id}>{s.label}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <p className="mt-1 text-[10px] text-slate-500">Adətən burada “Satış” sütununu işarələyirlər ki, satılmış müştəri yenidən “Yeni”yə düşməsin.</p>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-slate-800 bg-slate-950/30">
+          <CardHeader className="p-4">
+            <CardTitle className="text-xs text-slate-200">Conversation “Close” davranışı</CardTitle>
+          </CardHeader>
+          <CardContent className="p-4 pt-0 space-y-3">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => updateCloseCfg({ enabled: !(closeCfg.enabled === true) })}
+                className={cn('shrink-0 transition-colors', closeCfg.enabled === true ? 'text-blue-300' : 'text-slate-600')}
+                title={closeCfg.enabled === true ? 'Söndür' : 'Yandır'}
+              >
+                {closeCfg.enabled === true ? <ToggleRight className="w-7 h-7" /> : <ToggleLeft className="w-7 h-7" />}
+              </button>
+              <div className="min-w-0">
+                <p className="text-xs text-slate-200 font-semibold">Close ediləndə lead-i xüsusi “Kapatıldı” sütununa at</p>
+                <p className="text-[11px] text-slate-500">Sonra müştəridən yeni mesaj gələrsə, yuxarıdakı qayda ilə geri qaytara bilərsiniz.</p>
+              </div>
+            </div>
+
+            <div className={cn(closeCfg.enabled === true ? '' : 'opacity-50 pointer-events-none')}>
+              <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">Close sütunu</label>
+              <select
+                value={closeCfg.targetStage || ''}
+                onChange={(e) => updateCloseCfg({ targetStage: e.target.value })}
+                className="w-full bg-slate-900 border border-slate-800 text-white text-xs rounded-lg px-2 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500 appearance-none"
+              >
+                <option value="">(seçilməyib)</option>
+                {stages.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </CardContent>
+        </Card>
 
         <div className="space-y-3">
           {settings.autoRules.map((rule, index) => {

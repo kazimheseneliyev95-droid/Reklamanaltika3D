@@ -2,6 +2,7 @@ import { createContext, useContext, useState, useEffect, useCallback, useRef, Re
 import { Lead, LeadStatus, DateRange, User } from '../types/crm';
 import { CrmService } from '../services/CrmService';
 import { loadCRMSettings, applyAutoRules, applyRoutingRules, syncCRMSettingsFromServer } from '../lib/crmSettings';
+import { toNumberSafe } from '../lib/utils';
 
 interface AppContextType {
   leads: Lead[];
@@ -198,16 +199,70 @@ export function AppProvider({ children }: { children: ReactNode }) {
       console.log('   Phone:', newLead.phone);
       console.log('   Message:', newLead.last_message);
 
-      // ─── Apply Auto-Rules ────────────────────────────────────────────────
-      const crmSettings = loadCRMSettings();
-      let finalLead = { ...newLead };
+       // ─── Apply Auto-Rules ────────────────────────────────────────────────
+       const crmSettings = loadCRMSettings();
+       let finalLead = { ...newLead };
 
-      if (newLead.last_message && crmSettings.autoRules?.length > 0) {
-        const ruleMatch = applyAutoRules(newLead.last_message, crmSettings.autoRules);
-        if (ruleMatch) {
-          const stageExists = crmSettings.pipelineStages.find(s => s.id === ruleMatch.targetStage);
-          if (stageExists) {
-            console.log(`🤖 Auto-rule triggered → moving ${newLead.phone} to stage: ${ruleMatch.targetStage}`);
+       // ─── Return-to-New on inbound message (closed conversations) ─────────
+       // If the operator manually closed the conversation and the customer messages again,
+       // move the lead back to the configured stage so the new message is visible.
+       let skipAutoRules = false;
+       try {
+         const reopen = crmSettings.automation?.reopenOnInbound;
+         const enabled = reopen?.enabled === true;
+         const onlyWhenClosed = reopen?.onlyWhenClosed !== false;
+         const fromStages = Array.isArray(reopen?.fromStages) ? reopen!.fromStages! : [];
+         const excludeStages = Array.isArray(reopen?.excludeStages) ? reopen!.excludeStages! : [];
+         const targetStage = String(reopen?.targetStage || '').trim();
+
+         const fromMeRaw = (newLead as any)?.__fromMe;
+         const isInbound = fromMeRaw === false
+           ? true
+           : (fromMeRaw === true
+             ? false
+             : (() => {
+               const inMs = newLead.last_inbound_at ? new Date(String(newLead.last_inbound_at)).getTime() : 0;
+               const outMs = (newLead as any).last_outbound_at ? new Date(String((newLead as any).last_outbound_at)).getTime() : 0;
+               if (!inMs && !outMs) return false;
+               return inMs >= outMs;
+             })());
+
+         if (enabled && isInbound && targetStage) {
+           const prev = leadsRef.current.find(l =>
+             l.id === newLead.id ||
+             (newLead.whatsapp_id && l.whatsapp_id && l.whatsapp_id === newLead.whatsapp_id) ||
+             l.phone === newLead.phone
+           );
+           const wasClosed = Boolean((prev as any)?.conversation_closed);
+           const prevStatus = String((prev?.status ?? newLead.status) || '').trim();
+           const stageExists = crmSettings.pipelineStages.find(s => s.id === targetStage);
+
+           const blockedByClosed = onlyWhenClosed && !wasClosed;
+           const blockedByFromStages = fromStages.length > 0 && !fromStages.includes(prevStatus);
+           const blockedByExclude = excludeStages.includes(prevStatus);
+
+           if (!blockedByClosed && !blockedByFromStages && !blockedByExclude && prevStatus && prevStatus !== targetStage && stageExists) {
+             console.log(`↩️ Inbound message → returning ${newLead.phone} from ${prevStatus} to ${targetStage}`);
+             finalLead = { ...finalLead, status: targetStage } as any;
+             skipAutoRules = true;
+
+             if (newLead.id && !newLead.id.startsWith('test-')) {
+               CrmService.updateStatus(newLead.id, targetStage).catch((err: unknown) =>
+                 console.warn('⚠️ Reopen status update failed:', err)
+               );
+             }
+           }
+         }
+       } catch {
+         // ignore
+       }
+       
+       if (!skipAutoRules && newLead.last_message && crmSettings.autoRules?.length > 0) {
+         const ruleMatch = applyAutoRules(newLead.last_message, crmSettings.autoRules);
+         if (ruleMatch) {
+           const stageExists = crmSettings.pipelineStages.find(s => s.id === ruleMatch.targetStage);
+           if (stageExists) {
+             console.log(`🤖 Auto-rule triggered → moving ${newLead.phone} to stage: ${ruleMatch.targetStage}`);
 
             // Apply optimistic update immediately
             finalLead = {
@@ -561,8 +616,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const getMetrics = () => {
     const messages = leads.length;
     const potential = leads.filter(l => l.status === 'potential').length;
-    const sales = leads.filter(l => l.status === 'won').length;
-    const revenue = leads.filter(l => l.status === 'won').reduce((acc, curr) => acc + (curr.value || 0), 0);
+    const settings = loadCRMSettings();
+    const normalizeLabel = (v: any) => String(v || '')
+      .toLowerCase()
+      .replace(/ı/g, 'i')
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const revenueStageId =
+      (settings.pipelineStages || []).find((s) => s.id === 'won')?.id ||
+      (settings.pipelineStages || []).find((s) => normalizeLabel(s.label) === 'satis')?.id ||
+      'won';
+
+    const sales = leads.filter(l => String(l.status) === String(revenueStageId)).length;
+    const revenue = leads
+      .filter(l => String(l.status) === String(revenueStageId))
+      .reduce((acc, curr) => acc + toNumberSafe((curr as any).value, 0), 0);
 
     return { messages, potential, sales, revenue };
   };

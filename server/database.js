@@ -613,7 +613,27 @@ async function createLead(data, tenantId = 'admin') {
 
         // Validate inputs
         const cleanedPhone = validatePhone(data.phone);
-        const status = validateStatus(data.status || 'new');
+        // Status handling:
+        // - If status is NOT provided: don't override existing lead status; new leads default to 'new'
+        // - If status is explicitly null/empty: same as not provided
+        // - If status is a non-empty string: validate + apply
+        const hasStatusKey = Object.prototype.hasOwnProperty.call(data || {}, 'status');
+        let statusForUpdate = null;
+        let statusForInsert = 'new';
+        if (hasStatusKey) {
+            const rawStatus = data.status;
+            if (rawStatus === null || rawStatus === undefined) {
+                statusForUpdate = null;
+                statusForInsert = 'new';
+            } else if (typeof rawStatus === 'string' && rawStatus.trim() === '') {
+                statusForUpdate = null;
+                statusForInsert = 'new';
+            } else {
+                const v = validateStatus(rawStatus);
+                statusForUpdate = v;
+                statusForInsert = v;
+            }
+        }
         const value = validateValue(data.value);
 
         const {
@@ -693,7 +713,7 @@ async function createLead(data, tenantId = 'admin') {
                 whatsapp_id || null,
                 value,
                 product_name || null,
-                status,
+                statusForUpdate,
                 extraDataObj,
                 finalAssigneeId,
                 existingLead.id,
@@ -736,7 +756,7 @@ async function createLead(data, tenantId = 'admin') {
             source_message || null,
             source_contact_name || null,
             whatsapp_id || null,
-            status,
+            statusForInsert,
             source,
             value,
             product_name || null,
