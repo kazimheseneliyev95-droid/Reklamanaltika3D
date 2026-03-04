@@ -810,9 +810,9 @@ function LeadCard({
         style={{ background: leadAccent || '#94a3b8', opacity: unread > 0 ? 0.9 : 0.55 }}
       />
 
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-           <div className="flex items-center gap-2 min-w-0">
+       <div className="flex items-start justify-between gap-2">
+         <div className="min-w-0 flex-1">
+           <div className="flex items-start gap-2 min-w-0">
              <div
                draggable
                onDragStart={(e) => {
@@ -826,65 +826,75 @@ function LeadCard({
              >
                <GripVertical className="w-4 h-4 text-slate-600" />
              </div>
-            <div className="min-w-0 flex-1">
-              <div className="grid grid-cols-[1fr_auto] items-start gap-2 min-w-0">
-                <div className="min-w-0">
-                  <div className="text-[13px] sm:text-[14px] font-extrabold text-slate-100 truncate" title={primaryTitle}>{primaryTitle}</div>
-                </div>
 
-                <div className="min-w-0 flex flex-wrap items-center justify-end gap-1.5">
-                  {unread > 0 ? (
-                    <span className="shrink-0 inline-flex items-center gap-1 rounded-full border border-rose-500/30 bg-rose-950/25 px-2 py-0.5 text-[10px] font-extrabold text-rose-200 tabular-nums whitespace-nowrap">
-                      <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />
-                      {unread > 99 ? '99+' : unread}
-                    </span>
-                  ) : null}
+             <div className="min-w-0 flex-1">
+               {/* Title + indicators (never share row with value) */}
+               <div className="flex items-start justify-between gap-2 min-w-0">
+                 <div className="min-w-0">
+                   <div className="text-[13px] sm:text-[14px] font-extrabold text-slate-100 truncate" title={primaryTitle}>{primaryTitle}</div>
+                   {secondary ? (
+                     <div className="mt-0.5 text-[11px] text-slate-400 flex items-center gap-2 min-w-0">
+                       <span className="inline-flex items-center gap-1 min-w-0">
+                         <Phone className="w-3 h-3 text-green-500 shrink-0" />
+                         <span className="font-mono tabular-nums truncate">{secondary}</span>
+                       </span>
+                     </div>
+                   ) : null}
+                 </div>
 
-                  {followDot || responseDot ? (
-                    <span className="shrink-0 inline-flex items-center gap-1">
-                      {followDot ? (
-                        <span className="w-2.5 h-2.5 rounded-full border border-black/30" style={{ background: followDot.color }} title={followDot.title} />
-                      ) : null}
-                      {responseDot ? (
-                        <span className="w-2.5 h-2.5 rounded-full border border-black/30" style={{ background: responseDot.color }} title={responseDot.title} />
-                      ) : null}
-                    </span>
-                  ) : null}
+                 <div className="shrink-0 flex flex-col items-end gap-1">
+                   {unread > 0 ? (
+                     <span className="inline-flex items-center gap-1 rounded-full border border-rose-500/30 bg-rose-950/25 px-2 py-0.5 text-[10px] font-extrabold text-rose-200 tabular-nums whitespace-nowrap">
+                       <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />
+                       {unread > 99 ? '99+' : unread}
+                     </span>
+                   ) : null}
 
-                  {hasValue ? (
-                    <span className="shrink-0 inline-flex items-center gap-1 rounded-full border border-emerald-900/30 bg-emerald-950/15 px-2 py-0.5 text-[10px] font-extrabold text-emerald-200 tabular-nums whitespace-nowrap">
-                      <DollarSign className="w-3 h-3" />
-                      {formatCurrency(Number(lead.value || 0), 'AZN')}
-                    </span>
-                  ) : null}
-                </div>
-              </div>
-              {secondary ? (
-                <div className="mt-0.5 text-[11px] text-slate-400 flex items-center gap-2 min-w-0">
-                  <span className="inline-flex items-center gap-1">
-                    <Phone className="w-3 h-3 text-green-500" />
-                    <span className="font-mono tabular-nums">{secondary}</span>
-                  </span>
-                </div>
-              ) : null}
-            </div>
-          </div>
+                   {followDot || responseDot ? (
+                     <span className="inline-flex items-center gap-1">
+                       {followDot ? (
+                         <span className="w-2.5 h-2.5 rounded-full border border-black/30" style={{ background: followDot.color }} title={followDot.title} />
+                       ) : null}
+                       {responseDot ? (
+                         <span className="w-2.5 h-2.5 rounded-full border border-black/30" style={{ background: responseDot.color }} title={responseDot.title} />
+                       ) : null}
+                     </span>
+                   ) : null}
+                 </div>
+               </div>
 
-          <div className="mt-2">
-            <div className="grid grid-cols-[1fr_auto] items-center gap-2 min-w-0">
-              <div className="flex-1 min-w-0 text-[11px] font-semibold text-slate-300 truncate" title={assigneeLabel}>
-                {cfg.showAssignee !== false ? assigneeLabel : ''}
-              </div>
-              {cfg.showSource !== false ? (
-                <span className="shrink-0 inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-950/50 text-slate-300 border border-slate-800 whitespace-nowrap">
-                  {sourceLabel}
-                </span>
-              ) : null}
-            </div>
-            <div className="mt-1 text-[10px] text-slate-500 tabular-nums">{dateStr}</div>
-          </div>
+               {/* Channel + company (stacked) */}
+               {(cfg.showSource !== false || cfg.showAssignee !== false) ? (
+                 <div className="mt-2">
+                   {cfg.showSource !== false ? (
+                     <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-950/50 text-slate-300 border border-slate-800 whitespace-nowrap">
+                       {sourceLabel}
+                     </span>
+                   ) : null}
+                   {cfg.showAssignee !== false ? (
+                     <div className={cn(
+                       'mt-1 text-[11px] font-semibold text-slate-300 truncate',
+                       cfg.showSource === false && 'mt-0'
+                     )} title={assigneeLabel}>
+                       {assigneeLabel}
+                     </div>
+                   ) : null}
+                 </div>
+               ) : null}
 
-        </div>
+               {/* Date + value (separate row to avoid overlaps) */}
+               <div className="mt-1 flex items-center justify-between gap-2 min-w-0">
+                 <div className="text-[10px] text-slate-500 tabular-nums truncate">{dateStr}</div>
+                 {hasValue ? (
+                   <span className="shrink-0 inline-flex items-center gap-1 rounded-full border border-emerald-900/30 bg-emerald-950/15 px-2 py-0.5 text-[10px] font-extrabold text-emerald-200 tabular-nums whitespace-nowrap">
+                     <DollarSign className="w-3 h-3" />
+                     {formatCurrency(Number(lead.value || 0), 'AZN')}
+                   </span>
+                 ) : null}
+               </div>
+             </div>
+           </div>
+         </div>
 
         <div className={cn(
           'flex gap-1 transition-opacity',
