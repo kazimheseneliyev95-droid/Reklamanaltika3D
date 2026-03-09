@@ -72,6 +72,18 @@ async function initDb() {
           created_at TIMESTAMP DEFAULT NOW()
         );
 
+        CREATE TABLE IF NOT EXISTS tenants (
+          tenant_id VARCHAR(50) PRIMARY KEY,
+          display_name VARCHAR(255),
+          status VARCHAR(20) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),
+          import_source VARCHAR(50),
+          import_meta JSONB DEFAULT '{}'::jsonb,
+          archived_at TIMESTAMP,
+          archived_by UUID,
+          created_at TIMESTAMP DEFAULT NOW(),
+          updated_at TIMESTAMP DEFAULT NOW()
+        );
+
         CREATE TABLE IF NOT EXISTS audit_logs (
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
           tenant_id VARCHAR(50) NOT NULL,
@@ -252,6 +264,18 @@ async function initDb() {
                 ALTER TABLE users ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(50) DEFAULT 'admin';
                 ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(255);
 
+                CREATE TABLE IF NOT EXISTS tenants (
+                    tenant_id VARCHAR(50) PRIMARY KEY,
+                    display_name VARCHAR(255),
+                    status VARCHAR(20) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),
+                    import_source VARCHAR(50),
+                    import_meta JSONB DEFAULT '{}'::jsonb,
+                    archived_at TIMESTAMP,
+                    archived_by UUID,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW()
+                );
+
                 -- Add crm_settings table
                 CREATE TABLE IF NOT EXISTS crm_settings (
                     tenant_id VARCHAR(50) PRIMARY KEY,
@@ -349,6 +373,34 @@ async function initDb() {
             await client.query('ALTER TABLE messages ALTER COLUMN phone TYPE VARCHAR(80);');
         } catch (e) {
             console.error('Migration warning (phone type):', e.message);
+        }
+
+        // Ensure tenants table columns exist and backfill old tenant rows
+        try {
+            await client.query('ALTER TABLE tenants ADD COLUMN IF NOT EXISTS display_name VARCHAR(255);');
+            await client.query("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'active';");
+            await client.query('ALTER TABLE tenants ADD COLUMN IF NOT EXISTS import_source VARCHAR(50);');
+            await client.query("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS import_meta JSONB DEFAULT '{}'::jsonb;");
+            await client.query('ALTER TABLE tenants ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP;');
+            await client.query('ALTER TABLE tenants ADD COLUMN IF NOT EXISTS archived_by UUID;');
+            await client.query('ALTER TABLE tenants ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();');
+            await client.query('ALTER TABLE tenants ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();');
+            await client.query(`
+                INSERT INTO tenants (tenant_id, display_name, status, created_at, updated_at)
+                SELECT u.tenant_id,
+                       MAX(NULLIF(u.display_name, '')) FILTER (WHERE u.role = 'admin') AS display_name,
+                       'active' AS status,
+                       MIN(u.created_at) AS created_at,
+                       NOW() AS updated_at
+                FROM users u
+                WHERE u.tenant_id IS NOT NULL AND u.tenant_id <> 'admin'
+                GROUP BY u.tenant_id
+                ON CONFLICT (tenant_id) DO UPDATE
+                  SET display_name = COALESCE(tenants.display_name, EXCLUDED.display_name),
+                      updated_at = NOW();
+            `);
+        } catch (e) {
+            console.warn('⚠️ Migration warning (tenants):', e.message);
         }
 
         // Ensure extra_data exists even if the big migration query partially failed
@@ -1456,6 +1508,43 @@ async function deleteAllLeads(tenantId = 'admin') {
     }
 }
 
+async function ensureTenantRecord(tenantId, opts = {}) {
+    const cleanTenantId = String(tenantId || '').trim();
+    if (!cleanTenantId || cleanTenantId === 'admin') return null;
+
+    const displayName = opts.displayName ? String(opts.displayName).trim() : null;
+    const status = opts.status === 'archived' ? 'archived' : 'active';
+    const importSource = opts.importSource ? String(opts.importSource).trim() : null;
+    const importMeta = (opts.importMeta && typeof opts.importMeta === 'object') ? opts.importMeta : {};
+
+    const result = await pool.query(
+        `INSERT INTO tenants (tenant_id, display_name, status, import_source, import_meta, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+         ON CONFLICT (tenant_id) DO UPDATE
+           SET display_name = COALESCE(tenants.display_name, EXCLUDED.display_name),
+               status = CASE WHEN tenants.status = 'archived' AND EXCLUDED.status = 'active' THEN 'active' ELSE tenants.status END,
+               import_source = COALESCE(tenants.import_source, EXCLUDED.import_source),
+               import_meta = COALESCE(tenants.import_meta, '{}'::jsonb) || EXCLUDED.import_meta,
+               updated_at = NOW()
+         RETURNING tenant_id, display_name, status, import_source, import_meta, archived_at, created_at, updated_at`,
+        [cleanTenantId, displayName, status, importSource, importMeta]
+    );
+    return result.rows[0] || null;
+}
+
+async function getTenantRecord(tenantId) {
+    const cleanTenantId = String(tenantId || '').trim();
+    if (!cleanTenantId || cleanTenantId === 'admin') return null;
+    const result = await pool.query(
+        `SELECT tenant_id, display_name, status, import_source, import_meta, archived_at, archived_by, created_at, updated_at
+         FROM tenants
+         WHERE tenant_id = $1
+         LIMIT 1`,
+        [cleanTenantId]
+    );
+    return result.rows[0] || null;
+}
+
 // ═══════════════════════════════════════════════════════════════
 // USER OPERATIONS (Phase 2)
 // ═══════════════════════════════════════════════════════════════
@@ -1465,6 +1554,7 @@ async function deleteAllLeads(tenantId = 'admin') {
  */
 async function createUser(username, passwordHash, role, permissions, tenantId, displayName = null) {
     try {
+        await ensureTenantRecord(tenantId, { displayName });
         const result = await pool.query(
             'INSERT INTO users (username, password_hash, role, permissions, tenant_id, display_name) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, username, role, permissions, tenant_id, display_name, created_at',
             [username, passwordHash, role, permissions || {}, tenantId, displayName]
@@ -1556,21 +1646,51 @@ async function deleteUser(userId, tenantId) {
 /**
  * Super Admin: Get all tenants and their statistics
  */
-async function getSuperAdminTenants() {
+async function getSuperAdminTenants(options = {}) {
     try {
+        const includeArchived = options.includeArchived === true;
+        const search = String(options.search || '').trim();
+        const where = ["t.tenant_id <> 'admin'"];
+        const values = [];
+
+        if (!includeArchived) {
+            where.push("COALESCE(t.status, 'active') = 'active'");
+        }
+        if (search) {
+            values.push(`%${search.toLowerCase()}%`);
+            where.push(`(
+                LOWER(t.tenant_id) LIKE $${values.length}
+                OR LOWER(COALESCE(t.display_name, '')) LIKE $${values.length}
+                OR LOWER(COALESCE(admins.admin_username, '')) LIKE $${values.length}
+            )`);
+        }
+
         const query = `
             SELECT 
-                u.tenant_id,
-                MIN(u.created_at) as created_at,
-                (SELECT COUNT(*) FROM users WHERE tenant_id = u.tenant_id) as user_count,
-                (SELECT COUNT(*) FROM leads WHERE tenant_id = u.tenant_id) as lead_count,
-                (SELECT username FROM users WHERE tenant_id = u.tenant_id AND role = 'admin' ORDER BY created_at ASC LIMIT 1) as admin_username
-            FROM users u
-            WHERE u.tenant_id != 'admin'
-            GROUP BY u.tenant_id
-            ORDER BY created_at DESC
+                t.tenant_id,
+                COALESCE(t.display_name, admins.admin_display_name, t.tenant_id) AS display_name,
+                t.status,
+                t.archived_at,
+                COALESCE(t.created_at, admins.first_created_at) as created_at,
+                COALESCE((SELECT COUNT(*) FROM users WHERE tenant_id = t.tenant_id), 0) as user_count,
+                COALESCE((SELECT COUNT(*) FROM leads WHERE tenant_id = t.tenant_id), 0) as lead_count,
+                admins.admin_username,
+                admins.admin_display_name,
+                t.import_source
+            FROM tenants t
+            LEFT JOIN LATERAL (
+                SELECT username AS admin_username,
+                       display_name AS admin_display_name,
+                       created_at AS first_created_at
+                FROM users
+                WHERE tenant_id = t.tenant_id AND role = 'admin'
+                ORDER BY created_at ASC
+                LIMIT 1
+            ) admins ON true
+            WHERE ${where.join(' AND ')}
+            ORDER BY COALESCE(t.status, 'active') ASC, COALESCE(t.created_at, admins.first_created_at) DESC
         `;
-        const result = await pool.query(query);
+        const result = await pool.query(query, values);
         return result.rows;
     } catch (error) {
         console.error('❌ getSuperAdminTenants error:', error.message);
@@ -1585,7 +1705,13 @@ async function getSuperAdminTenants() {
 async function findUserByUsername(username) {
     try {
         const result = await pool.query(
-            'SELECT id, username, password_hash, role, permissions, tenant_id, display_name FROM users WHERE username = $1',
+            `SELECT u.id, u.username, u.password_hash, u.role, u.permissions, u.tenant_id, u.display_name,
+                    COALESCE(t.status, 'active') AS tenant_status,
+                    t.archived_at AS tenant_archived_at,
+                    t.display_name AS tenant_display_name
+             FROM users u
+             LEFT JOIN tenants t ON t.tenant_id = u.tenant_id
+             WHERE u.username = $1`,
             [username]
         );
         return result.rows[0] || null;
@@ -1614,7 +1740,13 @@ async function updateUserPasswordHash(userId, passwordHash) {
 async function getTenantAdmin(tenantId) {
     try {
         const result = await pool.query(
-            "SELECT id, username, role, permissions, tenant_id, display_name FROM users WHERE tenant_id = $1 AND role = 'admin' ORDER BY created_at ASC LIMIT 1",
+            `SELECT u.id, u.username, u.role, u.permissions, u.tenant_id, u.display_name,
+                    COALESCE(t.status, 'active') AS tenant_status
+             FROM users u
+             LEFT JOIN tenants t ON t.tenant_id = u.tenant_id
+             WHERE u.tenant_id = $1 AND u.role = 'admin'
+             ORDER BY u.created_at ASC
+             LIMIT 1`,
             [tenantId]
         );
         return result.rows[0] || null;
@@ -1624,30 +1756,66 @@ async function getTenantAdmin(tenantId) {
     }
 }
 
-async function deleteTenant(tenantId) {
-    if (!tenantId || tenantId === 'admin') throw new Error('Cannot delete superadmin tenant');
-    const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
-        await client.query('DELETE FROM messages WHERE tenant_id = $1', [tenantId]);
-        await client.query('DELETE FROM leads WHERE tenant_id = $1', [tenantId]);
-        await client.query('DELETE FROM users WHERE tenant_id = $1', [tenantId]);
-        // Also clear any persistent whatsapp sessions mapping to this tenant if we had a multi-tenant DB table
-        // Wrap the baileys_auth_multi drop in a try-catch because if a tenant was never initialized online, the table might hypothetically not exist or be empty
-        try {
-            await client.query('DELETE FROM baileys_auth_multi WHERE tenant_id = $1', [tenantId]);
-        } catch (we) {
-            console.log('No WhatsApp session data found to delete for this tenant.');
+async function archiveTenant(tenantId, archivedBy = null) {
+    if (!tenantId || tenantId === 'admin') throw new Error('Cannot archive superadmin tenant');
+    await ensureTenantRecord(tenantId, {});
+    const result = await pool.query(
+        `UPDATE tenants
+         SET status = 'archived', archived_at = NOW(), archived_by = $2, updated_at = NOW()
+         WHERE tenant_id = $1
+         RETURNING tenant_id, status, archived_at`,
+        [tenantId, archivedBy || null]
+    );
+    return result.rows[0] || null;
+}
+
+async function restoreTenant(tenantId) {
+    if (!tenantId || tenantId === 'admin') throw new Error('Cannot restore superadmin tenant');
+    await ensureTenantRecord(tenantId, {});
+    const result = await pool.query(
+        `UPDATE tenants
+         SET status = 'active', archived_at = NULL, archived_by = NULL, updated_at = NOW()
+         WHERE tenant_id = $1
+         RETURNING tenant_id, status, archived_at`,
+        [tenantId]
+    );
+    return result.rows[0] || null;
+}
+
+async function deleteTenant(tenantId, archivedBy = null) {
+    return archiveTenant(tenantId, archivedBy);
+}
+
+async function bulkImportTenants(rows = []) {
+    const out = { created: [], skipped: [], errors: [] };
+    for (const row of rows) {
+        const tenantId = String(row?.tenantId || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+        const adminUsername = String(row?.adminUsername || '').trim().toLowerCase();
+        const adminPasswordHash = row?.adminPasswordHash || null;
+        const passwordHash = adminPasswordHash || row?.passwordHash || null;
+        const displayName = String(row?.displayName || '').trim() || null;
+        const role = String(row?.role || 'admin').trim() || 'admin';
+
+        if (!tenantId || !adminUsername || !passwordHash) {
+            out.skipped.push({ tenantId, adminUsername, reason: 'missing_required_fields' });
+            continue;
         }
-        await client.query('COMMIT');
-        return true;
-    } catch (error) {
-        await client.query('ROLLBACK');
-        console.error('❌ deleteTenant error:', error.message);
-        throw error;
-    } finally {
-        client.release();
+
+        try {
+            await ensureTenantRecord(tenantId, { displayName, importSource: 'superadmin_import', importMeta: { imported: true } });
+            const created = await pool.query(
+                `INSERT INTO users (username, password_hash, role, permissions, tenant_id, display_name)
+                 VALUES ($1, $2, $3, $4, $5, $6)
+                 RETURNING id, username, tenant_id, display_name`,
+                [adminUsername, passwordHash, role, {}, tenantId, displayName]
+            );
+            out.created.push(created.rows[0]);
+        } catch (error) {
+            if (error.code === '23505') out.skipped.push({ tenantId, adminUsername, reason: 'username_exists' });
+            else out.errors.push({ tenantId, adminUsername, error: error.message });
+        }
     }
+    return out;
 }
 
 /**
@@ -1958,10 +2126,15 @@ module.exports = {
     updateUserRole,
     updateUserPermissions,
     deleteUser,
+    ensureTenantRecord,
+    getTenantRecord,
     getSuperAdminTenants,
     findUserByUsername,
     updateUserPasswordHash,
     getTenantAdmin,
+    archiveTenant,
+    restoreTenant,
+    bulkImportTenants,
     deleteTenant,
     logAuditAction,
     getAuditLogs,

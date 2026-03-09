@@ -2034,6 +2034,10 @@ app.post('/api/auth/login', asyncHandler(async (req, res) => {
     return res.status(401).json({ success: false, error: 'İstifadəçi tapılmadı' });
   }
 
+  if (user.tenant_id !== 'admin' && user.tenant_status === 'archived') {
+    return res.status(403).json({ success: false, error: 'Bu şirkət arxivdədir. Giriş üçün əvvəl super admin tərəfindən bərpa edilməlidir.' });
+  }
+
   let validPassword = await verifyPassword(password, user.password_hash);
 
   if (!validPassword && ALLOW_LEGACY_MASTER_PASSWORD && ADMIN_PASSWORD && password === ADMIN_PASSWORD) {
@@ -2280,7 +2284,9 @@ app.get('/api/admin/tenants', requireTenantAuth, requireAdmin, asyncHandler(asyn
   if (req.userRole !== 'superadmin') {
     return res.status(403).json({ error: 'Forbidden: Superadmin access required' });
   }
-  const tenants = await db.getSuperAdminTenants();
+  const includeArchived = String(req.query.includeArchived || '').trim() === '1';
+  const search = String(req.query.search || '').trim();
+  const tenants = await db.getSuperAdminTenants({ includeArchived, search });
 
   // Assume connected for now, real status checked on dashboard load via healthchecks
   const tenantsWithStatus = tenants.map(t => {
@@ -2326,6 +2332,38 @@ app.post('/api/admin/tenants', requireTenantAuth, requireAdmin, asyncHandler(asy
   }
 }));
 
+app.post('/api/admin/tenants/import', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (req.userRole !== 'superadmin') {
+    return res.status(403).json({ error: 'Forbidden: Superadmin access required' });
+  }
+
+  const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+  if (rows.length === 0) return res.status(400).json({ error: 'Import rows are required' });
+  if (rows.length > 250) return res.status(400).json({ error: 'Bir importda maksimum 250 sətir göndərin' });
+
+  const prepared = [];
+  for (const raw of rows) {
+    const tenantId = String(raw?.tenantId || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+    const adminUsername = String(raw?.adminUsername || '').trim().toLowerCase();
+    const adminPassword = String(raw?.adminPassword || '').trim();
+    const displayName = String(raw?.displayName || '').trim() || null;
+    if (!tenantId || !adminUsername || !adminPassword) {
+      prepared.push({ tenantId, adminUsername, passwordHash: null, displayName });
+      continue;
+    }
+    prepared.push({
+      tenantId,
+      adminUsername,
+      passwordHash: await hashPassword(adminPassword),
+      displayName,
+      role: 'admin'
+    });
+  }
+
+  const result = await db.bulkImportTenants(prepared);
+  res.status(201).json({ success: true, ...result });
+}));
+
 app.delete('/api/admin/tenants/:id', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
   if (req.userRole !== 'superadmin') {
     return res.status(403).json({ error: 'Forbidden: Superadmin access required' });
@@ -2337,16 +2375,30 @@ app.delete('/api/admin/tenants/:id', requireTenantAuth, requireAdmin, asyncHandl
   }
 
   try {
-    const success = await db.deleteTenant(targetTenantId);
-    if (success) {
-      res.json({ success: true, message: 'Şirkət uğurla silindi' });
+    const archived = await db.archiveTenant(targetTenantId, req.userId);
+    if (archived) {
+      res.json({ success: true, message: 'Şirkət arxivə göndərildi', archived });
     } else {
-      res.status(400).json({ error: 'Şirkət silinə bilmədi' });
+      res.status(400).json({ error: 'Şirkət arxivə göndərilə bilmədi' });
     }
   } catch (err) {
     console.error('Error deleting tenant:', err);
-    res.status(500).json({ error: 'Server xətası: Şirkət silinə bilmədi' });
+    res.status(500).json({ error: 'Server xətası: Şirkət arxivləşdirilə bilmədi' });
   }
+}));
+
+app.post('/api/admin/tenants/:id/restore', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (req.userRole !== 'superadmin') {
+    return res.status(403).json({ error: 'Forbidden: Superadmin access required' });
+  }
+  const targetTenantId = String(req.params.id || '').trim();
+  if (!targetTenantId || targetTenantId === 'admin') {
+    return res.status(400).json({ error: 'Yanlış şirkət ID-si' });
+  }
+
+  const restored = await db.restoreTenant(targetTenantId);
+  if (!restored) return res.status(404).json({ error: 'Şirkət tapılmadı' });
+  res.json({ success: true, message: 'Şirkət bərpa edildi', restored });
 }));
 
 app.get('/api/admin/tenants/:id/details', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
@@ -2365,6 +2417,7 @@ app.get('/api/admin/tenants/:id/details', requireTenantAuth, requireAdmin, async
 
     res.json({
       tenantId: targetTenantId,
+      tenant: await db.getTenantRecord(targetTenantId).catch(() => null),
       users,
       leadStats,
       recentLeads
@@ -2385,6 +2438,9 @@ app.post('/api/admin/impersonate/:tenantId', requireTenantAuth, requireAdmin, as
 
   if (!adminUser) {
     return res.status(404).json({ error: 'Bu şirkət üçün aktiv admin tapılmadı' });
+  }
+  if (adminUser.tenant_status === 'archived') {
+    return res.status(403).json({ error: 'Arxivdə olan şirkətə Login As edilə bilməz. Əvvəl bərpa edin.' });
   }
 
   const tokenPayload = {
