@@ -4019,6 +4019,66 @@ async function fetchMetaPagesForToken(userAccessToken) {
   }).filter((p) => p.pageId && p.pageAccessToken);
 }
 
+function normalizeFacebookAdAccount(row) {
+  const id = String(row?.id || '').trim();
+  const accountId = String(row?.account_id || '').trim() || id.replace(/^act_/, '');
+  const apiId = id || (accountId ? `act_${accountId}` : '');
+  return {
+    id,
+    api_id: apiId,
+    account_id: accountId,
+    name: row?.name ? String(row.name) : (accountId ? `Ad Account ${accountId}` : 'Ad Account'),
+    account_status: row?.account_status != null ? Number(row.account_status) : null,
+    currency: row?.currency ? String(row.currency) : null,
+    timezone_name: row?.timezone_name ? String(row.timezone_name) : null,
+    timezone_offset_hours_utc: row?.timezone_offset_hours_utc != null ? Number(row.timezone_offset_hours_utc) : null,
+    business_name: row?.business?.name ? String(row.business.name) : null,
+    business_id: row?.business?.id ? String(row.business.id) : null,
+  };
+}
+
+async function fetchFacebookAdAccountsForToken(userAccessToken) {
+  const token = String(userAccessToken || '').trim();
+  if (!token) throw new Error('Token is required');
+
+  const out = [];
+  let nextUrl = `https://graph.facebook.com/v19.0/me/adaccounts?fields=${encodeURIComponent(
+    'id,account_id,name,account_status,currency,timezone_name,timezone_offset_hours_utc,business{id,name}'
+  )}&limit=200&access_token=${encodeURIComponent(token)}`;
+
+  for (let i = 0; i < 10 && nextUrl; i++) {
+    const data = await fetchJsonWithRetry(nextUrl, {}, { retries: 1, timeoutMs: 7000 });
+    const rows = Array.isArray(data?.data) ? data.data : [];
+    for (const row of rows) {
+      const normalized = normalizeFacebookAdAccount(row);
+      if (normalized.account_id || normalized.id) out.push(normalized);
+    }
+    nextUrl = data?.paging?.next ? String(data.paging.next) : '';
+  }
+
+  return out;
+}
+
+function sanitizeFacebookAdImportConfig(row) {
+  const raw = row && typeof row === 'object' ? row : {};
+  const accountCache = Array.isArray(raw.account_cache) ? raw.account_cache.map(normalizeFacebookAdAccount) : [];
+  const selectedAccountIds = Array.isArray(raw.selected_account_ids)
+    ? raw.selected_account_ids.map((x) => String(x || '').trim()).filter(Boolean)
+    : [];
+  const selectedSet = new Set(selectedAccountIds);
+  const selectedAccounts = accountCache.filter((a) => selectedSet.has(a.account_id) || selectedSet.has(a.id) || selectedSet.has(a.api_id));
+  return {
+    hasToken: Boolean(raw.access_token),
+    tokenHint: raw.token_hint ? String(raw.token_hint) : null,
+    selectedAccountIds,
+    selectedAccounts,
+    accountCache,
+    lastSyncAt: raw.last_sync_at || null,
+    lastError: raw.last_error || null,
+    updatedAt: raw.updated_at || null,
+  };
+}
+
 async function subscribeMetaWebhooks({ pageId, pageAccessToken, igBusinessId }) {
   const page = String(pageId || '').trim();
   const token = String(pageAccessToken || '').trim();
@@ -4195,6 +4255,74 @@ app.get('/api/meta/config', requireTenantAuth, requireAdmin, asyncHandler(async 
     dbEnabled: Boolean(process.env.DATABASE_URL),
     callbackPath: '/api/webhooks/meta'
   });
+}));
+
+app.get('/api/facebook-import/config', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  const row = await db.getFacebookAdImport(req.tenantId).catch(() => null);
+  res.json(sanitizeFacebookAdImportConfig(row));
+}));
+
+app.post('/api/facebook-import/fetch', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  const token = String(req.body?.token || '').trim();
+  if (!token) return res.status(400).json({ error: 'token is required' });
+
+  const ex = await exchangeForLongLivedUserToken(token).catch(() => ({ access_token: token, expires_in: null, exchanged: false }));
+  const effectiveToken = ex?.access_token ? String(ex.access_token) : token;
+  const accounts = await fetchFacebookAdAccountsForToken(effectiveToken);
+  res.json({
+    exchanged: Boolean(ex?.exchanged),
+    expires_in: ex?.expires_in || null,
+    tokenHint: `${effectiveToken.slice(0, 6)}...${effectiveToken.slice(-4)}`,
+    accounts,
+  });
+}));
+
+app.post('/api/facebook-import/save', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  if (!db || typeof db.upsertFacebookAdImport !== 'function') return res.status(501).json({ error: 'Facebook import storage unavailable' });
+
+  const existing = await db.getFacebookAdImport(req.tenantId).catch(() => null);
+  const token = String(req.body?.token || existing?.access_token || '').trim();
+  if (!token) return res.status(400).json({ error: 'token is required' });
+
+  const accountsInput = Array.isArray(req.body?.accounts) ? req.body.accounts : [];
+  const accounts = accountsInput.length > 0
+    ? accountsInput.map(normalizeFacebookAdAccount).filter((a) => a.account_id || a.id)
+    : await fetchFacebookAdAccountsForToken(token);
+  const selectedRaw = Array.isArray(req.body?.selectedAccountIds) ? req.body.selectedAccountIds : [];
+  const selectedSet = new Set(selectedRaw.map((x) => String(x || '').trim()).filter(Boolean));
+  const selectedAccountIds = accounts
+    .filter((a) => selectedSet.has(a.account_id) || selectedSet.has(a.id) || selectedSet.has(a.api_id))
+    .map((a) => a.account_id || a.id);
+
+  const saved = await db.upsertFacebookAdImport(req.tenantId, {
+    access_token: token,
+    selected_account_ids: selectedAccountIds,
+    account_cache: accounts,
+    last_error: null,
+  });
+
+  res.status(201).json({ success: true, config: sanitizeFacebookAdImportConfig({ ...saved, access_token: token }) });
+}));
+
+app.post('/api/facebook-import/refresh', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  const existing = await db.getFacebookAdImport(req.tenantId).catch(() => null);
+  if (!existing?.access_token) return res.status(404).json({ error: 'Saved Facebook token not found' });
+
+  const accounts = await fetchFacebookAdAccountsForToken(existing.access_token);
+  const selectedAccountIds = Array.isArray(existing.selected_account_ids)
+    ? existing.selected_account_ids.map((x) => String(x || '').trim()).filter(Boolean)
+    : [];
+
+  const saved = await db.upsertFacebookAdImport(req.tenantId, {
+    access_token: existing.access_token,
+    selected_account_ids: selectedAccountIds,
+    account_cache: accounts,
+    last_error: null,
+  });
+  res.json({ success: true, config: sanitizeFacebookAdImportConfig({ ...saved, access_token: existing.access_token }) });
 }));
 
 app.get('/api/meta/webhook/status', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {

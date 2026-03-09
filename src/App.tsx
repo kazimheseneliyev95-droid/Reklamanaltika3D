@@ -4,6 +4,7 @@ import CRMPage from './pages/CRM';
 import AnalyticsPage from './pages/Analytics';
 import ResponseTimesPage from './pages/ResponseTimes';
 import SettingsPage from './pages/Settings';
+import FacebookImportPage from './pages/FacebookImport';
 import { AppProvider, useAppStore } from './context/Store';
 import Login from './pages/Login';
 import SuperAdminDashboard from './pages/SuperAdminDashboard';
@@ -44,6 +45,7 @@ function RoleBasedRouter() {
       <Route path="/" element={<Navigate to="/crm" replace />} />
       <Route path="/crm" element={<CRMPage />} />
       <Route path="/analytics" element={<AnalyticsPage />} />
+      <Route path="/facebook-import" element={<FacebookImportPage />} />
       <Route path="/analytics/response-times" element={<ResponseTimesPage />} />
       <Route path="/settings" element={<SettingsPage />} />
       <Route path="/analytics/settings" element={<Navigate to="/settings" replace />} />

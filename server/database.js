@@ -176,6 +176,18 @@ async function initDb() {
           updated_at TIMESTAMP DEFAULT NOW()
         );
 
+        CREATE TABLE IF NOT EXISTS facebook_ad_imports (
+          tenant_id VARCHAR(50) PRIMARY KEY,
+          access_token TEXT,
+          token_hint VARCHAR(64),
+          selected_account_ids JSONB DEFAULT '[]'::jsonb,
+          account_cache JSONB DEFAULT '[]'::jsonb,
+          last_sync_at TIMESTAMP,
+          last_error TEXT,
+          created_at TIMESTAMP DEFAULT NOW(),
+          updated_at TIMESTAMP DEFAULT NOW()
+        );
+
         CREATE TABLE IF NOT EXISTS telegram_integrations (
           tenant_id VARCHAR(50) PRIMARY KEY,
           bot_token TEXT,
@@ -336,6 +348,18 @@ async function initDb() {
                   last_error TEXT,
                   updated_at TIMESTAMP DEFAULT NOW()
                 );
+
+                CREATE TABLE IF NOT EXISTS facebook_ad_imports (
+                  tenant_id VARCHAR(50) PRIMARY KEY,
+                  access_token TEXT,
+                  token_hint VARCHAR(64),
+                  selected_account_ids JSONB DEFAULT '[]'::jsonb,
+                  account_cache JSONB DEFAULT '[]'::jsonb,
+                  last_sync_at TIMESTAMP,
+                  last_error TEXT,
+                  created_at TIMESTAMP DEFAULT NOW(),
+                  updated_at TIMESTAMP DEFAULT NOW()
+                );
                  -- Follow-ups / tasks (per-tenant)
                  CREATE TABLE IF NOT EXISTS follow_ups (
                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -365,6 +389,33 @@ async function initDb() {
             await client.query('ALTER TABLE meta_pages ADD COLUMN IF NOT EXISTS last_error TEXT;');
         } catch (e) {
             console.warn('⚠️ Migration warning (meta_pages columns):', e.message);
+        }
+
+        // Ensure facebook ad imports table exists for ad account import architecture
+        try {
+            await client.query(`
+              CREATE TABLE IF NOT EXISTS facebook_ad_imports (
+                tenant_id VARCHAR(50) PRIMARY KEY,
+                access_token TEXT,
+                token_hint VARCHAR(64),
+                selected_account_ids JSONB DEFAULT '[]'::jsonb,
+                account_cache JSONB DEFAULT '[]'::jsonb,
+                last_sync_at TIMESTAMP,
+                last_error TEXT,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+              );
+            `);
+            await client.query('ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS access_token TEXT;');
+            await client.query('ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS token_hint VARCHAR(64);');
+            await client.query("ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS selected_account_ids JSONB DEFAULT '[]'::jsonb;");
+            await client.query("ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS account_cache JSONB DEFAULT '[]'::jsonb;");
+            await client.query('ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS last_sync_at TIMESTAMP;');
+            await client.query('ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS last_error TEXT;');
+            await client.query('ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();');
+            await client.query('ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();');
+        } catch (e) {
+            console.warn('⚠️ Migration warning (facebook_ad_imports):', e.message);
         }
 
         // Ensure phone column can store non-phone external IDs (fb:/ig:)
@@ -1430,6 +1481,52 @@ async function upsertMetaUserToken(tenantId, { user_access_token, expires_at, de
     return res.rows[0] || null;
 }
 
+async function upsertFacebookAdImport(tenantId, { access_token, selected_account_ids, account_cache, last_error }) {
+    if (!tenantId) throw new Error('tenantId is required');
+    const safeSelected = Array.isArray(selected_account_ids) ? selected_account_ids.map((x) => String(x || '').trim()).filter(Boolean) : [];
+    const safeCache = Array.isArray(account_cache) ? account_cache : [];
+    const token = access_token ? String(access_token).trim() : null;
+    const tokenHint = token ? `${token.slice(0, 6)}...${token.slice(-4)}` : null;
+
+    const res = await pool.query(
+        `INSERT INTO facebook_ad_imports (
+           tenant_id, access_token, token_hint, selected_account_ids, account_cache, last_sync_at, last_error, updated_at
+         )
+         VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, NOW(), $6, NOW())
+         ON CONFLICT (tenant_id)
+         DO UPDATE SET
+           access_token = COALESCE(EXCLUDED.access_token, facebook_ad_imports.access_token),
+           token_hint = COALESCE(EXCLUDED.token_hint, facebook_ad_imports.token_hint),
+           selected_account_ids = EXCLUDED.selected_account_ids,
+           account_cache = EXCLUDED.account_cache,
+           last_sync_at = NOW(),
+           last_error = EXCLUDED.last_error,
+           updated_at = NOW()
+         RETURNING tenant_id, token_hint, selected_account_ids, account_cache, last_sync_at, last_error, updated_at`,
+        [
+            String(tenantId),
+            token,
+            tokenHint,
+            JSON.stringify(safeSelected),
+            JSON.stringify(safeCache),
+            last_error ? String(last_error) : null,
+        ]
+    );
+    return res.rows[0] || null;
+}
+
+async function getFacebookAdImport(tenantId) {
+    if (!tenantId) throw new Error('tenantId is required');
+    const res = await pool.query(
+        `SELECT tenant_id, access_token, token_hint, selected_account_ids, account_cache, last_sync_at, last_error, updated_at
+         FROM facebook_ad_imports
+         WHERE tenant_id = $1
+         LIMIT 1`,
+        [String(tenantId)]
+    );
+    return res.rows[0] || null;
+}
+
 /**
  * Get all messages for a lead, oldest first
  */
@@ -2156,5 +2253,7 @@ module.exports = {
     completeMetaWebhookEvent,
     failMetaWebhookEvent,
     upsertMetaUserToken,
+    upsertFacebookAdImport,
+    getFacebookAdImport,
     closePool
 };
