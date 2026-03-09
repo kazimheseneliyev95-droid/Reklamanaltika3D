@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Calculator, ShieldCheck, LogOut, BarChart3, Settings, Timer } from 'lucide-react';
+import { LayoutDashboard, ShieldCheck, LogOut, BarChart3, Settings, Timer } from 'lucide-react';
 import { useAppStore } from '../context/Store';
 import { cn } from '../lib/utils';
 import { NotificationBell } from './NotificationBell';
@@ -18,7 +18,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       { name: 'Global İdarəetmə', path: '/superadmin', icon: <ShieldCheck className="w-5 h-5" /> }
     ]
     : [
-      { name: 'Simulator', path: '/', icon: <Calculator className="w-5 h-5" /> },
       { name: 'CRM (Classic)', path: '/crm', icon: <LayoutDashboard className="w-5 h-5" /> },
       { name: 'Analitika', path: '/analytics', icon: <BarChart3 className="w-5 h-5" /> },
       { name: 'Cavab Sureleri', path: '/analytics/response-times', icon: <Timer className="w-5 h-5" /> },

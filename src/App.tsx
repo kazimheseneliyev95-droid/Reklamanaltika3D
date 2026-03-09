@@ -1,6 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './components/Layout';
-import FunnelSimulator from './components/FunnelSimulator';
 import CRMPage from './pages/CRM';
 import AnalyticsPage from './pages/Analytics';
 import ResponseTimesPage from './pages/ResponseTimes';
@@ -41,8 +40,8 @@ function RoleBasedRouter() {
   }
 
   return (
-    <Routes>
-      <Route path="/" element={<FunnelSimulator />} />
+     <Routes>
+      <Route path="/" element={<Navigate to="/crm" replace />} />
       <Route path="/crm" element={<CRMPage />} />
       <Route path="/analytics" element={<AnalyticsPage />} />
       <Route path="/analytics/response-times" element={<ResponseTimesPage />} />
