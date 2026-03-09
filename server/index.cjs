@@ -4062,21 +4062,79 @@ async function fetchFacebookAdAccountsForToken(userAccessToken) {
 function sanitizeFacebookAdImportConfig(row) {
   const raw = row && typeof row === 'object' ? row : {};
   const accountCache = Array.isArray(raw.account_cache) ? raw.account_cache.map(normalizeFacebookAdAccount) : [];
+  const campaignCache = Array.isArray(raw.campaign_cache) ? raw.campaign_cache.map(normalizeFacebookCampaign) : [];
   const selectedAccountIds = Array.isArray(raw.selected_account_ids)
     ? raw.selected_account_ids.map((x) => String(x || '').trim()).filter(Boolean)
     : [];
+  const selectedCampaignIds = Array.isArray(raw.selected_campaign_ids)
+    ? raw.selected_campaign_ids.map((x) => String(x || '').trim()).filter(Boolean)
+    : [];
   const selectedSet = new Set(selectedAccountIds);
+  const selectedCampaignSet = new Set(selectedCampaignIds);
   const selectedAccounts = accountCache.filter((a) => selectedSet.has(a.account_id) || selectedSet.has(a.id) || selectedSet.has(a.api_id));
+  const selectedCampaigns = campaignCache.filter((c) => selectedCampaignSet.has(c.id));
   return {
     hasToken: Boolean(raw.access_token),
     tokenHint: raw.token_hint ? String(raw.token_hint) : null,
     selectedAccountIds,
+    selectedCampaignIds,
     selectedAccounts,
+    selectedCampaigns,
     accountCache,
+    campaignCache,
     lastSyncAt: raw.last_sync_at || null,
     lastError: raw.last_error || null,
     updatedAt: raw.updated_at || null,
   };
+}
+
+function normalizeFacebookCampaign(row) {
+  return {
+    id: String(row?.id || '').trim(),
+    account_id: String(row?.account_id || '').trim(),
+    account_api_id: String(row?.account_api_id || '').trim(),
+    account_name: row?.account_name ? String(row.account_name) : null,
+    name: row?.name ? String(row.name) : 'Campaign',
+    status: row?.status ? String(row.status) : null,
+    effective_status: Array.isArray(row?.effective_status)
+      ? row.effective_status.map((x) => String(x || '').trim()).filter(Boolean)
+      : (row?.effective_status ? [String(row.effective_status)] : []),
+    objective: row?.objective ? String(row.objective) : null,
+    updated_time: row?.updated_time ? String(row.updated_time) : null,
+  };
+}
+
+async function fetchFacebookCampaignsForAccounts(userAccessToken, accounts = []) {
+  const token = String(userAccessToken || '').trim();
+  if (!token) throw new Error('Token is required');
+  const out = [];
+
+  for (const a of accounts) {
+    const accountId = String(a?.account_id || '').trim();
+    const accountApiId = String(a?.api_id || '').trim() || (accountId ? `act_${accountId}` : '');
+    if (!accountApiId) continue;
+
+    let nextUrl = `https://graph.facebook.com/v19.0/${encodeURIComponent(accountApiId)}/campaigns?fields=${encodeURIComponent(
+      'id,name,status,effective_status,objective,updated_time'
+    )}&limit=200&access_token=${encodeURIComponent(token)}`;
+
+    for (let i = 0; i < 10 && nextUrl; i++) {
+      const data = await fetchJsonWithRetry(nextUrl, {}, { retries: 1, timeoutMs: 7000 });
+      const rows = Array.isArray(data?.data) ? data.data : [];
+      for (const row of rows) {
+        const normalized = normalizeFacebookCampaign({
+          ...row,
+          account_id: accountId,
+          account_api_id: accountApiId,
+          account_name: a?.name || null,
+        });
+        if (normalized.id) out.push(normalized);
+      }
+      nextUrl = data?.paging?.next ? String(data.paging.next) : '';
+    }
+  }
+
+  return out;
 }
 
 async function subscribeMetaWebhooks({ pageId, pageAccessToken, igBusinessId }) {
@@ -4278,6 +4336,25 @@ app.post('/api/facebook-import/fetch', requireTenantAuth, requireAdmin, asyncHan
   });
 }));
 
+app.post('/api/facebook-import/campaigns', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  const existing = await db.getFacebookAdImport(req.tenantId).catch(() => null);
+  const token = String(req.body?.token || existing?.access_token || '').trim();
+  if (!token) return res.status(400).json({ error: 'token is required' });
+
+  const accountIds = Array.isArray(req.body?.accountIds)
+    ? req.body.accountIds.map((x) => String(x || '').trim()).filter(Boolean)
+    : [];
+  if (accountIds.length === 0) return res.status(400).json({ error: 'accountIds is required' });
+
+  const accountsSource = Array.isArray(req.body?.accounts) && req.body.accounts.length > 0
+    ? req.body.accounts
+    : (Array.isArray(existing?.account_cache) ? existing.account_cache : []);
+  const normalizedAccounts = accountsSource.map(normalizeFacebookAdAccount);
+  const selectedAccounts = normalizedAccounts.filter((a) => accountIds.includes(a.account_id) || accountIds.includes(a.id) || accountIds.includes(a.api_id));
+  const campaigns = await fetchFacebookCampaignsForAccounts(token, selectedAccounts);
+  res.json({ campaigns, accountIds, count: campaigns.length });
+}));
+
 app.post('/api/facebook-import/save', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   if (!db || typeof db.upsertFacebookAdImport !== 'function') return res.status(501).json({ error: 'Facebook import storage unavailable' });
@@ -4295,11 +4372,18 @@ app.post('/api/facebook-import/save', requireTenantAuth, requireAdmin, asyncHand
   const selectedAccountIds = accounts
     .filter((a) => selectedSet.has(a.account_id) || selectedSet.has(a.id) || selectedSet.has(a.api_id))
     .map((a) => a.account_id || a.id);
+  const campaignInput = Array.isArray(req.body?.campaigns) ? req.body.campaigns : (Array.isArray(existing?.campaign_cache) ? existing.campaign_cache : []);
+  const campaigns = campaignInput.map(normalizeFacebookCampaign).filter((c) => c.id);
+  const selectedCampaignIds = Array.isArray(req.body?.selectedCampaignIds)
+    ? req.body.selectedCampaignIds.map((x) => String(x || '').trim()).filter(Boolean)
+    : (Array.isArray(existing?.selected_campaign_ids) ? existing.selected_campaign_ids.map((x) => String(x || '').trim()).filter(Boolean) : []);
 
   const saved = await db.upsertFacebookAdImport(req.tenantId, {
     access_token: token,
     selected_account_ids: selectedAccountIds,
+    selected_campaign_ids: selectedCampaignIds,
     account_cache: accounts,
+    campaign_cache: campaigns,
     last_error: null,
   });
 
@@ -4315,11 +4399,20 @@ app.post('/api/facebook-import/refresh', requireTenantAuth, requireAdmin, asyncH
   const selectedAccountIds = Array.isArray(existing.selected_account_ids)
     ? existing.selected_account_ids.map((x) => String(x || '').trim()).filter(Boolean)
     : [];
+  const selectedAccounts = accounts.filter((a) => selectedAccountIds.includes(a.account_id) || selectedAccountIds.includes(a.id) || selectedAccountIds.includes(a.api_id));
+  const campaigns = selectedAccounts.length > 0
+    ? await fetchFacebookCampaignsForAccounts(existing.access_token, selectedAccounts)
+    : [];
+  const selectedCampaignIds = Array.isArray(existing.selected_campaign_ids)
+    ? existing.selected_campaign_ids.map((x) => String(x || '').trim()).filter(Boolean)
+    : [];
 
   const saved = await db.upsertFacebookAdImport(req.tenantId, {
     access_token: existing.access_token,
     selected_account_ids: selectedAccountIds,
+    selected_campaign_ids: selectedCampaignIds,
     account_cache: accounts,
+    campaign_cache: campaigns,
     last_error: null,
   });
   res.json({ success: true, config: sanitizeFacebookAdImportConfig({ ...saved, access_token: existing.access_token }) });
