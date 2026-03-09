@@ -4137,6 +4137,143 @@ async function fetchFacebookCampaignsForAccounts(userAccessToken, accounts = [])
   return out;
 }
 
+const FACEBOOK_RESULT_ACTION_PRESETS = {
+  message: [
+    'onsite_conversion.messaging_conversation_started_7d',
+    'onsite_conversion.total_messaging_connection',
+    'onsite_conversion.messaging_first_reply',
+  ],
+  lead: [
+    'onsite_conversion.lead_grouped',
+    'lead',
+    'offsite_conversion.fb_pixel_lead',
+    'omni_lead',
+  ],
+  purchase: [
+    'omni_purchase',
+    'purchase',
+    'offsite_conversion.fb_pixel_purchase',
+    'onsite_web_purchase',
+  ]
+};
+
+function toNumberSafe(value, fallback = 0) {
+  const n = Number.parseFloat(String(value ?? ''));
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function pickFacebookResult(actions = [], costs = [], metric = 'message') {
+  const actionRows = Array.isArray(actions) ? actions : [];
+  const costRows = Array.isArray(costs) ? costs : [];
+  const map = new Map(actionRows.map((a) => [String(a?.action_type || ''), toNumberSafe(a?.value, 0)]));
+  const costMap = new Map(costRows.map((a) => [String(a?.action_type || ''), toNumberSafe(a?.value, 0)]));
+  const metricKey = String(metric || 'message').trim().toLowerCase();
+  const priority = FACEBOOK_RESULT_ACTION_PRESETS[metricKey] || FACEBOOK_RESULT_ACTION_PRESETS.message;
+
+  for (const key of priority) {
+    const value = map.get(key);
+    if (Number.isFinite(value) && value > 0) {
+      return {
+        resultType: key,
+        results: value,
+        costPerResult: costMap.get(key) ?? null,
+      };
+    }
+  }
+
+  for (const [key, value] of map.entries()) {
+    const pattern = metricKey === 'purchase' ? /purchas|checkout/i : (metricKey === 'lead' ? /lead|submit/i : /messag|chat|conversation/i);
+    if (pattern.test(key) && Number.isFinite(value) && value > 0) {
+      return {
+        resultType: key,
+        results: value,
+        costPerResult: costMap.get(key) ?? null,
+      };
+    }
+  }
+
+  return { resultType: null, results: 0, costPerResult: null };
+}
+
+function normalizeFacebookInsightRow(row, campaignMeta, metric = 'message') {
+  const spend = toNumberSafe(row?.spend, 0);
+  const impressions = toNumberSafe(row?.impressions, 0);
+  const clicks = toNumberSafe(row?.clicks, 0);
+  const ctr = row?.ctr != null ? toNumberSafe(row.ctr, 0) : (impressions > 0 ? (clicks / impressions) * 100 : 0);
+  const cpm = row?.cpm != null ? toNumberSafe(row.cpm, 0) : (impressions > 0 ? (spend / impressions) * 1000 : 0);
+  const picked = pickFacebookResult(row?.actions, row?.cost_per_action_type, metric);
+  const results = toNumberSafe(picked.results, 0);
+  const costPerResult = picked.costPerResult != null
+    ? toNumberSafe(picked.costPerResult, 0)
+    : (results > 0 ? spend / results : 0);
+
+  return {
+    campaign_id: String(campaignMeta?.id || row?.campaign_id || '').trim(),
+    campaign_name: String(campaignMeta?.name || row?.campaign_name || 'Campaign'),
+    account_id: String(campaignMeta?.account_id || '').trim(),
+    account_name: campaignMeta?.account_name ? String(campaignMeta.account_name) : null,
+    date_start: row?.date_start ? String(row.date_start) : null,
+    date_stop: row?.date_stop ? String(row.date_stop) : null,
+    spend,
+    impressions,
+    clicks,
+    ctr,
+    cpm,
+    results,
+    result_type: picked.resultType,
+    cost_per_result: costPerResult,
+  };
+}
+
+function aggregateFacebookInsightRows(rows = []) {
+  const safeRows = Array.isArray(rows) ? rows : [];
+  const spend = safeRows.reduce((s, r) => s + toNumberSafe(r?.spend, 0), 0);
+  const impressions = safeRows.reduce((s, r) => s + toNumberSafe(r?.impressions, 0), 0);
+  const clicks = safeRows.reduce((s, r) => s + toNumberSafe(r?.clicks, 0), 0);
+  const results = safeRows.reduce((s, r) => s + toNumberSafe(r?.results, 0), 0);
+  return {
+    spend,
+    impressions,
+    clicks,
+    ctr: impressions > 0 ? (clicks / impressions) * 100 : 0,
+    cpm: impressions > 0 ? (spend / impressions) * 1000 : 0,
+    results,
+    cost_per_result: results > 0 ? spend / results : 0,
+  };
+}
+
+async function fetchFacebookInsightsForCampaigns(userAccessToken, campaigns = [], dateRange = {}, metric = 'message') {
+  const token = String(userAccessToken || '').trim();
+  if (!token) throw new Error('Token is required');
+  const out = [];
+
+  const since = String(dateRange?.start || '').trim();
+  const until = String(dateRange?.end || '').trim();
+  const hasRange = Boolean(since && until);
+
+  for (const campaign of campaigns) {
+    const campaignId = String(campaign?.id || '').trim();
+    if (!campaignId) continue;
+
+    let nextUrl = `https://graph.facebook.com/v19.0/${encodeURIComponent(campaignId)}/insights?fields=${encodeURIComponent(
+      'campaign_id,campaign_name,spend,impressions,clicks,ctr,cpm,actions,cost_per_action_type,date_start,date_stop'
+    )}&limit=200&time_increment=1&access_token=${encodeURIComponent(token)}`;
+    if (hasRange) nextUrl += `&time_range=${encodeURIComponent(JSON.stringify({ since, until }))}`;
+    else nextUrl += '&date_preset=maximum';
+
+    for (let i = 0; i < 10 && nextUrl; i++) {
+      const data = await fetchJsonWithRetry(nextUrl, {}, { retries: 1, timeoutMs: 8000 });
+      const rows = Array.isArray(data?.data) ? data.data : [];
+      for (const row of rows) {
+        out.push(normalizeFacebookInsightRow(row, campaign, metric));
+      }
+      nextUrl = data?.paging?.next ? String(data.paging.next) : '';
+    }
+  }
+
+  return out;
+}
+
 async function subscribeMetaWebhooks({ pageId, pageAccessToken, igBusinessId }) {
   const page = String(pageId || '').trim();
   const token = String(pageAccessToken || '').trim();
@@ -4416,6 +4553,74 @@ app.post('/api/facebook-import/refresh', requireTenantAuth, requireAdmin, asyncH
     last_error: null,
   });
   res.json({ success: true, config: sanitizeFacebookAdImportConfig({ ...saved, access_token: existing.access_token }) });
+}));
+
+app.get('/api/facebook-import/insights', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  const existing = await db.getFacebookAdImport(req.tenantId).catch(() => null);
+  if (!existing?.access_token) return res.status(404).json({ error: 'Saved Facebook token not found' });
+
+  const metric = String(req.query.metric || 'message').trim().toLowerCase();
+  const selectedCampaignIds = Array.isArray(existing.selected_campaign_ids)
+    ? existing.selected_campaign_ids.map((x) => String(x || '').trim()).filter(Boolean)
+    : [];
+  const campaignCache = Array.isArray(existing.campaign_cache)
+    ? existing.campaign_cache.map(normalizeFacebookCampaign).filter((c) => c.id)
+    : [];
+  const selectedCampaigns = campaignCache.filter((c) => selectedCampaignIds.includes(c.id));
+  if (selectedCampaigns.length === 0) {
+    return res.json({
+      summary: { spend: 0, results: 0, ctr: 0, cpm: 0, cost_per_result: 0 },
+      daily: [],
+      campaigns: [],
+      selectedCampaignIds,
+      metric,
+      range: { start: req.query.start || null, end: req.query.end || null }
+    });
+  }
+
+  const dateRange = {
+    start: String(req.query.start || '').trim() || null,
+    end: String(req.query.end || '').trim() || null,
+  };
+
+  const insightRows = await fetchFacebookInsightsForCampaigns(existing.access_token, selectedCampaigns, dateRange, metric);
+
+  const dailyMap = new Map();
+  for (const row of insightRows) {
+    const key = String(row.date_start || 'unknown');
+    const arr = dailyMap.get(key) || [];
+    arr.push(row);
+    dailyMap.set(key, arr);
+  }
+  const daily = Array.from(dailyMap.entries())
+    .map(([date, rows]) => ({ date, ...aggregateFacebookInsightRows(rows) }))
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)));
+
+  const campaignMap = new Map();
+  for (const campaign of selectedCampaigns) campaignMap.set(campaign.id, []);
+  for (const row of insightRows) {
+    const arr = campaignMap.get(row.campaign_id) || [];
+    arr.push(row);
+    campaignMap.set(row.campaign_id, arr);
+  }
+  const campaigns = selectedCampaigns.map((campaign) => {
+    const rows = campaignMap.get(campaign.id) || [];
+    return {
+      ...campaign,
+      metrics: aggregateFacebookInsightRows(rows),
+      daily: rows,
+    };
+  }).sort((a, b) => b.metrics.spend - a.metrics.spend);
+
+  res.json({
+    summary: aggregateFacebookInsightRows(insightRows),
+    daily,
+    campaigns,
+    selectedCampaignIds,
+    metric,
+    range: dateRange,
+  });
 }));
 
 app.get('/api/meta/webhook/status', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
