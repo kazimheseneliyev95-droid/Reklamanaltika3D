@@ -462,6 +462,22 @@ function pickNotificationSettingsFromCrmSettings(settings) {
   };
 }
 
+async function logLeadAudit(tenantId, userId, action, leadId, details) {
+  try {
+    if (!db || typeof db.logAuditAction !== 'function') return;
+    await db.logAuditAction({
+      tenantId,
+      userId: userId || null,
+      action,
+      entityType: 'lead',
+      entityId: leadId,
+      details: details && typeof details === 'object' ? details : {}
+    });
+  } catch {
+    // ignore audit failures
+  }
+}
+
 async function getTenantNotificationSettings(tenantId) {
   const t = String(tenantId || '').trim() || 'admin';
   const cached = tenantSettingsCache.get(t);
@@ -952,6 +968,16 @@ async function upsertMetaInbound({ tenantId, source, contactKey, displayName, te
   const updatedLead = await db.updateLeadMessage(lead.phone, safeText, metaId, displayName || null, tenantId, dir).catch(() => null);
   const finalLead = updatedLead || lead;
 
+  if (dir === 'in' && closedBefore) {
+    await logLeadAudit(tenantId, null, 'CONVERSATION_REOPENED', finalLead.id, {
+      reason: 'inbound_message',
+      auto: true,
+      previous_status: statusBefore || null,
+      source,
+      whatsapp_id: metaId
+    });
+  }
+
   await db.appendMessage({
     leadId: finalLead.id,
     phone: finalLead.phone,
@@ -1003,6 +1029,15 @@ async function upsertMetaInbound({ tenantId, source, contactKey, displayName, te
       if (enabled && okClosed && targetStage && statusBefore && okFromStages && okExclude && statusBefore !== targetStage) {
         const moved = await db.updateLeadStatus(finalLead.id, targetStage, tenantId).catch(() => null);
         if (moved) {
+          await logLeadAudit(tenantId, null, 'AUTO_STAGE_RETURN', finalLead.id, {
+            from_status: statusBefore,
+            to_status: targetStage,
+            reason: 'inbound_message',
+            auto: true,
+            reopened_from_closed: closedBefore,
+            source,
+            whatsapp_id: metaId
+          });
           io.to(tenantId).emit('lead_updated', moved);
         }
       }
@@ -1896,6 +1931,17 @@ app.post('/api/internal/webhook', async (req, res) => {
         const closedBefore = (payload && payload.was_closed === true)
           ? true
           : Boolean(leadForAutomation && leadForAutomation.conversation_closed);
+
+        if (closedBefore) {
+          await logLeadAudit(tenantId, null, 'CONVERSATION_REOPENED', leadForAutomation.id, {
+            reason: 'inbound_message',
+            auto: true,
+            previous_status: statusBefore || null,
+            source: payload.source || 'whatsapp',
+            whatsapp_id: payload.whatsapp_id || null
+          });
+        }
+
         const auto = await getTenantAutomationSettings(tenantId);
         const cfg = auto && auto.reopenOnInbound ? auto.reopenOnInbound : null;
         const enabled = cfg && cfg.enabled === true;
@@ -1909,6 +1955,15 @@ app.post('/api/internal/webhook', async (req, res) => {
         if (enabled && okClosed && targetStage && okFromStages && okExclude && statusBefore !== targetStage) {
           const moved = await db.updateLeadStatus(leadForAutomation.id, targetStage, tenantId).catch(() => null);
           if (moved) {
+            await logLeadAudit(tenantId, null, 'AUTO_STAGE_RETURN', leadForAutomation.id, {
+              from_status: statusBefore,
+              to_status: targetStage,
+              reason: 'inbound_message',
+              auto: true,
+              reopened_from_closed: closedBefore,
+              source: payload.source || 'whatsapp',
+              whatsapp_id: payload.whatsapp_id || null
+            });
             io.to(tenantId).emit('lead_updated', moved);
           }
         }
@@ -2783,6 +2838,12 @@ app.post('/api/leads/:id/close', requireTenantAuth, asyncHandler(async (req, res
   );
   if (upd.rowCount === 0) return res.status(404).json({ error: 'Lead not found' });
 
+  const beforeLeadRes = await db.pool.query(
+    'SELECT status FROM leads WHERE id = $1 AND tenant_id = $2',
+    [leadId, req.tenantId]
+  ).catch(() => ({ rows: [] }));
+  const statusBeforeCloseMove = beforeLeadRes.rows?.[0]?.status ? String(beforeLeadRes.rows[0].status).trim() : '';
+
   // Optional: also move to a dedicated stage when closed (configurable in CRM settings)
   let movedToStage = '';
   try {
@@ -2792,7 +2853,17 @@ app.post('/api/leads/:id/close', requireTenantAuth, asyncHandler(async (req, res
     const targetStage = cfg && cfg.targetStage ? String(cfg.targetStage).trim() : '';
     if (enabled && targetStage) {
       const moved = await db.updateLeadStatus(leadId, targetStage, req.tenantId).catch(() => null);
-      if (moved) movedToStage = targetStage;
+      if (moved) {
+        movedToStage = targetStage;
+        if (statusBeforeCloseMove && statusBeforeCloseMove !== targetStage) {
+          await logLeadAudit(req.tenantId, req.userId, 'AUTO_STAGE_ON_CLOSE', leadId, {
+            from_status: statusBeforeCloseMove,
+            to_status: targetStage,
+            reason: 'conversation_closed',
+            auto: true
+          });
+        }
+      }
     }
   } catch {
     // ignore

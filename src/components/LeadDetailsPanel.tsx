@@ -1637,6 +1637,18 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                                                     icon = <Edit3 className="w-3.5 h-3.5 text-amber-200" />;
                                                                     title = 'Qeyd';
                                                                     lines.push(String(details.note || ''));
+                                                                } else if (action === 'AUTO_STAGE_RETURN') {
+                                                                    dot = 'bg-cyan-500';
+                                                                    icon = <Route className="w-3.5 h-3.5 text-cyan-200" />;
+                                                                    title = 'Lead avtomatik qaytarıldı';
+                                                                    lines.push(`${stageLabel(details.from_status)} -> ${stageLabel(details.to_status)}`);
+                                                                    if (details.reason === 'inbound_message') lines.push('Səbəb: müştəridən yeni mesaj gəldi');
+                                                                } else if (action === 'AUTO_STAGE_ON_CLOSE') {
+                                                                    dot = 'bg-orange-500';
+                                                                    icon = <Route className="w-3.5 h-3.5 text-orange-200" />;
+                                                                    title = 'Bağlananda mərhələ dəyişdi';
+                                                                    lines.push(`${stageLabel(details.from_status)} -> ${stageLabel(details.to_status)}`);
+                                                                    lines.push('Səbəb: söhbət bağlandı');
                                                                 } else if (action === 'FOLLOWUP_CREATED') {
                                                                     dot = 'bg-violet-500';
                                                                     icon = <Clock className="w-3.5 h-3.5 text-violet-200" />;
@@ -1668,11 +1680,14 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                                                     icon = <MessageSquare className="w-3.5 h-3.5 text-amber-200" />;
                                                                     title = 'Söhbət bağlandı';
                                                                     lines.push('Gecikmə/SLA dayandırıldı');
+                                                                    if (details.moved_to_stage) lines.push(`Hədəf mərhələ: ${stageLabel(details.moved_to_stage)}`);
                                                                 } else if (action === 'CONVERSATION_REOPENED') {
                                                                     dot = 'bg-emerald-500';
                                                                     icon = <MessageSquare className="w-3.5 h-3.5 text-emerald-200" />;
                                                                     title = 'Söhbət açıldı';
                                                                     lines.push('Gecikmə/SLA yenidən aktivdir');
+                                                                    if (details.reason === 'inbound_message') lines.push('Səbəb: müştəridən yeni mesaj gəldi');
+                                                                    if (details.previous_status) lines.push(`Əvvəlki mərhələ: ${stageLabel(details.previous_status)}`);
                                                                 }
 
                                                                 return (

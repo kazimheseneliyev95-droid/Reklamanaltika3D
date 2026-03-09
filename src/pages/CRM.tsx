@@ -298,12 +298,12 @@ export default function CRMPage() {
                 <Bell className={cn('w-3.5 h-3.5 sm:w-4 sm:h-4', unreadTotal > 0 ? 'text-amber-300' : 'text-slate-300')} />
                 <span className="hidden sm:inline">Unread</span>
                 <span className={cn(
-                  'inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-extrabold border',
+                  'inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-extrabold border tabular-nums',
                   unreadTotal > 0
                     ? 'bg-amber-500/20 text-amber-200 border-amber-500/20'
                     : 'bg-slate-900/40 text-slate-300 border-slate-600/40'
                 )}>
-                  {unreadTotal}
+                  {unreadTotal > 99 ? '99+' : unreadTotal}
                 </span>
               </button>
 
@@ -487,12 +487,30 @@ export default function CRMPage() {
           >
             {col.icon}
             <span className="truncate w-full text-center px-0.5">{col.title}</span>
-            <span className={cn(
-              "text-[8px] px-1.5 py-0.5 rounded-full mt-0.5",
-              activeMobileTab === col.id ? "bg-white/20 text-white" : "bg-slate-800 text-slate-400"
-            )}>
-              {filteredLeads.filter(l => l.status === col.id).length}
-            </span>
+            {(() => {
+              const inCol = filteredLeads.filter(l => l.status === col.id);
+              const cnt = inCol.length;
+              const unread = inCol.reduce((s, l) => {
+                const u = Number((l as any).unread_count || 0);
+                return s + (Number.isFinite(u) && u > 0 ? u : 0);
+              }, 0);
+
+              return (
+                <div className="mt-0.5 flex items-center gap-1">
+                  <span className={cn(
+                    "text-[8px] px-1.5 py-0.5 rounded-full",
+                    activeMobileTab === col.id ? "bg-white/20 text-white" : "bg-slate-800 text-slate-400"
+                  )}>
+                    {cnt}
+                  </span>
+                  {unread > 0 ? (
+                    <span className="text-[7px] px-1 py-0.5 rounded-full bg-amber-500/10 text-amber-200/90 border border-amber-500/15 tabular-nums" title="Unread">
+                      {unread > 99 ? '99+' : unread}
+                    </span>
+                  ) : null}
+                </div>
+              );
+            })()}
           </button>
         ))}
       </div>
@@ -508,6 +526,10 @@ export default function CRMPage() {
             (() => {
               const leadsInCol = filteredLeads.filter(l => l.status === col.id);
               const colCount = leadsInCol.length;
+              const colUnread = leadsInCol.reduce((s, l) => {
+                const u = Number((l as any).unread_count || 0);
+                return s + (Number.isFinite(u) && u > 0 ? u : 0);
+              }, 0);
               const colValue = canViewBudget
                 ? leadsInCol.reduce((s, l) => s + toNumberSafe((l as any).value, 0), 0)
                 : 0;
@@ -537,9 +559,21 @@ export default function CRMPage() {
                     </div>
                   </div>
 
-                  <Badge variant="secondary" className="bg-slate-950/50 text-slate-200 border border-slate-800 font-extrabold tabular-nums shrink-0">
-                    {colCount}
-                  </Badge>
+                  <div className="shrink-0 flex items-center gap-1.5">
+                    {colUnread > 0 ? (
+                      <span
+                        className="inline-flex items-center gap-1 rounded-full border border-amber-500/15 bg-amber-950/10 px-1.5 py-0.5 text-[9px] font-bold text-amber-200/90 tabular-nums"
+                        title="Unread messages in this column"
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                        {colUnread > 999 ? '999+' : colUnread}
+                      </span>
+                    ) : null}
+
+                    <Badge variant="secondary" className="bg-slate-950/50 text-slate-200 border border-slate-800 font-extrabold tabular-nums">
+                      {colCount}
+                    </Badge>
+                  </div>
                 </div>
               </div>
 
