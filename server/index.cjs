@@ -4719,6 +4719,32 @@ function getDashboardWonStageId(settings) {
   return byLabel ? String(byLabel.id) : 'won';
 }
 
+function findDashboardStage(settings, matcher) {
+  const stages = Array.isArray(settings?.pipelineStages) ? settings.pipelineStages : [];
+  return stages.find((stage) => matcher(normalizeDashboardText(stage?.id || ''), normalizeDashboardText(stage?.label || ''))) || null;
+}
+
+function getDashboardSummaryStageIds(settings) {
+  const potential = findDashboardStage(settings, (id, label) => (
+    id === 'potential' || label.includes('potential') || label.includes('kvalifikasiya') || label.includes('potensial')
+  ));
+  const unanswered = findDashboardStage(settings, (id, label) => (
+    id.includes('cavabsiz') || label.includes('cavabsiz') || label.includes('unanswered') || label.includes('no answer')
+  ));
+  const lost = findDashboardStage(settings, (id, label) => (
+    id === 'lost' || label.includes('ugursuz') || label.includes('uğursuz') || label.includes('satıs olmadi') || label.includes('satış olmadı') || label.includes('unsuccessful')
+  ));
+  const won = findDashboardStage(settings, (id, label) => (
+    id === 'won' || label === 'satis' || label === 'satış' || label === 'sale'
+  ));
+  return {
+    potential: potential ? String(potential.id) : null,
+    unanswered: unanswered ? String(unanswered.id) : null,
+    lost: lost ? String(lost.id) : null,
+    won: won ? String(won.id) : getDashboardWonStageId(settings),
+  };
+}
+
 function normalizeDashboardMappings(settings) {
   const dashboard = settings && typeof settings === 'object' ? settings.dashboard || {} : {};
   const fieldId = String(dashboard?.fieldId || '').trim();
@@ -5126,12 +5152,17 @@ app.get('/api/dashboard/combined', requireTenantAuth, requirePermission('view_st
   const settings = await db.getCRMSettings(req.tenantId).catch(() => null);
   const { field, mappings } = normalizeDashboardMappings(settings || {});
   const stageLegend = Array.isArray(settings?.pipelineStages) ? settings.pipelineStages : [];
-  const wonStageId = getDashboardWonStageId(settings || {});
+  const stageIds = getDashboardSummaryStageIds(settings || {});
+  const wonStageId = stageIds.won;
   const metric = String(req.query.metric || 'message').trim().toLowerCase();
   const facebookConfig = await db.getFacebookAdImport(req.tenantId).catch(() => null);
   const campaignCache = Array.isArray(facebookConfig?.campaign_cache)
     ? facebookConfig.campaign_cache.map(normalizeFacebookCampaign).filter((c) => c.id)
     : [];
+  const importedCampaignIds = Array.isArray(facebookConfig?.selected_campaign_ids)
+    ? facebookConfig.selected_campaign_ids.map((id) => String(id || '').trim()).filter(Boolean)
+    : [];
+  const importedCampaigns = campaignCache.filter((campaign) => importedCampaignIds.includes(campaign.id));
 
   const dateRange = {
     start: String(req.query.start || '').trim() || null,
@@ -5142,10 +5173,13 @@ app.get('/api/dashboard/combined', requireTenantAuth, requirePermission('view_st
   const allCampaignIds = Array.from(new Set(mappings.flatMap((row) => row.campaignIds)));
   const selectedCampaigns = campaignCache.filter((campaign) => allCampaignIds.includes(campaign.id));
 
-  let insightRows = [];
-  if (selectedCampaigns.length > 0 && facebookConfig?.access_token) {
+  let mappedInsightRows = [];
+  let importedInsightRows = [];
+  if (importedCampaigns.length > 0 && facebookConfig?.access_token) {
     try {
-      insightRows = await fetchFacebookInsightsForCampaigns(facebookConfig.access_token, selectedCampaigns, dateRange, metric);
+      importedInsightRows = await fetchFacebookInsightsForCampaigns(facebookConfig.access_token, importedCampaigns, dateRange, metric);
+      const selectedIdSet = new Set(selectedCampaigns.map((campaign) => campaign.id));
+      mappedInsightRows = importedInsightRows.filter((row) => selectedIdSet.has(String(row.campaign_id)));
     } catch (error) {
       warnings.push(`Facebook insight alınmadı: ${String(error?.message || 'unknown_error')}`);
     }
@@ -5154,7 +5188,7 @@ app.get('/api/dashboard/combined', requireTenantAuth, requirePermission('view_st
   }
 
   const insightsByCampaignId = new Map();
-  for (const row of insightRows) {
+  for (const row of mappedInsightRows) {
     insightsByCampaignId.set(String(row.campaign_id), row);
   }
 
@@ -5228,6 +5262,54 @@ app.get('/api/dashboard/combined', requireTenantAuth, requirePermission('view_st
     }
   }
 
+  const overallValues = [req.tenantId];
+  let overallWhere = 'tenant_id = $1';
+  let overallParamCount = 2;
+  if (!canViewAllLeads(req)) {
+    overallWhere += ` AND assignee_id = $${overallParamCount}`;
+    overallValues.push(req.userId);
+    overallParamCount++;
+  }
+  if (dateRange.start) {
+    overallWhere += ` AND created_at >= $${overallParamCount}`;
+    overallValues.push(new Date(`${dateRange.start}T00:00:00.000Z`));
+    overallParamCount++;
+  }
+  if (dateRange.end) {
+    overallWhere += ` AND created_at < $${overallParamCount}`;
+    overallValues.push(new Date(`${dateRange.end}T23:59:59.999Z`));
+    overallParamCount++;
+  }
+
+  const overallRes = await db.pool.query(
+    `SELECT
+       status,
+       COUNT(*)::int AS lead_count,
+       COALESCE(SUM(COALESCE(value, 0)), 0)::float AS value_sum
+     FROM leads
+     WHERE ${overallWhere}
+     GROUP BY 1`,
+    overallValues
+  );
+
+  const overallStages = makeEmptyStages();
+  const overallCrm = { leads: 0, won_count: 0, pipeline_value: 0, won_revenue: 0, stages: overallStages };
+  for (const row of overallRes.rows || []) {
+    const leadCount = Number(row.lead_count || 0);
+    const valueSum = Number(row.value_sum || 0);
+    overallCrm.leads += leadCount;
+    overallCrm.pipeline_value += valueSum;
+    if (String(row.status || '') === wonStageId) {
+      overallCrm.won_count += leadCount;
+      overallCrm.won_revenue += valueSum;
+    }
+    const stage = overallStages.find((item) => String(item.id) === String(row.status || ''));
+    if (stage) {
+      stage.count += leadCount;
+      stage.revenue += valueSum;
+    }
+  }
+
   const groups = mappings.map((mapping) => {
     const campaigns = selectedCampaigns.filter((campaign) => mapping.campaignIds.includes(campaign.id));
     const facebookRows = campaigns.map((campaign) => insightsByCampaignId.get(campaign.id)).filter(Boolean);
@@ -5259,21 +5341,63 @@ app.get('/api/dashboard/combined', requireTenantAuth, requirePermission('view_st
   });
 
   const totals = {
-    facebook: aggregateFacebookInsightRows(selectedCampaigns.map((campaign) => insightsByCampaignId.get(campaign.id)).filter(Boolean)),
-    crm: groups.reduce((acc, group) => {
-      acc.leads += Number(group.crm.leads || 0);
-      acc.won_count += Number(group.crm.won_count || 0);
-      acc.pipeline_value += Number(group.crm.pipeline_value || 0);
-      acc.won_revenue += Number(group.crm.won_revenue || 0);
-      return acc;
-    }, { leads: 0, won_count: 0, pipeline_value: 0, won_revenue: 0 })
+    facebook: aggregateFacebookInsightRows(importedInsightRows),
+    crm: overallCrm,
   };
+
+  const totalSpend = Number(totals.facebook.spend || 0);
+  const totalLeadCount = Number(totals.crm.leads || 0);
+  const stageById = new Map((overallStages || []).map((stage) => [String(stage.id), stage]));
+  const summaryCards = [
+    {
+      key: 'total_leads',
+      label: 'Total Muraciat',
+      count: totalLeadCount,
+      pct_of_total: totalLeadCount > 0 ? 100 : 0,
+      cost_per: totalLeadCount > 0 ? totalSpend / totalLeadCount : 0,
+      color: '#3b82f6',
+    },
+    stageIds.potential ? {
+      key: 'potential',
+      label: stageById.get(String(stageIds.potential))?.label || 'Potensial Musteriler',
+      count: Number(stageById.get(String(stageIds.potential))?.count || 0),
+      pct_of_total: totalLeadCount > 0 ? (Number(stageById.get(String(stageIds.potential))?.count || 0) / totalLeadCount) * 100 : 0,
+      cost_per: Number(stageById.get(String(stageIds.potential))?.count || 0) > 0 ? totalSpend / Number(stageById.get(String(stageIds.potential))?.count || 0) : 0,
+      color: '#a855f7',
+    } : null,
+    stageIds.won ? {
+      key: 'won',
+      label: stageById.get(String(stageIds.won))?.label || 'Satis',
+      count: Number(stageById.get(String(stageIds.won))?.count || 0),
+      pct_of_total: totalLeadCount > 0 ? (Number(stageById.get(String(stageIds.won))?.count || 0) / totalLeadCount) * 100 : 0,
+      cost_per: Number(stageById.get(String(stageIds.won))?.count || 0) > 0 ? totalSpend / Number(stageById.get(String(stageIds.won))?.count || 0) : 0,
+      color: '#22c55e',
+    } : null,
+    stageIds.unanswered ? {
+      key: 'unanswered',
+      label: stageById.get(String(stageIds.unanswered))?.label || 'Cevabsizlar',
+      count: Number(stageById.get(String(stageIds.unanswered))?.count || 0),
+      pct_of_total: totalLeadCount > 0 ? (Number(stageById.get(String(stageIds.unanswered))?.count || 0) / totalLeadCount) * 100 : 0,
+      cost_per: Number(stageById.get(String(stageIds.unanswered))?.count || 0) > 0 ? totalSpend / Number(stageById.get(String(stageIds.unanswered))?.count || 0) : 0,
+      color: '#f97316',
+    } : null,
+    stageIds.lost ? {
+      key: 'lost',
+      label: stageById.get(String(stageIds.lost))?.label || 'Ugursuzlar',
+      count: Number(stageById.get(String(stageIds.lost))?.count || 0),
+      pct_of_total: totalLeadCount > 0 ? (Number(stageById.get(String(stageIds.lost))?.count || 0) / totalLeadCount) * 100 : 0,
+      cost_per: Number(stageById.get(String(stageIds.lost))?.count || 0) > 0 ? totalSpend / Number(stageById.get(String(stageIds.lost))?.count || 0) : 0,
+      color: '#94a3b8',
+    } : null,
+  ].filter(Boolean);
 
   res.json({
     metric,
     range: dateRange,
     field: field ? { id: field.id, label: field.label, options: field.options || [] } : null,
     stageLegend,
+    importedCampaigns: importedCampaigns.map((campaign) => ({ id: campaign.id, name: campaign.name, account_name: campaign.account_name || null })),
+    summaryCards,
     groups,
     totals: {
       ...totals,
