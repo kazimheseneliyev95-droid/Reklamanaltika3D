@@ -1052,11 +1052,11 @@ async function upsertMetaInbound({ tenantId, source, contactKey, displayName, te
       const okClosed = onlyWhenClosed ? closedBefore : true;
       const okFromStages = fromStages.length > 0 ? fromStages.includes(statusBefore) : true;
       const okExclude = excludeStages.includes(statusBefore) ? false : true;
-        if (enabled && okClosed && targetStage && statusBefore && okFromStages && okExclude && statusBefore !== targetStage) {
-          const moved = await db.updateLeadStatus(finalLead.id, targetStage, tenantId).catch(() => null);
-          if (moved) {
-            Object.assign(finalLead, moved);
-            await logLeadAudit(tenantId, null, 'AUTO_STAGE_RETURN', finalLead.id, {
+      if (enabled && okClosed && targetStage && statusBefore && okFromStages && okExclude && statusBefore !== targetStage) {
+        const moved = await db.updateLeadStatus(finalLead.id, targetStage, tenantId).catch(() => null);
+        if (moved) {
+          Object.assign(finalLead, moved);
+          await logLeadAudit(tenantId, null, 'AUTO_STAGE_RETURN', finalLead.id, {
             from_status: statusBefore,
             to_status: targetStage,
             reason: 'inbound_message',
@@ -1737,37 +1737,37 @@ process.on('unhandledRejection', (reason, promise) => {
 async function gracefulShutdown(signal) {
   console.log(`\n🛑 Received ${signal}, starting graceful shutdown...`);
 
+  try {
     try {
-      try {
-        if (metaQueueTimer) {
-          clearInterval(metaQueueTimer);
-          metaQueueTimer = null;
-        }
-      } catch {
-        // ignore
+      if (metaQueueTimer) {
+        clearInterval(metaQueueTimer);
+        metaQueueTimer = null;
       }
+    } catch {
+      // ignore
+    }
 
-      try {
-        if (metaOutboxTimer) {
-          clearInterval(metaOutboxTimer);
-          metaOutboxTimer = null;
-        }
-      } catch {
-        // ignore
+    try {
+      if (metaOutboxTimer) {
+        clearInterval(metaOutboxTimer);
+        metaOutboxTimer = null;
       }
+    } catch {
+      // ignore
+    }
 
-      try {
-        if (facebookAutoSyncTimer) {
-          clearInterval(facebookAutoSyncTimer);
-          facebookAutoSyncTimer = null;
-        }
-      } catch {
-        // ignore
+    try {
+      if (facebookAutoSyncTimer) {
+        clearInterval(facebookAutoSyncTimer);
+        facebookAutoSyncTimer = null;
       }
+    } catch {
+      // ignore
+    }
 
-      server.close(() => {
-        console.log('✅ HTTP server closed');
-      });
+    server.close(() => {
+      console.log('✅ HTTP server closed');
+    });
 
     if (db.closePool) {
       await db.closePool();
@@ -3071,13 +3071,13 @@ app.get('/api/leads/:id/story', requireTenantAuth, asyncHandler(async (req, res)
 
   const msgsRes = includeMessages
     ? await db.pool.query(
-        `SELECT id, body, direction, metadata, status, created_at
+      `SELECT id, body, direction, metadata, status, created_at
          FROM messages
          WHERE tenant_id = $1 AND (lead_id = $2 OR phone = $3)
          ORDER BY created_at DESC
          LIMIT $4`,
-        [req.tenantId, leadId, lead.phone, limit]
-      )
+      [req.tenantId, leadId, lead.phone, limit]
+    )
     : { rows: [] };
 
   const auditsRes = await db.pool.query(
@@ -5064,8 +5064,16 @@ async function fetchFacebookInsightsForCampaigns(userAccessToken, campaigns = []
   const out = [];
 
   const since = String(dateRange?.start || '').trim();
-  const until = String(dateRange?.end || '').trim();
-  const hasRange = Boolean(since && until);
+  const untilRaw = String(dateRange?.end || '').trim();
+  // Facebook Insights API treats `until` as EXCLUSIVE (i.e. data up to but NOT including `until`).
+  // To include today's data we must send until = today + 1 day.
+  let until = untilRaw;
+  if (untilRaw && /^\d{4}-\d{2}-\d{2}$/.test(untilRaw)) {
+    const d = new Date(untilRaw + 'T00:00:00Z');
+    d.setUTCDate(d.getUTCDate() + 1);
+    until = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+  }
+  const hasRange = Boolean(since && untilRaw);
 
   for (const campaign of campaigns) {
     const campaignId = String(campaign?.id || '').trim();

@@ -297,10 +297,10 @@ export default function FacebookImportPage() {
     setSaved(cfg);
     setAccounts(cfg.accountCache || []);
     setCampaigns(cfg.campaignCache || []);
-      setSelectedAccountIds(cfg.selectedAccountIds || []);
-      setSelectedCampaignIds(cfg.selectedCampaignIds || []);
-      setAutoSync({ ...EMPTY_CONFIG.autoSync, ...(cfg.autoSync || {}), tzOffsetMinutes });
-      return cfg;
+    setSelectedAccountIds(cfg.selectedAccountIds || []);
+    setSelectedCampaignIds(cfg.selectedCampaignIds || []);
+    setAutoSync({ ...EMPTY_CONFIG.autoSync, ...(cfg.autoSync || {}), tzOffsetMinutes });
+    return cfg;
   }, [token, tzOffsetMinutes]);
 
   const loadInsights = async (range = dateRange, metricType = metric) => {
@@ -493,8 +493,10 @@ export default function FacebookImportPage() {
     const next = buildPresetRange(preset);
     setActivePreset(preset);
     setDateRange(next);
-    // only set the range; fetch happens on manual update
+    // Auto-fetch data when a preset is selected (don't require extra "Cache-ni goster" click)
+    await loadInsights(next, metric);
   };
+
 
   const handleMetricChange = (nextMetric: MetricType) => {
     setMetric(nextMetric);
