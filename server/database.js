@@ -184,10 +184,41 @@ async function initDb() {
           selected_campaign_ids JSONB DEFAULT '[]'::jsonb,
           account_cache JSONB DEFAULT '[]'::jsonb,
           campaign_cache JSONB DEFAULT '[]'::jsonb,
+          auto_sync_enabled BOOLEAN DEFAULT false,
+          auto_sync_start_date DATE,
+          auto_sync_end_date DATE,
+          auto_sync_every_hours INTEGER DEFAULT 1,
+          auto_sync_minute INTEGER DEFAULT 0,
+          auto_sync_next_at TIMESTAMP,
+          last_insight_sync_at TIMESTAMP,
+          last_insight_sync_error TEXT,
+          sync_locked_at TIMESTAMP,
+          sync_lock_owner TEXT,
           last_sync_at TIMESTAMP,
           last_error TEXT,
           created_at TIMESTAMP DEFAULT NOW(),
           updated_at TIMESTAMP DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS facebook_ad_insight_cache (
+          tenant_id VARCHAR(50) NOT NULL,
+          campaign_id VARCHAR(64) NOT NULL,
+          metric VARCHAR(20) NOT NULL,
+          date_start DATE NOT NULL,
+          date_stop DATE,
+          campaign_name TEXT,
+          account_id VARCHAR(64),
+          account_name TEXT,
+          spend NUMERIC DEFAULT 0,
+          impressions NUMERIC DEFAULT 0,
+          clicks NUMERIC DEFAULT 0,
+          ctr NUMERIC DEFAULT 0,
+          cpm NUMERIC DEFAULT 0,
+          results NUMERIC DEFAULT 0,
+          result_type TEXT,
+          cost_per_result NUMERIC DEFAULT 0,
+          updated_at TIMESTAMP DEFAULT NOW(),
+          PRIMARY KEY (tenant_id, campaign_id, metric, date_start)
         );
 
         CREATE TABLE IF NOT EXISTS telegram_integrations (
@@ -368,10 +399,41 @@ async function initDb() {
                   selected_campaign_ids JSONB DEFAULT '[]'::jsonb,
                   account_cache JSONB DEFAULT '[]'::jsonb,
                   campaign_cache JSONB DEFAULT '[]'::jsonb,
+                  auto_sync_enabled BOOLEAN DEFAULT false,
+                  auto_sync_start_date DATE,
+                  auto_sync_end_date DATE,
+                  auto_sync_every_hours INTEGER DEFAULT 1,
+                  auto_sync_minute INTEGER DEFAULT 0,
+                  auto_sync_next_at TIMESTAMP,
+                  last_insight_sync_at TIMESTAMP,
+                  last_insight_sync_error TEXT,
+                  sync_locked_at TIMESTAMP,
+                  sync_lock_owner TEXT,
                   last_sync_at TIMESTAMP,
                   last_error TEXT,
                   created_at TIMESTAMP DEFAULT NOW(),
                   updated_at TIMESTAMP DEFAULT NOW()
+                );
+
+                CREATE TABLE IF NOT EXISTS facebook_ad_insight_cache (
+                  tenant_id VARCHAR(50) NOT NULL,
+                  campaign_id VARCHAR(64) NOT NULL,
+                  metric VARCHAR(20) NOT NULL,
+                  date_start DATE NOT NULL,
+                  date_stop DATE,
+                  campaign_name TEXT,
+                  account_id VARCHAR(64),
+                  account_name TEXT,
+                  spend NUMERIC DEFAULT 0,
+                  impressions NUMERIC DEFAULT 0,
+                  clicks NUMERIC DEFAULT 0,
+                  ctr NUMERIC DEFAULT 0,
+                  cpm NUMERIC DEFAULT 0,
+                  results NUMERIC DEFAULT 0,
+                  result_type TEXT,
+                  cost_per_result NUMERIC DEFAULT 0,
+                  updated_at TIMESTAMP DEFAULT NOW(),
+                  PRIMARY KEY (tenant_id, campaign_id, metric, date_start)
                 );
                  -- Follow-ups / tasks (per-tenant)
                  CREATE TABLE IF NOT EXISTS follow_ups (
@@ -427,10 +489,42 @@ async function initDb() {
             await client.query("ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS selected_campaign_ids JSONB DEFAULT '[]'::jsonb;");
             await client.query("ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS account_cache JSONB DEFAULT '[]'::jsonb;");
             await client.query("ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS campaign_cache JSONB DEFAULT '[]'::jsonb;");
+            await client.query("ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS auto_sync_enabled BOOLEAN DEFAULT false;");
+            await client.query('ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS auto_sync_start_date DATE;');
+            await client.query('ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS auto_sync_end_date DATE;');
+            await client.query('ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS auto_sync_every_hours INTEGER DEFAULT 1;');
+            await client.query('ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS auto_sync_minute INTEGER DEFAULT 0;');
+            await client.query('ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS auto_sync_next_at TIMESTAMP;');
+            await client.query('ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS last_insight_sync_at TIMESTAMP;');
+            await client.query('ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS last_insight_sync_error TEXT;');
+            await client.query('ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS sync_locked_at TIMESTAMP;');
+            await client.query('ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS sync_lock_owner TEXT;');
             await client.query('ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS last_sync_at TIMESTAMP;');
             await client.query('ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS last_error TEXT;');
             await client.query('ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();');
             await client.query('ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();');
+            await client.query(`
+              CREATE TABLE IF NOT EXISTS facebook_ad_insight_cache (
+                tenant_id VARCHAR(50) NOT NULL,
+                campaign_id VARCHAR(64) NOT NULL,
+                metric VARCHAR(20) NOT NULL,
+                date_start DATE NOT NULL,
+                date_stop DATE,
+                campaign_name TEXT,
+                account_id VARCHAR(64),
+                account_name TEXT,
+                spend NUMERIC DEFAULT 0,
+                impressions NUMERIC DEFAULT 0,
+                clicks NUMERIC DEFAULT 0,
+                ctr NUMERIC DEFAULT 0,
+                cpm NUMERIC DEFAULT 0,
+                results NUMERIC DEFAULT 0,
+                result_type TEXT,
+                cost_per_result NUMERIC DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT NOW(),
+                PRIMARY KEY (tenant_id, campaign_id, metric, date_start)
+              );
+            `);
         } catch (e) {
             console.warn('⚠️ Migration warning (facebook_ad_imports):', e.message);
         }
@@ -622,6 +716,8 @@ async function initDb() {
             CREATE INDEX IF NOT EXISTS idx_messages_polling ON messages(direction, status);
             CREATE INDEX IF NOT EXISTS idx_messages_next_attempt_at ON messages(next_attempt_at);
             CREATE INDEX IF NOT EXISTS idx_messages_claimed_at ON messages(claimed_at);
+            CREATE INDEX IF NOT EXISTS idx_fb_ad_imports_auto_sync_due ON facebook_ad_imports (auto_sync_enabled, auto_sync_next_at);
+            CREATE INDEX IF NOT EXISTS idx_fb_ad_insight_cache_lookup ON facebook_ad_insight_cache (tenant_id, metric, date_start, campaign_id);
             CREATE INDEX IF NOT EXISTS idx_meta_pages_tenant ON meta_pages(tenant_id);
             CREATE INDEX IF NOT EXISTS idx_meta_webhook_received_at ON meta_webhook_events(received_at DESC);
             CREATE INDEX IF NOT EXISTS idx_meta_webhook_processed_at ON meta_webhook_events(processed_at);
@@ -1549,7 +1645,7 @@ async function upsertMetaUserToken(tenantId, { user_access_token, expires_at, de
     return res.rows[0] || null;
 }
 
-async function upsertFacebookAdImport(tenantId, { access_token, selected_account_ids, selected_campaign_ids, account_cache, campaign_cache, last_error }) {
+async function upsertFacebookAdImport(tenantId, { access_token, selected_account_ids, selected_campaign_ids, account_cache, campaign_cache, last_error, auto_sync_enabled, auto_sync_start_date, auto_sync_end_date, auto_sync_every_hours, auto_sync_minute, auto_sync_next_at, last_insight_sync_at, last_insight_sync_error }) {
     if (!tenantId) throw new Error('tenantId is required');
     const safeSelected = Array.isArray(selected_account_ids) ? selected_account_ids.map((x) => String(x || '').trim()).filter(Boolean) : [];
     const safeCampaigns = Array.isArray(selected_campaign_ids) ? selected_campaign_ids.map((x) => String(x || '').trim()).filter(Boolean) : [];
@@ -1557,24 +1653,38 @@ async function upsertFacebookAdImport(tenantId, { access_token, selected_account
     const safeCampaignCache = Array.isArray(campaign_cache) ? campaign_cache : [];
     const token = access_token ? String(access_token).trim() : null;
     const tokenHint = token ? `${token.slice(0, 6)}...${token.slice(-4)}` : null;
+    const everyHours = Math.max(1, parseInt(String(auto_sync_every_hours || '1'), 10) || 1);
+    const minute = Math.min(59, Math.max(0, parseInt(String(auto_sync_minute || '0'), 10) || 0));
 
     const res = await pool.query(
         `INSERT INTO facebook_ad_imports (
-           tenant_id, access_token, token_hint, selected_account_ids, selected_campaign_ids, account_cache, campaign_cache, last_sync_at, last_error, updated_at
+           tenant_id, access_token, token_hint, selected_account_ids, selected_campaign_ids, account_cache, campaign_cache,
+           auto_sync_enabled, auto_sync_start_date, auto_sync_end_date, auto_sync_every_hours, auto_sync_minute, auto_sync_next_at,
+           last_insight_sync_at, last_insight_sync_error, last_sync_at, last_error, updated_at
          )
-         VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7::jsonb, NOW(), $8, NOW())
+         VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7::jsonb, $8, $9, $10, $11, $12, $13, $14, $15, NOW(), $16, NOW())
          ON CONFLICT (tenant_id)
          DO UPDATE SET
-           access_token = COALESCE(EXCLUDED.access_token, facebook_ad_imports.access_token),
-           token_hint = COALESCE(EXCLUDED.token_hint, facebook_ad_imports.token_hint),
-           selected_account_ids = EXCLUDED.selected_account_ids,
-           selected_campaign_ids = EXCLUDED.selected_campaign_ids,
-           account_cache = EXCLUDED.account_cache,
-           campaign_cache = EXCLUDED.campaign_cache,
-           last_sync_at = NOW(),
-           last_error = EXCLUDED.last_error,
-           updated_at = NOW()
-         RETURNING tenant_id, token_hint, selected_account_ids, selected_campaign_ids, account_cache, campaign_cache, last_sync_at, last_error, updated_at`,
+            access_token = COALESCE(EXCLUDED.access_token, facebook_ad_imports.access_token),
+            token_hint = COALESCE(EXCLUDED.token_hint, facebook_ad_imports.token_hint),
+            selected_account_ids = EXCLUDED.selected_account_ids,
+            selected_campaign_ids = EXCLUDED.selected_campaign_ids,
+            account_cache = EXCLUDED.account_cache,
+            campaign_cache = EXCLUDED.campaign_cache,
+            auto_sync_enabled = EXCLUDED.auto_sync_enabled,
+            auto_sync_start_date = EXCLUDED.auto_sync_start_date,
+            auto_sync_end_date = EXCLUDED.auto_sync_end_date,
+            auto_sync_every_hours = EXCLUDED.auto_sync_every_hours,
+            auto_sync_minute = EXCLUDED.auto_sync_minute,
+            auto_sync_next_at = EXCLUDED.auto_sync_next_at,
+            last_insight_sync_at = COALESCE(EXCLUDED.last_insight_sync_at, facebook_ad_imports.last_insight_sync_at),
+            last_insight_sync_error = EXCLUDED.last_insight_sync_error,
+            last_sync_at = NOW(),
+            last_error = EXCLUDED.last_error,
+            updated_at = NOW()
+         RETURNING tenant_id, token_hint, selected_account_ids, selected_campaign_ids, account_cache, campaign_cache,
+                   auto_sync_enabled, auto_sync_start_date, auto_sync_end_date, auto_sync_every_hours, auto_sync_minute, auto_sync_next_at,
+                   last_insight_sync_at, last_insight_sync_error, last_sync_at, last_error, updated_at`,
         [
             String(tenantId),
             token,
@@ -1583,6 +1693,14 @@ async function upsertFacebookAdImport(tenantId, { access_token, selected_account
             JSON.stringify(safeCampaigns),
             JSON.stringify(safeCache),
             JSON.stringify(safeCampaignCache),
+            auto_sync_enabled === true,
+            auto_sync_start_date || null,
+            auto_sync_end_date || null,
+            everyHours,
+            minute,
+            auto_sync_next_at ? new Date(auto_sync_next_at) : null,
+            last_insight_sync_at ? new Date(last_insight_sync_at) : null,
+            last_insight_sync_error ? String(last_insight_sync_error) : null,
             last_error ? String(last_error) : null,
         ]
     );
@@ -1592,11 +1710,162 @@ async function upsertFacebookAdImport(tenantId, { access_token, selected_account
 async function getFacebookAdImport(tenantId) {
     if (!tenantId) throw new Error('tenantId is required');
     const res = await pool.query(
-        `SELECT tenant_id, access_token, token_hint, selected_account_ids, selected_campaign_ids, account_cache, campaign_cache, last_sync_at, last_error, updated_at
+        `SELECT tenant_id, access_token, token_hint, selected_account_ids, selected_campaign_ids, account_cache, campaign_cache,
+                auto_sync_enabled, auto_sync_start_date, auto_sync_end_date, auto_sync_every_hours, auto_sync_minute, auto_sync_next_at,
+                last_insight_sync_at, last_insight_sync_error, last_sync_at, last_error, updated_at
          FROM facebook_ad_imports
          WHERE tenant_id = $1
          LIMIT 1`,
         [String(tenantId)]
+    );
+    return res.rows[0] || null;
+}
+
+async function upsertFacebookInsightRows(tenantId, metric, rows = []) {
+    if (!tenantId) throw new Error('tenantId is required');
+    const safeMetric = String(metric || '').trim().toLowerCase();
+    if (!safeMetric) throw new Error('metric is required');
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const validRows = Array.isArray(rows) ? rows.filter((row) => row && row.campaign_id && row.date_start) : [];
+        if (validRows.length > 0) {
+            const keepCampaignIds = Array.from(new Set(validRows.map((row) => String(row.campaign_id))));
+            const keepDates = Array.from(new Set(validRows.map((row) => String(row.date_start))));
+            await client.query(
+                `DELETE FROM facebook_ad_insight_cache
+                 WHERE tenant_id = $1
+                   AND metric = $2
+                   AND campaign_id = ANY($3::text[])
+                   AND date_start = ANY($4::date[])`,
+                [String(tenantId), safeMetric, keepCampaignIds, keepDates]
+            );
+        }
+        for (const row of validRows) {
+            await client.query(
+                `INSERT INTO facebook_ad_insight_cache (
+                    tenant_id, campaign_id, metric, date_start, date_stop, campaign_name, account_id, account_name,
+                    spend, impressions, clicks, ctr, cpm, results, result_type, cost_per_result, updated_at
+                 ) VALUES (
+                    $1, $2, $3, $4::date, $5::date, $6, $7, $8,
+                    $9, $10, $11, $12, $13, $14, $15, $16, NOW()
+                 )
+                 ON CONFLICT (tenant_id, campaign_id, metric, date_start)
+                 DO UPDATE SET
+                    date_stop = EXCLUDED.date_stop,
+                    campaign_name = EXCLUDED.campaign_name,
+                    account_id = EXCLUDED.account_id,
+                    account_name = EXCLUDED.account_name,
+                    spend = EXCLUDED.spend,
+                    impressions = EXCLUDED.impressions,
+                    clicks = EXCLUDED.clicks,
+                    ctr = EXCLUDED.ctr,
+                    cpm = EXCLUDED.cpm,
+                    results = EXCLUDED.results,
+                    result_type = EXCLUDED.result_type,
+                    cost_per_result = EXCLUDED.cost_per_result,
+                    updated_at = NOW()`,
+                [
+                    String(tenantId),
+                    String(row.campaign_id),
+                    safeMetric,
+                    String(row.date_start),
+                    row.date_stop ? String(row.date_stop) : null,
+                    row.campaign_name ? String(row.campaign_name) : 'Campaign',
+                    row.account_id ? String(row.account_id) : null,
+                    row.account_name ? String(row.account_name) : null,
+                    Number(row.spend || 0),
+                    Number(row.impressions || 0),
+                    Number(row.clicks || 0),
+                    Number(row.ctr || 0),
+                    Number(row.cpm || 0),
+                    Number(row.results || 0),
+                    row.result_type ? String(row.result_type) : null,
+                    Number(row.cost_per_result || 0),
+                ]
+            );
+        }
+        await client.query('COMMIT');
+        return validRows.length;
+    } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+    } finally {
+        client.release();
+    }
+}
+
+async function getFacebookInsightRows(tenantId, metric, campaignIds = [], dateRange = {}) {
+    if (!tenantId) throw new Error('tenantId is required');
+    const values = [String(tenantId), String(metric || '').trim().toLowerCase() || 'message'];
+    let query = `SELECT * FROM facebook_ad_insight_cache WHERE tenant_id = $1 AND metric = $2`;
+    let paramCount = 3;
+    if (Array.isArray(campaignIds) && campaignIds.length > 0) {
+        query += ` AND campaign_id = ANY($${paramCount}::text[])`;
+        values.push(campaignIds.map((id) => String(id || '').trim()).filter(Boolean));
+        paramCount++;
+    }
+    if (dateRange && dateRange.start) {
+        query += ` AND date_start >= $${paramCount}::date`;
+        values.push(String(dateRange.start));
+        paramCount++;
+    }
+    if (dateRange && dateRange.end) {
+        query += ` AND date_start <= $${paramCount}::date`;
+        values.push(String(dateRange.end));
+        paramCount++;
+    }
+    query += ' ORDER BY date_start ASC, campaign_name ASC';
+    const res = await pool.query(query, values);
+    return res.rows;
+}
+
+async function claimDueFacebookAutoSyncConfigs(owner, limit = 5) {
+    const safeOwner = String(owner || '').trim();
+    if (!safeOwner) throw new Error('owner is required');
+    const res = await pool.query(
+        `WITH due AS (
+            SELECT tenant_id
+            FROM facebook_ad_imports
+            WHERE auto_sync_enabled = true
+              AND access_token IS NOT NULL
+              AND jsonb_array_length(COALESCE(selected_campaign_ids, '[]'::jsonb)) > 0
+              AND (
+                auto_sync_next_at IS NULL
+                OR auto_sync_next_at <= NOW()
+              )
+              AND (
+                sync_locked_at IS NULL
+                OR sync_locked_at < NOW() - INTERVAL '15 minutes'
+              )
+            ORDER BY COALESCE(auto_sync_next_at, to_timestamp(0)) ASC
+            LIMIT $2
+            FOR UPDATE SKIP LOCKED
+        )
+        UPDATE facebook_ad_imports cfg
+        SET sync_locked_at = NOW(),
+            sync_lock_owner = $1
+        FROM due
+        WHERE cfg.tenant_id = due.tenant_id
+        RETURNING cfg.*`,
+        [safeOwner, Math.max(1, parseInt(String(limit || '5'), 10) || 5)]
+    );
+    return res.rows;
+}
+
+async function finishFacebookAutoSync(tenantId, { nextSyncAt = null, lastInsightSyncAt = null, lastInsightSyncError = null, clearLock = true } = {}) {
+    if (!tenantId) throw new Error('tenantId is required');
+    const res = await pool.query(
+        `UPDATE facebook_ad_imports
+         SET auto_sync_next_at = COALESCE($2, auto_sync_next_at),
+             last_insight_sync_at = COALESCE($3, last_insight_sync_at),
+             last_insight_sync_error = $4,
+             sync_locked_at = CASE WHEN $5 THEN NULL ELSE sync_locked_at END,
+             sync_lock_owner = CASE WHEN $5 THEN NULL ELSE sync_lock_owner END,
+             updated_at = NOW()
+         WHERE tenant_id = $1
+         RETURNING *`,
+        [String(tenantId), nextSyncAt ? new Date(nextSyncAt) : null, lastInsightSyncAt ? new Date(lastInsightSyncAt) : null, lastInsightSyncError ? String(lastInsightSyncError) : null, clearLock === true]
     );
     return res.rows[0] || null;
 }
@@ -2353,5 +2622,9 @@ module.exports = {
     upsertMetaUserToken,
     upsertFacebookAdImport,
     getFacebookAdImport,
+    upsertFacebookInsightRows,
+    getFacebookInsightRows,
+    claimDueFacebookAutoSyncConfigs,
+    finishFacebookAutoSync,
     closePool
 };

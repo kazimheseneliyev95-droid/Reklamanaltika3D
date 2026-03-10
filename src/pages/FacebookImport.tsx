@@ -65,6 +65,7 @@ type InsightsPayload = {
   selectedCampaignIds: string[];
   metric?: 'message' | 'lead' | 'purchase';
   range: { start: string | null; end: string | null };
+  cache?: { lastSyncAt: string | null; lastSyncError: string | null };
 };
 
 type SavedConfig = {
@@ -76,6 +77,17 @@ type SavedConfig = {
   selectedCampaigns: Campaign[];
   accountCache: AdAccount[];
   campaignCache: Campaign[];
+  autoSync: {
+    mode: 'manual' | 'automatic';
+    enabled: boolean;
+    startDate: string;
+    endDate: string;
+    everyHours: number;
+    minute: number;
+    nextAt: string | null;
+    lastInsightSyncAt: string | null;
+    lastInsightSyncError: string | null;
+  };
   lastSyncAt: string | null;
   lastError: string | null;
   updatedAt: string | null;
@@ -94,6 +106,17 @@ const EMPTY_CONFIG: SavedConfig = {
   selectedCampaigns: [],
   accountCache: [],
   campaignCache: [],
+  autoSync: {
+    mode: 'manual',
+    enabled: false,
+    startDate: '',
+    endDate: '',
+    everyHours: 1,
+    minute: 0,
+    nextAt: null,
+    lastInsightSyncAt: null,
+    lastInsightSyncError: null,
+  },
   lastSyncAt: null,
   lastError: null,
   updatedAt: null,
@@ -106,6 +129,7 @@ const EMPTY_INSIGHTS: InsightsPayload = {
   selectedCampaignIds: [],
   metric: 'message',
   range: { start: null, end: null },
+  cache: { lastSyncAt: null, lastSyncError: null },
 };
 
 function formatMoney(v: number) {
@@ -190,12 +214,14 @@ export default function FacebookImportPage() {
   const [busySave, setBusySave] = useState(false);
   const [busyRefresh, setBusyRefresh] = useState(false);
   const [busyInsights, setBusyInsights] = useState(false);
+  const [busySyncNow, setBusySyncNow] = useState(false);
   const [message, setMessage] = useState('');
   const [showSettings, setShowSettings] = useState(false);
   const [dateRange, setDateRange] = useState<{ start: string; end: string }>({ start: '', end: '' });
   const [metric, setMetric] = useState<MetricType>('message');
   const [activePreset, setActivePreset] = useState<PresetType>('all');
   const [sortBy, setSortBy] = useState<SortType>('spend_desc');
+  const [autoSync, setAutoSync] = useState(EMPTY_CONFIG.autoSync);
 
   const selectedAccounts = useMemo(
     () => accounts.filter((a) => selectedAccountIds.includes(a.account_id) || selectedAccountIds.includes(a.id) || selectedAccountIds.includes(a.api_id)),
@@ -270,6 +296,7 @@ export default function FacebookImportPage() {
     setCampaigns(cfg.campaignCache || []);
     setSelectedAccountIds(cfg.selectedAccountIds || []);
     setSelectedCampaignIds(cfg.selectedCampaignIds || []);
+    setAutoSync({ ...EMPTY_CONFIG.autoSync, ...(cfg.autoSync || {}) });
     return cfg;
   }, [token]);
 
@@ -380,6 +407,7 @@ export default function FacebookImportPage() {
           campaigns,
           selectedAccountIds,
           selectedCampaignIds,
+          autoSync,
         })
       });
       const data = await res.json();
@@ -390,6 +418,7 @@ export default function FacebookImportPage() {
       setCampaigns(cfg.campaignCache);
       setSelectedAccountIds(cfg.selectedAccountIds);
       setSelectedCampaignIds(cfg.selectedCampaignIds);
+      setAutoSync({ ...EMPTY_CONFIG.autoSync, ...(cfg.autoSync || {}) });
       setTokenInput('');
       setMessage('Facebook ayarlari saxlanildi.');
       setShowSettings(false);
@@ -416,11 +445,34 @@ export default function FacebookImportPage() {
       setCampaigns(cfg.campaignCache);
       setSelectedAccountIds(cfg.selectedAccountIds);
       setSelectedCampaignIds(cfg.selectedCampaignIds);
+      setAutoSync({ ...EMPTY_CONFIG.autoSync, ...(cfg.autoSync || {}) });
       setMessage('Facebook cache yenilendi.');
     } catch (e: any) {
       setMessage(e?.message || 'Refresh xetasi');
     } finally {
       setBusyRefresh(false);
+    }
+  };
+
+  const handleSyncNow = async () => {
+    setBusySyncNow(true);
+    setMessage('');
+    try {
+      const res = await fetch(`${CrmService.getServerUrl()}/api/facebook-import/sync`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Sync xetasi');
+      const cfg = { ...EMPTY_CONFIG, ...(data.config || {}) } as SavedConfig;
+      setSaved(cfg);
+      setAutoSync({ ...EMPTY_CONFIG.autoSync, ...(cfg.autoSync || {}) });
+      setMessage('Facebook insight cache yeniləndi.');
+      await loadInsights(dateRange, metric);
+    } catch (e: any) {
+      setMessage(e?.message || 'Sync xetasi');
+    } finally {
+      setBusySyncNow(false);
     }
   };
 
@@ -469,11 +521,16 @@ export default function FacebookImportPage() {
           <div className="flex flex-wrap items-center gap-2">
             <HeaderBadge label="Range" value={rangeLabel} />
             <HeaderBadge label="Campaigns" value={String(selectedCampaignIds.length)} />
+            <HeaderBadge label="Sync Mode" value={autoSync.mode === 'automatic' ? `Auto · her ${autoSync.everyHours}s` : 'Manual'} />
+            <HeaderBadge label="Cache" value={saved.autoSync.lastInsightSyncAt ? formatDateLabel(String(saved.autoSync.lastInsightSyncAt).slice(0, 10)) : 'Bos'} />
             <ActionButton variant="secondary" onClick={() => setShowSettings(true)} icon={<Settings2 className="w-4 h-4" />}>
               Ayarlar
             </ActionButton>
             <ActionButton variant="secondary" onClick={handleRefreshSaved} busy={busyRefresh} icon={<RefreshCcw className="w-4 h-4" />} disabled={!saved.hasToken}>
               Yenile
+            </ActionButton>
+            <ActionButton variant="secondary" onClick={handleSyncNow} busy={busySyncNow} icon={<FolderSync className="w-4 h-4" />} disabled={!saved.hasToken || selectedCampaignIds.length === 0}>
+              Indi Sync
             </ActionButton>
           </div>
         </div>
@@ -482,6 +539,7 @@ export default function FacebookImportPage() {
           <div className="flex flex-wrap items-center gap-2 text-sm text-slate-400">
             <span>Metric:</span>
             <span className="rounded-xl border border-slate-700 bg-slate-900/50 px-3 py-2 font-semibold text-slate-200">{metricLabel(metric)}</span>
+            <span className="text-xs text-slate-500">Bu panel Facebook API-ni hər baxışda çağırmır; DB cache-dən oxuyur.</span>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -526,7 +584,7 @@ export default function FacebookImportPage() {
             <option value="name_asc">Sort: Name A-Z</option>
           </select>
           <ActionButton onClick={applyDateFilter} busy={busyInsights} icon={<Filter className="w-4 h-4" />} disabled={selectedCampaignIds.length === 0}>
-            Guncelle
+            Cache-ni goster
           </ActionButton>
         </div>
 
@@ -726,6 +784,84 @@ export default function FacebookImportPage() {
                       </div>
                     );
                   })}
+                </div>
+              </DrawerSection>
+
+              <DrawerSection title="4. Avtomatik import cache">
+                <div className="space-y-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setAutoSync((prev) => ({ ...prev, mode: 'manual', enabled: false }))}
+                      className={cn(
+                        'rounded-2xl border px-4 py-4 text-left transition-colors',
+                        autoSync.mode === 'manual'
+                          ? 'border-blue-500/40 bg-blue-500/10'
+                          : 'border-slate-800 bg-slate-950/30 hover:border-slate-700'
+                      )}
+                    >
+                      <div className="text-sm font-semibold text-slate-100">Manual</div>
+                      <div className="mt-1 text-xs text-slate-500">Yalnız sən `İndi Sync` etdikdə Facebook-dan çəkəcək. Saxlanandan sonra saatbasaat avtomatik işləməyəcək.</div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAutoSync((prev) => ({ ...prev, mode: 'automatic', enabled: true }))}
+                      className={cn(
+                        'rounded-2xl border px-4 py-4 text-left transition-colors',
+                        autoSync.mode === 'automatic'
+                          ? 'border-blue-500/40 bg-blue-500/10'
+                          : 'border-slate-800 bg-slate-950/30 hover:border-slate-700'
+                      )}
+                    >
+                      <div className="text-sm font-semibold text-slate-100">Avtomatik</div>
+                      <div className="mt-1 text-xs text-slate-500">Server seçilən tarix aralığı üçün hər saat cache-i yeniləyəcək və DB-yə yazacaq.</div>
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Baslangic tarixi</div>
+                      <DateField value={autoSync.startDate} onChange={(v) => setAutoSync((prev) => ({ ...prev, startDate: v }))} />
+                    </div>
+                    <div>
+                      <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Bitis tarixi</div>
+                      <DateField value={autoSync.endDate} onChange={(v) => setAutoSync((prev) => ({ ...prev, endDate: v }))} />
+                      <div className="mt-2 text-[11px] text-slate-500">Bos qalsa sistem her sync zamani bugune qeder hesaplayacaq.</div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <label className="rounded-2xl border border-slate-800 bg-slate-950/30 px-4 py-3">
+                      <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Her nece saatdan bir</div>
+                      <input
+                        type="number"
+                        min={1}
+                        max={24}
+                        value={autoSync.everyHours}
+                        disabled={autoSync.mode !== 'automatic'}
+                        onChange={(e) => setAutoSync((prev) => ({ ...prev, everyHours: Math.max(1, Number(e.target.value || 1)) }))}
+                        className="mt-2 w-full rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 disabled:opacity-40"
+                      />
+                    </label>
+                    <label className="rounded-2xl border border-slate-800 bg-slate-950/30 px-4 py-3">
+                      <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Saatdaki deqiqe</div>
+                      <input
+                        type="number"
+                        min={0}
+                        max={59}
+                        value={autoSync.minute}
+                        disabled={autoSync.mode !== 'automatic'}
+                        onChange={(e) => setAutoSync((prev) => ({ ...prev, minute: Math.min(59, Math.max(0, Number(e.target.value || 0))) }))}
+                        className="mt-2 w-full rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 disabled:opacity-40"
+                      />
+                    </label>
+                  </div>
+
+                  <div className="rounded-2xl border border-slate-800 bg-slate-950/30 px-4 py-3 text-xs text-slate-400 space-y-1">
+                    <div>Son cache sync: <span className="text-slate-200 font-semibold">{saved.autoSync.lastInsightSyncAt ? new Date(saved.autoSync.lastInsightSyncAt).toLocaleString('az-AZ') : 'Yoxdur'}</span></div>
+                    <div>Növbəti sync: <span className="text-slate-200 font-semibold">{saved.autoSync.mode === 'automatic' ? (saved.autoSync.nextAt ? new Date(saved.autoSync.nextAt).toLocaleString('az-AZ') : 'Təyin edilməyib') : 'Manual rejimdə deaktivdir'}</span></div>
+                    {saved.autoSync.lastInsightSyncError ? <div className="text-rose-300">Son xəta: {saved.autoSync.lastInsightSyncError}</div> : null}
+                  </div>
                 </div>
               </DrawerSection>
             </div>

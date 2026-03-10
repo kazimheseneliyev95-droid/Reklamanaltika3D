@@ -1495,6 +1495,32 @@ async function pollMetaOutbox() {
 
 let metaQueueTimer = null;
 let metaOutboxTimer = null;
+let facebookAutoSyncTimer = null;
+let facebookAutoSyncBusy = false;
+
+async function pollFacebookAutoSyncQueue() {
+  if (facebookAutoSyncBusy) return;
+  if (!process.env.DATABASE_URL) return;
+  if (!db || typeof db.claimDueFacebookAutoSyncConfigs !== 'function') return;
+  facebookAutoSyncBusy = true;
+  try {
+    const rows = await db.claimDueFacebookAutoSyncConfigs(`api:${process.pid}`, 3).catch(() => []);
+    for (const row of rows) {
+      try {
+        await syncFacebookInsightsForTenant(row.tenant_id, row);
+      } catch (error) {
+        await db.finishFacebookAutoSync(row.tenant_id, {
+          nextSyncAt: computeNextFacebookSyncAt(row),
+          lastInsightSyncAt: null,
+          lastInsightSyncError: String(error?.message || 'facebook_sync_failed'),
+        }).catch(() => null);
+      }
+    }
+  } finally {
+    facebookAutoSyncBusy = false;
+  }
+}
+
 async function pollMetaWebhookQueue() {
   if (!META_EVENT_PROCESSOR_ENABLED) return;
   if (!process.env.DATABASE_URL) return;
@@ -1670,6 +1696,24 @@ db.initDb()
       } catch (e) {
         console.warn('⚠️ Failed to start Meta outbox:', e.message);
       }
+
+      try {
+        if (process.env.DATABASE_URL && db && typeof db.claimDueFacebookAutoSyncConfigs === 'function') {
+          if (!facebookAutoSyncTimer) {
+            facebookAutoSyncTimer = setInterval(() => {
+              pollFacebookAutoSyncQueue().catch(() => { /* handled inside */ });
+            }, 60 * 1000);
+            setTimeout(() => {
+              pollFacebookAutoSyncQueue().catch(() => { /* ignore */ });
+            }, 1500);
+            console.log('📊 Facebook auto sync: enabled');
+          }
+        } else {
+          console.log('ℹ️ Facebook auto sync: disabled (no DB support)');
+        }
+      } catch (e) {
+        console.warn('⚠️ Failed to start Facebook auto sync:', e.message);
+      }
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     });
   });
@@ -1705,6 +1749,15 @@ async function gracefulShutdown(signal) {
         if (metaOutboxTimer) {
           clearInterval(metaOutboxTimer);
           metaOutboxTimer = null;
+        }
+      } catch {
+        // ignore
+      }
+
+      try {
+        if (facebookAutoSyncTimer) {
+          clearInterval(facebookAutoSyncTimer);
+          facebookAutoSyncTimer = null;
         }
       } catch {
         // ignore
@@ -4538,10 +4591,175 @@ function sanitizeFacebookAdImportConfig(row) {
     selectedCampaigns,
     accountCache,
     campaignCache,
+    autoSync: {
+      mode: raw.auto_sync_enabled === true ? 'automatic' : 'manual',
+      enabled: raw.auto_sync_enabled === true,
+      startDate: raw.auto_sync_start_date ? String(raw.auto_sync_start_date).slice(0, 10) : '',
+      endDate: raw.auto_sync_end_date ? String(raw.auto_sync_end_date).slice(0, 10) : '',
+      everyHours: Math.max(1, parseInt(String(raw.auto_sync_every_hours || '1'), 10) || 1),
+      minute: Math.min(59, Math.max(0, parseInt(String(raw.auto_sync_minute || '0'), 10) || 0)),
+      nextAt: raw.auto_sync_next_at || null,
+      lastInsightSyncAt: raw.last_insight_sync_at || null,
+      lastInsightSyncError: raw.last_insight_sync_error || null,
+    },
     lastSyncAt: raw.last_sync_at || null,
     lastError: raw.last_error || null,
     updatedAt: raw.updated_at || null,
   };
+}
+
+function sanitizeFacebookAutoSyncInput(input) {
+  const raw = input && typeof input === 'object' ? input : {};
+  const mode = String(raw.mode || '').trim().toLowerCase() === 'automatic' ? 'automatic' : 'manual';
+  const startDate = String(raw.startDate || '').trim();
+  const endDate = String(raw.endDate || '').trim();
+  const everyHours = Math.max(1, parseInt(String(raw.everyHours || '1'), 10) || 1);
+  const minute = Math.min(59, Math.max(0, parseInt(String(raw.minute || '0'), 10) || 0));
+  return {
+    mode,
+    enabled: mode === 'automatic' && raw.enabled !== false,
+    startDate,
+    endDate,
+    everyHours,
+    minute,
+  };
+}
+
+function buildFacebookSyncRange(config) {
+  const startDate = String(config?.auto_sync_start_date || '').trim();
+  const endDate = String(config?.auto_sync_end_date || '').trim();
+  const today = new Date();
+  const todayIso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  return {
+    start: startDate || (() => {
+      const d = new Date();
+      d.setDate(d.getDate() - 29);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    })(),
+    end: endDate || todayIso,
+  };
+}
+
+function computeNextFacebookSyncAt(config, fromDate = new Date()) {
+  const everyHours = Math.max(1, parseInt(String(config?.auto_sync_every_hours || '1'), 10) || 1);
+  const minute = Math.min(59, Math.max(0, parseInt(String(config?.auto_sync_minute || '0'), 10) || 0));
+  const next = new Date(fromDate);
+  next.setSeconds(0, 0);
+  next.setMinutes(minute);
+  if (next <= fromDate) {
+    next.setHours(next.getHours() + everyHours);
+  }
+  while (next <= fromDate) {
+    next.setHours(next.getHours() + everyHours);
+  }
+  return next;
+}
+
+function aggregateCachedInsightRows(rows = []) {
+  return aggregateFacebookInsightRows(rows.map((row) => ({
+    spend: row?.spend,
+    impressions: row?.impressions,
+    clicks: row?.clicks,
+    ctr: row?.ctr,
+    cpm: row?.cpm,
+    results: row?.results,
+    cost_per_result: row?.cost_per_result,
+  })));
+}
+
+async function buildCachedFacebookInsightsPayload(tenantId, config, metric, dateRange) {
+  const selectedCampaignIds = Array.isArray(config?.selected_campaign_ids)
+    ? config.selected_campaign_ids.map((x) => String(x || '').trim()).filter(Boolean)
+    : [];
+  const campaignCache = Array.isArray(config?.campaign_cache)
+    ? config.campaign_cache.map(normalizeFacebookCampaign).filter((c) => c.id)
+    : [];
+  const selectedCampaigns = campaignCache.filter((c) => selectedCampaignIds.includes(c.id));
+  const rows = await db.getFacebookInsightRows(tenantId, metric, selectedCampaignIds, dateRange).catch(() => []);
+
+  const dailyMap = new Map();
+  for (const row of rows) {
+    const key = String(row.date_start || 'unknown');
+    const arr = dailyMap.get(key) || [];
+    arr.push(row);
+    dailyMap.set(key, arr);
+  }
+  const daily = Array.from(dailyMap.entries())
+    .map(([date, bucket]) => ({ date, ...aggregateCachedInsightRows(bucket) }))
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)));
+
+  const campaignMap = new Map();
+  for (const row of rows) {
+    const campaignId = String(row.campaign_id || '');
+    const arr = campaignMap.get(campaignId) || [];
+    arr.push(row);
+    campaignMap.set(campaignId, arr);
+  }
+
+  const campaigns = selectedCampaigns.map((campaign) => {
+    const bucket = campaignMap.get(campaign.id) || [];
+    return {
+      ...campaign,
+      metrics: aggregateCachedInsightRows(bucket),
+      daily: bucket.map((row) => ({
+        date_start: row.date_start ? String(row.date_start).slice(0, 10) : null,
+        date_stop: row.date_stop ? String(row.date_stop).slice(0, 10) : null,
+        spend: toNumberSafe(row.spend, 0),
+        impressions: toNumberSafe(row.impressions, 0),
+        clicks: toNumberSafe(row.clicks, 0),
+        ctr: toNumberSafe(row.ctr, 0),
+        cpm: toNumberSafe(row.cpm, 0),
+        results: toNumberSafe(row.results, 0),
+        cost_per_result: toNumberSafe(row.cost_per_result, 0),
+      }))
+    };
+  }).sort((a, b) => b.metrics.spend - a.metrics.spend);
+
+  return {
+    summary: aggregateCachedInsightRows(rows),
+    daily,
+    campaigns,
+    selectedCampaignIds,
+    metric,
+    range: dateRange,
+    cache: {
+      lastSyncAt: config?.last_insight_sync_at || null,
+      lastSyncError: config?.last_insight_sync_error || null,
+    }
+  };
+}
+
+async function syncFacebookInsightsForTenant(tenantId, configOverride = null) {
+  if (!process.env.DATABASE_URL) return null;
+  const config = configOverride || await db.getFacebookAdImport(tenantId).catch(() => null);
+  if (!config?.access_token) throw new Error('Saved Facebook token not found');
+
+  const selectedCampaignIds = Array.isArray(config.selected_campaign_ids)
+    ? config.selected_campaign_ids.map((x) => String(x || '').trim()).filter(Boolean)
+    : [];
+  const campaignCache = Array.isArray(config.campaign_cache)
+    ? config.campaign_cache.map(normalizeFacebookCampaign).filter((c) => c.id)
+    : [];
+  const selectedCampaigns = campaignCache.filter((campaign) => selectedCampaignIds.includes(campaign.id));
+  if (selectedCampaigns.length === 0) {
+    const nextAt = computeNextFacebookSyncAt(config);
+    await db.finishFacebookAutoSync(tenantId, { nextSyncAt: nextAt, lastInsightSyncAt: new Date(), lastInsightSyncError: null });
+    return { synced: false, reason: 'no_selected_campaigns', nextAt };
+  }
+
+  const dateRange = buildFacebookSyncRange(config);
+  for (const metric of ['message', 'lead', 'purchase']) {
+    const rows = await fetchFacebookInsightsForCampaigns(config.access_token, selectedCampaigns, dateRange, metric);
+    await db.upsertFacebookInsightRows(tenantId, metric, rows);
+  }
+
+  const nextAt = computeNextFacebookSyncAt(config);
+  const finished = await db.finishFacebookAutoSync(tenantId, {
+    nextSyncAt: nextAt,
+    lastInsightSyncAt: new Date(),
+    lastInsightSyncError: null,
+  });
+  return { synced: true, nextAt, config: finished };
 }
 
 function normalizeFacebookCampaign(row) {
@@ -5037,6 +5255,8 @@ app.post('/api/facebook-import/save', requireTenantAuth, requireAdmin, asyncHand
   const selectedCampaignIds = Array.isArray(req.body?.selectedCampaignIds)
     ? req.body.selectedCampaignIds.map((x) => String(x || '').trim()).filter(Boolean)
     : (Array.isArray(existing?.selected_campaign_ids) ? existing.selected_campaign_ids.map((x) => String(x || '').trim()).filter(Boolean) : []);
+  const autoSync = sanitizeFacebookAutoSyncInput(req.body?.autoSync);
+  const nextSyncAt = autoSync.enabled ? new Date() : null;
 
   const saved = await db.upsertFacebookAdImport(req.tenantId, {
     access_token: token,
@@ -5044,8 +5264,25 @@ app.post('/api/facebook-import/save', requireTenantAuth, requireAdmin, asyncHand
     selected_campaign_ids: selectedCampaignIds,
     account_cache: accounts,
     campaign_cache: campaigns,
+    auto_sync_enabled: autoSync.enabled,
+    auto_sync_start_date: autoSync.startDate || null,
+    auto_sync_end_date: autoSync.endDate || null,
+    auto_sync_every_hours: autoSync.everyHours,
+    auto_sync_minute: autoSync.minute,
+    auto_sync_next_at: nextSyncAt,
+    last_insight_sync_error: null,
     last_error: null,
   });
+
+  if (selectedCampaignIds.length > 0) {
+    syncFacebookInsightsForTenant(req.tenantId, { ...saved, access_token: token, selected_campaign_ids: selectedCampaignIds, campaign_cache: campaigns })
+      .catch(async (error) => {
+        await db.finishFacebookAutoSync(req.tenantId, {
+          nextSyncAt: autoSync.enabled ? computeNextFacebookSyncAt(saved) : null,
+          lastInsightSyncError: String(error?.message || 'facebook_sync_failed')
+        }).catch(() => null);
+      });
+  }
 
   res.status(201).json({ success: true, config: sanitizeFacebookAdImportConfig({ ...saved, access_token: token }) });
 }));
@@ -5073,9 +5310,34 @@ app.post('/api/facebook-import/refresh', requireTenantAuth, requireAdmin, asyncH
     selected_campaign_ids: selectedCampaignIds,
     account_cache: accounts,
     campaign_cache: campaigns,
+    auto_sync_enabled: existing.auto_sync_enabled === true,
+    auto_sync_start_date: existing.auto_sync_start_date || null,
+    auto_sync_end_date: existing.auto_sync_end_date || null,
+    auto_sync_every_hours: existing.auto_sync_every_hours || 1,
+    auto_sync_minute: existing.auto_sync_minute || 0,
+    auto_sync_next_at: existing.auto_sync_enabled === true ? new Date() : existing.auto_sync_next_at || null,
+    last_insight_sync_error: null,
     last_error: null,
   });
+  if (selectedCampaignIds.length > 0) {
+    syncFacebookInsightsForTenant(req.tenantId, { ...saved, access_token: existing.access_token, selected_campaign_ids: selectedCampaignIds, campaign_cache: campaigns })
+      .catch(async (error) => {
+        await db.finishFacebookAutoSync(req.tenantId, {
+          nextSyncAt: existing.auto_sync_enabled === true ? computeNextFacebookSyncAt(saved) : null,
+          lastInsightSyncError: String(error?.message || 'facebook_sync_failed')
+        }).catch(() => null);
+      });
+  }
   res.json({ success: true, config: sanitizeFacebookAdImportConfig({ ...saved, access_token: existing.access_token }) });
+}));
+
+app.post('/api/facebook-import/sync', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  const existing = await db.getFacebookAdImport(req.tenantId).catch(() => null);
+  if (!existing?.access_token) return res.status(404).json({ error: 'Saved Facebook token not found' });
+  const result = await syncFacebookInsightsForTenant(req.tenantId, existing);
+  const fresh = await db.getFacebookAdImport(req.tenantId).catch(() => existing);
+  res.json({ success: true, result, config: sanitizeFacebookAdImportConfig(fresh) });
 }));
 
 app.get('/api/facebook-import/insights', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
@@ -5087,11 +5349,7 @@ app.get('/api/facebook-import/insights', requireTenantAuth, requireAdmin, asyncH
   const selectedCampaignIds = Array.isArray(existing.selected_campaign_ids)
     ? existing.selected_campaign_ids.map((x) => String(x || '').trim()).filter(Boolean)
     : [];
-  const campaignCache = Array.isArray(existing.campaign_cache)
-    ? existing.campaign_cache.map(normalizeFacebookCampaign).filter((c) => c.id)
-    : [];
-  const selectedCampaigns = campaignCache.filter((c) => selectedCampaignIds.includes(c.id));
-  if (selectedCampaigns.length === 0) {
+  if (selectedCampaignIds.length === 0) {
     return res.json({
       summary: { spend: 0, results: 0, ctr: 0, cpm: 0, cost_per_result: 0 },
       daily: [],
@@ -5106,44 +5364,8 @@ app.get('/api/facebook-import/insights', requireTenantAuth, requireAdmin, asyncH
     start: String(req.query.start || '').trim() || null,
     end: String(req.query.end || '').trim() || null,
   };
-
-  const insightRows = await fetchFacebookInsightsForCampaigns(existing.access_token, selectedCampaigns, dateRange, metric);
-
-  const dailyMap = new Map();
-  for (const row of insightRows) {
-    const key = String(row.date_start || 'unknown');
-    const arr = dailyMap.get(key) || [];
-    arr.push(row);
-    dailyMap.set(key, arr);
-  }
-  const daily = Array.from(dailyMap.entries())
-    .map(([date, rows]) => ({ date, ...aggregateFacebookInsightRows(rows) }))
-    .sort((a, b) => String(a.date).localeCompare(String(b.date)));
-
-  const campaignMap = new Map();
-  for (const campaign of selectedCampaigns) campaignMap.set(campaign.id, []);
-  for (const row of insightRows) {
-    const arr = campaignMap.get(row.campaign_id) || [];
-    arr.push(row);
-    campaignMap.set(row.campaign_id, arr);
-  }
-  const campaigns = selectedCampaigns.map((campaign) => {
-    const rows = campaignMap.get(campaign.id) || [];
-    return {
-      ...campaign,
-      metrics: aggregateFacebookInsightRows(rows),
-      daily: rows,
-    };
-  }).sort((a, b) => b.metrics.spend - a.metrics.spend);
-
-  res.json({
-    summary: aggregateFacebookInsightRows(insightRows),
-    daily,
-    campaigns,
-    selectedCampaignIds,
-    metric,
-    range: dateRange,
-  });
+  const payload = await buildCachedFacebookInsightsPayload(req.tenantId, existing, metric, dateRange);
+  res.json(payload);
 }));
 
 app.get('/api/dashboard/combined', requireTenantAuth, requirePermission('view_stats', 'Dashboard görmək icazəniz yoxdur'), asyncHandler(async (req, res) => {
@@ -5173,23 +5395,25 @@ app.get('/api/dashboard/combined', requireTenantAuth, requirePermission('view_st
   const allCampaignIds = Array.from(new Set(mappings.flatMap((row) => row.campaignIds)));
   const selectedCampaigns = campaignCache.filter((campaign) => allCampaignIds.includes(campaign.id));
 
-  let mappedInsightRows = [];
   let importedInsightRows = [];
-  if (importedCampaigns.length > 0 && facebookConfig?.access_token) {
-    try {
-      importedInsightRows = await fetchFacebookInsightsForCampaigns(facebookConfig.access_token, importedCampaigns, dateRange, metric);
-      const selectedIdSet = new Set(selectedCampaigns.map((campaign) => campaign.id));
-      mappedInsightRows = importedInsightRows.filter((row) => selectedIdSet.has(String(row.campaign_id)));
-    } catch (error) {
-      warnings.push(`Facebook insight alınmadı: ${String(error?.message || 'unknown_error')}`);
-    }
-  } else if (mappings.some((row) => row.campaignIds.length > 0)) {
-    warnings.push('Facebook token və ya kampaniya cache tapılmadı; yalnız CRM nəticələri göstərilir.');
+  let mappedInsightRows = [];
+  if (importedCampaigns.length > 0) {
+    importedInsightRows = await db.getFacebookInsightRows(req.tenantId, metric, importedCampaigns.map((campaign) => campaign.id), dateRange).catch(() => []);
+    const selectedIdSet = new Set(selectedCampaigns.map((campaign) => campaign.id));
+    mappedInsightRows = importedInsightRows.filter((row) => selectedIdSet.has(String(row.campaign_id)));
+  }
+  if (importedCampaigns.length > 0 && importedInsightRows.length === 0) {
+    warnings.push('Facebook cache hələ dolmayıb. Auto sync və ya manual sync ilə datanı DB-yə yazın.');
+  } else if (mappings.some((row) => row.campaignIds.length > 0) && mappedInsightRows.length === 0) {
+    warnings.push('Seçilmiş mapping üçün cache-də uyğun Facebook data tapılmadı.');
   }
 
   const insightsByCampaignId = new Map();
   for (const row of mappedInsightRows) {
-    insightsByCampaignId.set(String(row.campaign_id), row);
+    const key = String(row.campaign_id);
+    const arr = insightsByCampaignId.get(key) || [];
+    arr.push(row);
+    insightsByCampaignId.set(key, arr);
   }
 
   const mappingValues = mappings.map((row) => row.value);
@@ -5312,8 +5536,8 @@ app.get('/api/dashboard/combined', requireTenantAuth, requirePermission('view_st
 
   const groups = mappings.map((mapping) => {
     const campaigns = selectedCampaigns.filter((campaign) => mapping.campaignIds.includes(campaign.id));
-    const facebookRows = campaigns.map((campaign) => insightsByCampaignId.get(campaign.id)).filter(Boolean);
-    const facebook = aggregateFacebookInsightRows(facebookRows);
+    const facebookRows = campaigns.flatMap((campaign) => insightsByCampaignId.get(campaign.id) || []);
+    const facebook = aggregateCachedInsightRows(facebookRows);
     const crm = crmByValue.get(mapping.value) || {
       leads: 0,
       won_count: 0,
@@ -5341,7 +5565,7 @@ app.get('/api/dashboard/combined', requireTenantAuth, requirePermission('view_st
   });
 
   const totals = {
-    facebook: aggregateFacebookInsightRows(importedInsightRows),
+    facebook: aggregateCachedInsightRows(importedInsightRows),
     crm: overallCrm,
   };
 
