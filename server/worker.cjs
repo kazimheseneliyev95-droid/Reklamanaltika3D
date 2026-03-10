@@ -34,6 +34,9 @@ const WORKER_PORT = process.env.WORKER_PORT || 4001;
 var apiPort = process.env.PORT || 4000;
 var API_URL = process.env.API_URL || ('http://localhost:' + apiPort);
 const INTERNAL_WEBHOOK_SECRET = process.env.INTERNAL_WEBHOOK_SECRET || '';
+const OUTGOING_CLAIM_OWNER = `worker:${process.pid}`;
+const OUTGOING_BATCH = Math.max(1, parseInt(String(process.env.OUTGOING_BATCH || '10'), 10) || 10);
+const OUTGOING_CLAIM_TTL_MINUTES = Math.max(1, parseInt(String(process.env.OUTGOING_CLAIM_TTL_MINUTES || '2'), 10) || 2);
 
 const WA_MEDIA_ENABLED = process.env.WA_MEDIA_ENABLED !== 'false';
 const WA_MEDIA_MAX_BYTES = (() => {
@@ -42,28 +45,8 @@ const WA_MEDIA_MAX_BYTES = (() => {
     return 15 * 1024 * 1024; // 15MB default
 })();
 
-function isLoopbackAddress(value) {
-    const normalized = String(value || '').trim().toLowerCase();
-    if (!normalized) return false;
-    if (normalized === '::1' || normalized === '127.0.0.1' || normalized === '::ffff:127.0.0.1') return true;
-    return normalized.startsWith('127.');
-}
-
-function isLoopbackRequest(req) {
-    const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-    return [
-        req.ip,
-        req.socket && req.socket.remoteAddress,
-        req.connection && req.connection.remoteAddress,
-        forwarded
-    ].some(isLoopbackAddress);
-}
-
 workerApp.use('/api/internal', (req, res, next) => {
     if (!INTERNAL_WEBHOOK_SECRET) {
-        if (isLoopbackRequest(req)) {
-            return next();
-        }
         return res.status(503).json({ error: 'Internal secret is not configured' });
     }
     const incoming = req.headers['x-internal-secret'];
@@ -941,13 +924,30 @@ async function pollOutgoingMessages() {
     if (Date.now() < outgoingPollPauseUntil) return;
     try {
         var result = await db.pool.query(
-            "SELECT m.id, m.tenant_id, m.phone, m.body " +
-            "FROM messages m " +
-            "JOIN leads l ON l.id = m.lead_id AND l.tenant_id = m.tenant_id " +
-            "WHERE m.direction = 'out' AND m.status = 'pending' " +
-            "  AND COALESCE(l.source, '') = 'whatsapp' " +
-            "  AND m.phone ~ '^[0-9]{7,15}$' " +
-            "ORDER BY m.created_at ASC"
+            `WITH candidates AS (
+                SELECT m.id
+                FROM messages m
+                JOIN leads l ON l.id = m.lead_id AND l.tenant_id = m.tenant_id
+                WHERE m.direction = 'out'
+                  AND m.status IN ('pending', 'processing')
+                  AND COALESCE(l.source, '') = 'whatsapp'
+                  AND m.phone ~ '^[0-9]{7,15}$'
+                  AND (m.next_attempt_at IS NULL OR m.next_attempt_at <= NOW())
+                  AND (m.status = 'pending' OR m.claimed_at IS NULL OR m.claimed_at < NOW() - ($2::text || ' minutes')::interval)
+                ORDER BY m.created_at ASC
+                LIMIT $3
+                FOR UPDATE SKIP LOCKED
+            )
+            UPDATE messages m
+            SET status = 'processing',
+                claimed_at = NOW(),
+                claim_owner = $1,
+                attempts = COALESCE(m.attempts, 0) + 1,
+                last_error = NULL
+            FROM candidates c
+            WHERE m.id = c.id
+            RETURNING m.id, m.tenant_id, m.phone, m.body, COALESCE(m.attempts, 0) AS attempts`,
+            [OUTGOING_CLAIM_OWNER, String(OUTGOING_CLAIM_TTL_MINUTES), OUTGOING_BATCH]
         );
 
         for (var i = 0; i < result.rows.length; i++) {
@@ -960,13 +960,32 @@ async function pollOutgoingMessages() {
                     var sentMsg = await session.sock.sendMessage(jid, { text: msg.body });
 
                     if (sentMsg && sentMsg.key && sentMsg.key.id) {
-                        await db.pool.query("UPDATE messages SET status = 'sent', whatsapp_id = $1 WHERE id = $2", [sentMsg.key.id, msg.id]);
+                        await db.pool.query(
+                            "UPDATE messages SET status = 'sent', whatsapp_id = $1, claimed_at = NULL, claim_owner = NULL, next_attempt_at = NULL, last_error = NULL WHERE id = $2",
+                            [sentMsg.key.id, msg.id]
+                        );
                         notifyApiServer(msg.tenant_id, 'message_sent', { id: msg.id, status: 'sent', whatsapp_id: sentMsg.key.id });
                     }
                 } catch (sendErr) {
                     console.error('⚠️ Send failed ' + msg.id + ': ' + sendErr.message);
-                    await db.pool.query("UPDATE messages SET status = 'failed' WHERE id = $1", [msg.id]);
+                    var attempts = Number(msg.attempts || 1);
+                    var terminal = attempts >= 5;
+                    await db.pool.query(
+                        `UPDATE messages
+                         SET status = $2,
+                             claimed_at = NULL,
+                             claim_owner = NULL,
+                             last_error = $3,
+                             next_attempt_at = CASE WHEN $2 = 'pending' THEN NOW() + (LEAST($4, 5) * INTERVAL '30 seconds') ELSE NULL END
+                         WHERE id = $1`,
+                        [msg.id, terminal ? 'failed' : 'pending', String(sendErr.message || 'send_failed').slice(0, 500), attempts]
+                    );
                 }
+            } else {
+                await db.pool.query(
+                    "UPDATE messages SET status = 'pending', claimed_at = NULL, claim_owner = NULL, next_attempt_at = NOW() + INTERVAL '20 seconds' WHERE id = $1",
+                    [msg.id]
+                );
             }
         }
     } catch (err) {

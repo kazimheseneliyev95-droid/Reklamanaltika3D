@@ -233,6 +233,15 @@ async function initDb() {
           read_at TIMESTAMP
         );
 
+        CREATE TABLE IF NOT EXISTS lead_reads (
+          tenant_id VARCHAR(50) NOT NULL,
+          lead_id UUID NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+          user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          last_read_at TIMESTAMP NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMP DEFAULT NOW(),
+          PRIMARY KEY (tenant_id, lead_id, user_id)
+        );
+
         -- Idempotency/dedupe: do not spam the same user for the same event
         CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_tenant_user_dedupe
           ON notifications (tenant_id, user_id, dedupe_key);
@@ -545,8 +554,27 @@ async function initDb() {
             await client.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS attempts INTEGER DEFAULT 0;');
             await client.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMP;');
             await client.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS last_error TEXT;');
+            await client.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMP;');
+            await client.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS claim_owner TEXT;');
         } catch (e) {
             console.warn('⚠️ Migration warning (messages outbox columns):', e.message);
+        }
+
+        try {
+            await client.query(`
+              CREATE TABLE IF NOT EXISTS lead_reads (
+                tenant_id VARCHAR(50) NOT NULL,
+                lead_id UUID NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                last_read_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW(),
+                PRIMARY KEY (tenant_id, lead_id, user_id)
+              );
+            `);
+            await client.query('CREATE INDEX IF NOT EXISTS idx_lead_reads_tenant_user ON lead_reads (tenant_id, user_id, updated_at DESC);');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_lead_reads_tenant_lead_user ON lead_reads (tenant_id, lead_id, user_id);');
+        } catch (e) {
+            console.warn('⚠️ Migration warning (lead_reads):', e.message);
         }
 
         // Ensure message sender tracking exists (response-time analytics)
@@ -593,6 +621,7 @@ async function initDb() {
             CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at ASC);
             CREATE INDEX IF NOT EXISTS idx_messages_polling ON messages(direction, status);
             CREATE INDEX IF NOT EXISTS idx_messages_next_attempt_at ON messages(next_attempt_at);
+            CREATE INDEX IF NOT EXISTS idx_messages_claimed_at ON messages(claimed_at);
             CREATE INDEX IF NOT EXISTS idx_meta_pages_tenant ON meta_pages(tenant_id);
             CREATE INDEX IF NOT EXISTS idx_meta_webhook_received_at ON meta_webhook_events(received_at DESC);
             CREATE INDEX IF NOT EXISTS idx_meta_webhook_processed_at ON meta_webhook_events(processed_at);
@@ -1192,15 +1221,29 @@ async function updateLeadValue(id, value, tenantId = 'admin') {
 /**
  * Get all leads with optional filters (improved with pagination)
  */
-async function getLeads(filters = {}, tenantId = 'admin') {
+async function getLeads(filters = {}, tenantId = 'admin', existingClient = null) {
     try {
+        const runner = existingClient || pool;
+        const viewerUserId = filters.userId ? String(filters.userId) : null;
         let query = `
           SELECT l.*,
+                 ${viewerUserId ? 'COALESCE(msg_unread.unread_count, 0) AS unread_count,' : 'l.unread_count,'}
+                 ${viewerUserId ? 'lr.last_read_at AS last_read_at,' : 'l.last_read_at,'}
                  fu.next_due_at AS next_followup_due_at,
                  CASE WHEN l.last_inbound_at IS NOT NULL THEN (EXTRACT(EPOCH FROM l.last_inbound_at) * 1000)::bigint ELSE NULL END AS last_inbound_ms,
                  CASE WHEN l.last_outbound_at IS NOT NULL THEN (EXTRACT(EPOCH FROM l.last_outbound_at) * 1000)::bigint ELSE NULL END AS last_outbound_ms,
                  CASE WHEN fu.next_due_at IS NOT NULL THEN (EXTRACT(EPOCH FROM fu.next_due_at) * 1000)::bigint ELSE NULL END AS next_followup_due_ms
           FROM leads l
+          ${viewerUserId ? `LEFT JOIN lead_reads lr
+            ON lr.tenant_id = l.tenant_id AND lr.lead_id = l.id AND lr.user_id = $2` : ''}
+          ${viewerUserId ? `LEFT JOIN LATERAL (
+            SELECT COUNT(*)::int AS unread_count
+            FROM messages m
+            WHERE m.tenant_id = l.tenant_id
+              AND m.lead_id = l.id
+              AND m.direction = 'in'
+              AND (lr.last_read_at IS NULL OR m.created_at > lr.last_read_at)
+          ) msg_unread ON true` : ''}
           LEFT JOIN LATERAL (
             SELECT MIN(due_at) AS next_due_at
             FROM follow_ups f
@@ -1212,6 +1255,11 @@ async function getLeads(filters = {}, tenantId = 'admin') {
         `;
         const values = [tenantId];
         let paramCount = 2;
+
+        if (viewerUserId) {
+            values.push(viewerUserId);
+            paramCount++;
+        }
 
         if (filters.status) {
             const validStatus = validateStatus(filters.status);
@@ -1239,6 +1287,12 @@ async function getLeads(filters = {}, tenantId = 'admin') {
             paramCount++;
         }
 
+        if (filters.leadId) {
+            query += ` AND l.id = $${paramCount}`;
+            values.push(filters.leadId);
+            paramCount++;
+        }
+
         if (filters.assigneeId) {
             query += ` AND l.assignee_id = $${paramCount}`;
             values.push(filters.assigneeId);
@@ -1258,7 +1312,7 @@ async function getLeads(filters = {}, tenantId = 'admin') {
             values.push(filters.offset);
         }
 
-        const result = await pool.query(query, values);
+        const result = await runner.query(query, values);
         return result.rows;
     } catch (error) {
         console.error('❌ Error getting leads:', error.message);
@@ -2130,25 +2184,48 @@ async function upsertAnalyticsLayout(tenantId, userId, layout) {
     }
 }
 
-async function markLeadRead(leadId, tenantId = 'admin') {
+async function markLeadRead(leadId, tenantId = 'admin', userId = null) {
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
-        const result = await client.query(
-            `UPDATE leads
-             SET unread_count = 0, last_read_at = NOW(), updated_at = NOW()
-             WHERE id = $1 AND tenant_id = $2
-             RETURNING *`,
-            [leadId, tenantId]
-        );
+        let result = null;
+        if (userId) {
+            await client.query(
+                `INSERT INTO lead_reads (tenant_id, lead_id, user_id, last_read_at, updated_at)
+                 VALUES ($1, $2, $3, NOW(), NOW())
+                 ON CONFLICT (tenant_id, lead_id, user_id)
+                 DO UPDATE SET last_read_at = NOW(), updated_at = NOW()`,
+                [tenantId, leadId, userId]
+            );
+            result = await getLeadById(leadId, tenantId, userId, client);
+        } else {
+            const legacyResult = await client.query(
+                `UPDATE leads
+                 SET unread_count = 0, last_read_at = NOW(), updated_at = NOW()
+                 WHERE id = $1 AND tenant_id = $2
+                 RETURNING *`,
+                [leadId, tenantId]
+            );
+            result = legacyResult.rows[0] || null;
+        }
         await client.query('COMMIT');
-        return result.rows[0] || null;
+        return result || null;
     } catch (e) {
         await client.query('ROLLBACK');
         console.error('❌ markLeadRead error:', e.message);
         throw e;
     } finally {
         client.release();
+    }
+}
+
+async function getLeadById(leadId, tenantId = 'admin', userId = null, existingClient = null) {
+    const client = existingClient || await pool.connect();
+    try {
+        const rows = await getLeads({ leadId, userId, limit: 1 }, tenantId, client);
+        return rows[0] || null;
+    } finally {
+        if (!existingClient) client.release();
     }
 }
 
@@ -2236,6 +2313,7 @@ module.exports = {
     deleteLead,
     deleteAllLeads,
     getLeadStats,
+    getLeadById,
     getLeadsByStatus,
     healthCheck,
     createUser,

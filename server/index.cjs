@@ -18,12 +18,17 @@ const app = express();
 const server = http.createServer(app);
 
 // Environment & Config
+const hadInternalWebhookSecret = Boolean(process.env.INTERNAL_WEBHOOK_SECRET);
 const PORT = process.env.PORT || 4000;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 const NODE_ENV = process.env.NODE_ENV || 'development';
+if (!process.env.INTERNAL_WEBHOOK_SECRET) {
+  process.env.INTERNAL_WEBHOOK_SECRET = crypto.randomBytes(32).toString('hex');
+}
 const INTERNAL_WEBHOOK_SECRET = process.env.INTERNAL_WEBHOOK_SECRET || '';
-const ALLOW_LEGACY_TOKEN = process.env.ALLOW_LEGACY_TOKEN !== 'false';
+const ALLOW_LEGACY_TOKEN = process.env.ALLOW_LEGACY_TOKEN === 'true';
 const HAS_DATABASE = Boolean(process.env.DATABASE_URL);
+const EMBEDDED_WORKER_ENABLED = !process.argv.includes('--no-embedded-worker');
 
 // Meta (Facebook/Instagram) Webhooks
 const META_APP_SECRET = process.env.META_APP_SECRET || '';
@@ -184,8 +189,8 @@ if (!process.env.JWT_SECRET) {
   console.warn('⚠️ JWT_SECRET is missing. An ephemeral in-memory secret will be used until restart. Set JWT_SECRET in production.');
 }
 
-if (!INTERNAL_WEBHOOK_SECRET) {
-  console.warn('⚠️ INTERNAL_WEBHOOK_SECRET is missing. Internal endpoints will only accept loopback requests.');
+if (!hadInternalWebhookSecret) {
+  console.warn('⚠️ INTERNAL_WEBHOOK_SECRET was missing. Generated an in-memory secret for this process. Configure it explicitly for multi-process deployments.');
 }
 
 async function fetchJsonWithRetry(url, options = {}, retryOptions = {}) {
@@ -263,41 +268,16 @@ function verifyAnyToken(token) {
   }
 }
 
-function isLoopbackAddress(value) {
-  const normalized = String(value || '').trim().toLowerCase();
-  if (!normalized) return false;
-  if (normalized === '::1' || normalized === '127.0.0.1' || normalized === '::ffff:127.0.0.1') return true;
-  return normalized.startsWith('127.');
-}
-
-function isLoopbackRequest(req) {
-  const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-  return [
-    req.ip,
-    req.socket && req.socket.remoteAddress,
-    req.connection && req.connection.remoteAddress,
-    forwarded
-  ].some(isLoopbackAddress);
-}
-
 function safeInternalHeaders() {
   return INTERNAL_WEBHOOK_SECRET ? { 'x-internal-secret': INTERNAL_WEBHOOK_SECRET } : {};
 }
 
 function requireInternalRequest(req, res, next) {
-  if (INTERNAL_WEBHOOK_SECRET) {
-    const incomingSecret = req.headers['x-internal-secret'];
-    if (!safeEqual(incomingSecret, INTERNAL_WEBHOOK_SECRET)) {
-      return res.status(401).json({ error: 'Unauthorized internal request' });
-    }
+  const incomingSecret = req.headers['x-internal-secret'];
+  if (safeEqual(incomingSecret, INTERNAL_WEBHOOK_SECRET)) {
     return next();
   }
-
-  if (isLoopbackRequest(req)) {
-    return next();
-  }
-
-  return res.status(503).json({ error: 'Internal secret is not configured' });
+  return res.status(401).json({ error: 'Unauthorized internal request' });
 }
 
 // Middleware
@@ -1103,6 +1083,7 @@ async function upsertMetaInbound({ tenantId, source, contactKey, displayName, te
     }
   }
 
+  await emitLeadUpdatedScoped(tenantId, finalLead);
   await emitNewMessageScoped(tenantId, finalLead, {
     phone: finalLead.phone,
     name: finalLead.name || displayName || safeKey,
@@ -1839,7 +1820,10 @@ async function emitLeadUpdatedScoped(tenantId, lead) {
   const sockets = await io.in(tenantId).fetchSockets().catch(() => []);
   for (const socket of sockets) {
     if (socketCanAccessLead(socket, lead)) {
-      socket.emit('lead_updated', lead);
+      const decorated = (process.env.DATABASE_URL && typeof db.getLeadById === 'function')
+        ? await db.getLeadById(lead.id, tenantId, socket.userId).catch(() => lead)
+        : lead;
+      socket.emit('lead_updated', decorated || lead);
     } else if (lead.id) {
       socket.emit('lead_deleted', lead.id);
     }
@@ -1860,7 +1844,10 @@ async function emitNewMessageScoped(tenantId, lead, payload) {
   const sockets = await io.in(tenantId).fetchSockets().catch(() => []);
   for (const socket of sockets) {
     if (!lead || socketCanAccessLead(socket, lead)) {
-      socket.emit('new_message', payload);
+      socket.emit('new_message', {
+        ...(payload || {}),
+        lead_id: lead?.id || payload?.lead_id || null,
+      });
     }
   }
 }
@@ -1869,7 +1856,9 @@ async function emitScopedLeadList(tenantId) {
   if (!db || typeof db.getLeads !== 'function') return;
   const sockets = await io.in(tenantId).fetchSockets().catch(() => []);
   await Promise.all(sockets.map(async (socket) => {
-    const filters = socketCanViewAllLeads(socket) ? {} : { assigneeId: socket.userId };
+    const filters = socketCanViewAllLeads(socket)
+      ? { userId: socket.userId || null }
+      : { assigneeId: socket.userId, userId: socket.userId || null };
     const leads = await db.getLeads(filters, tenantId).catch(() => []);
     socket.emit('leads_updated', leads);
   }));
@@ -2191,9 +2180,17 @@ app.post('/api/internal/webhook', async (req, res) => requireInternalRequest(req
     }
   }
 
-  // Forward the event to the tenant's WebSocket room
-  // Events: 'new_message', 'qr_code', 'ready', 'authenticated', 'auth_failure', 'message_sent'
-  io.to(tenantId).emit(event, payload);
+  if (event === 'new_message' && payload && payload.phone) {
+    const currentLead = (db && typeof db.findLeadByPhone === 'function')
+      ? await db.findLeadByPhone(payload.phone, tenantId).catch(() => null)
+      : null;
+    if (currentLead) {
+      await emitLeadUpdatedScoped(tenantId, currentLead);
+      await emitNewMessageScoped(tenantId, currentLead, payload);
+    }
+  } else {
+    io.to(tenantId).emit(event, payload);
+  }
   res.json({ success: true });
 }));
 
@@ -2826,6 +2823,7 @@ app.get('/api/leads', requireTenantAuth, asyncHandler(async (req, res) => {
     limit: limit ? parseInt(limit) : undefined,
     offset: offset ? parseInt(offset) : undefined,
     assigneeId: canViewAllLeads(req) ? undefined : req.userId,
+    userId: req.userId || null,
   }, req.tenantId);
   res.json(leads);
 }));
@@ -2892,6 +2890,15 @@ app.put('/api/leads/:id', requireTenantAuth, asyncHandler(async (req, res) => {
 
   if (req.body.value !== undefined && !hasPermission(req, 'edit_budget')) {
     return res.status(403).json({ error: 'Büdcəni dəyişmək üçün icazəniz yoxdur' });
+  }
+
+  if (req.body.assignee_id !== undefined) {
+    const nextAssignee = req.body.assignee_id ? String(req.body.assignee_id) : null;
+    const canReassign = req.userRole === 'admin' || req.userRole === 'superadmin' || req.userRole === 'manager';
+    const assigningSelf = nextAssignee && String(req.userId || '') === nextAssignee;
+    if (!canReassign && !assigningSelf) {
+      return res.status(403).json({ error: 'Lead təyinatını dəyişmək icazəniz yoxdur' });
+    }
   }
 
   const beforeRes = await db.pool.query(
@@ -3156,46 +3163,88 @@ app.delete('/api/leads/:id', requireTenantAuth, asyncHandler(async (req, res) =>
 app.post('/api/leads/cleanup-duplicates', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
 
-  const result = await db.pool.query('SELECT * FROM leads WHERE tenant_id = $1 ORDER BY created_at ASC', [req.tenantId]);
-  const leads = result.rows;
+  const client = await db.pool.connect();
   const merged = [];
-  const seenSuffixes = new Map(); // suffix -> lead_id
+  try {
+    await client.query('BEGIN');
+    const result = await client.query('SELECT * FROM leads WHERE tenant_id = $1 ORDER BY created_at ASC FOR UPDATE', [req.tenantId]);
+    const leads = result.rows;
+    const seenSuffixes = new Map();
 
-  for (const lead of leads) {
-    const rawPhone = String(lead.phone || '').trim();
-    const lower = rawPhone.toLowerCase();
-    // Only merge WhatsApp-style numeric leads; skip external IDs like fb:/ig:
-    if (lower.startsWith('fb:') || lower.startsWith('ig:') || lower.startsWith('meta:')) {
-      continue;
-    }
-    const phone = rawPhone.replace(/\D/g, '');
-    if (!phone || phone.length < 7 || phone.length > 15) continue;
+    for (const lead of leads) {
+      const rawPhone = String(lead.phone || '').trim();
+      const lower = rawPhone.toLowerCase();
+      if (lower.startsWith('fb:') || lower.startsWith('ig:') || lower.startsWith('meta:')) continue;
+      const phone = rawPhone.replace(/\D/g, '');
+      if (!phone || phone.length < 7 || phone.length > 15) continue;
 
-    const suffix = phone.length >= 9 ? phone.slice(-9) : phone;
+      const suffix = phone.length >= 9 ? phone.slice(-9) : phone;
+      if (!seenSuffixes.has(suffix)) {
+        seenSuffixes.set(suffix, lead.id);
+        continue;
+      }
 
-    if (seenSuffixes.has(suffix)) {
-      // This is a duplicate – merge into the first lead seen with same suffix
       const canonicalId = seenSuffixes.get(suffix);
-      // Merge: update the canonical lead's last_message if empty, then delete duplicate
-      await db.pool.query(`
+      const canonicalRes = await client.query('SELECT * FROM leads WHERE id = $1 AND tenant_id = $2', [canonicalId, req.tenantId]);
+      const canonical = canonicalRes.rows[0];
+      if (!canonical) continue;
+
+      await client.query(`
         UPDATE leads
         SET
           last_message = COALESCE(leads.last_message, $1),
-          name = COALESCE(leads.name, $2),
+          source_message = COALESCE(leads.source_message, $2),
+          source_contact_name = COALESCE(leads.source_contact_name, $3),
+          name = COALESCE(leads.name, $4),
+          whatsapp_id = COALESCE(leads.whatsapp_id, $5),
+          value = GREATEST(COALESCE(leads.value, 0), COALESCE($6, 0)),
+          product_name = COALESCE(leads.product_name, $7),
+          extra_data = COALESCE(leads.extra_data, '{}'::jsonb) || COALESCE($8::jsonb, '{}'::jsonb),
           updated_at = NOW()
-        WHERE id = $3 AND tenant_id = $4
-      `, [lead.last_message, lead.name, canonicalId, req.tenantId]);
+        WHERE id = $9 AND tenant_id = $10
+      `, [
+        lead.last_message || null,
+        lead.source_message || null,
+        lead.source_contact_name || null,
+        lead.name || null,
+        lead.whatsapp_id || null,
+        lead.value || 0,
+        lead.product_name || null,
+        lead.extra_data || {},
+        canonicalId,
+        req.tenantId,
+      ]);
 
-      await db.pool.query('DELETE FROM leads WHERE id = $1 AND tenant_id = $2', [lead.id, req.tenantId]);
+      await client.query('UPDATE messages SET lead_id = $1, phone = $2 WHERE tenant_id = $3 AND lead_id = $4', [canonicalId, canonical.phone, req.tenantId, lead.id]);
+      await client.query('UPDATE follow_ups SET lead_id = $1, updated_at = NOW() WHERE tenant_id = $2 AND lead_id = $3', [canonicalId, req.tenantId, lead.id]);
+      await client.query('UPDATE notifications SET lead_id = $1 WHERE tenant_id = $2 AND lead_id = $3', [canonicalId, req.tenantId, lead.id]);
+      await client.query("UPDATE audit_logs SET entity_id = $1 WHERE tenant_id = $2 AND entity_type = 'lead' AND entity_id = $3", [canonicalId, req.tenantId, lead.id]);
+      await client.query(`
+        INSERT INTO lead_reads (tenant_id, lead_id, user_id, last_read_at, updated_at)
+        SELECT tenant_id, $1, user_id, MAX(last_read_at) AS last_read_at, NOW()
+        FROM lead_reads
+        WHERE tenant_id = $2 AND lead_id = $3
+        GROUP BY tenant_id, user_id
+        ON CONFLICT (tenant_id, lead_id, user_id)
+        DO UPDATE SET
+          last_read_at = GREATEST(lead_reads.last_read_at, EXCLUDED.last_read_at),
+          updated_at = NOW()
+      `, [canonicalId, req.tenantId, lead.id]);
+      await client.query('DELETE FROM lead_reads WHERE tenant_id = $1 AND lead_id = $2', [req.tenantId, lead.id]);
+      await client.query('DELETE FROM leads WHERE id = $1 AND tenant_id = $2', [lead.id, req.tenantId]);
+
       merged.push({ deleted: lead.id, mergedInto: canonicalId, phone: lead.phone });
-      console.log(`🧹 Merged duplicate: ${lead.phone} → ${canonicalId}`);
-    } else {
-      seenSuffixes.set(suffix, lead.id);
+      console.log(`🧹 Merged duplicate safely: ${lead.phone} → ${canonicalId}`);
     }
+
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
   }
 
-  // Broadcast updated lead list to the tenant
-  const updatedLeads = await db.getLeads({}, req.tenantId);
   await emitScopedLeadList(req.tenantId);
 
   res.json({ merged, count: merged.length, message: `Merged ${merged.length} duplicate leads` });
@@ -3265,10 +3314,15 @@ app.post('/api/leads/:id/read', requireTenantAuth, asyncHandler(async (req, res)
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   const visibleLead = await loadAccessibleLead(req, req.params.id);
   if (!visibleLead) return res.status(404).json({ error: 'Lead not found' });
-  const lead = await db.markLeadRead(req.params.id, req.tenantId);
+  const lead = await db.markLeadRead(req.params.id, req.tenantId, req.userId || null);
   if (!lead) return res.status(404).json({ error: 'Lead not found' });
-  io.to(req.tenantId).emit('lead_read', { leadId: req.params.id, timestamp: new Date().toISOString() });
-  res.json({ success: true });
+  const room = req.userId ? `${req.tenantId}:user:${req.userId}` : req.tenantId;
+  io.to(room).emit('lead_read', {
+    leadId: req.params.id,
+    timestamp: lead.last_read_at || new Date().toISOString(),
+    unread_count: lead.unread_count ?? 0,
+  });
+  res.json({ success: true, lead });
 }));
 
 // Close/reopen conversation (pauses delay/SLA until next inbound message)
@@ -3462,7 +3516,6 @@ app.post('/api/leads/:id/follow-ups', requireTenantAuth, asyncHandler(async (req
 
   // Broadcast lead updated (so UI can show next_followup_due_at)
   try {
-    const updatedLeads = await db.getLeads({}, req.tenantId);
     await emitScopedLeadList(req.tenantId);
   } catch { }
 
@@ -3556,7 +3609,6 @@ app.patch('/api/follow-ups/:id', requireTenantAuth, asyncHandler(async (req, res
 
   // Broadcast lead list refresh (next due might change)
   try {
-    const updatedLeads = await db.getLeads({}, req.tenantId);
     await emitScopedLeadList(req.tenantId);
   } catch { }
 
@@ -4008,7 +4060,7 @@ app.get('/api/analytics/response-times', requireTenantAuth, requirePermission('v
     }
   }
 
-  const by_operator = Array.from(op.entries()).map(([id, data]) => {
+  let by_operator = Array.from(op.entries()).map(([id, data]) => {
     const fr = makeStats(data.frt);
     const cg = makeStats(data.cgt);
     return {
@@ -4021,6 +4073,10 @@ app.get('/api/analytics/response-times', requireTenantAuth, requirePermission('v
       cgt_max_minutes: cg.max_minutes,
     };
   }).sort((a, b) => (b.frt_count || 0) - (a.frt_count || 0));
+
+  if (!hasPermission(req, 'view_other_operator_stats')) {
+    by_operator = by_operator.filter((row) => row.user_id && String(row.user_id) === String(req.userId || ''));
+  }
 
   res.json({
     range: { start: start.toISOString(), end: end.toISOString() },
@@ -4808,7 +4864,7 @@ app.post('/api/meta/pages/:pageId/subscribe', requireTenantAuth, requireAdmin, a
 // Manual retry for failed Meta outbound messages
 app.post('/api/meta/messages/:id/retry', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
-  if (req.userPermissions && req.userPermissions.send_messages === false) {
+  if (!hasPermission(req, 'send_messages')) {
     return res.status(403).json({ error: 'Sizə mesaj göndərmək icazəsi verilməyib' });
   }
 
@@ -5318,9 +5374,13 @@ if (distExists) {
 // in-process so both API (:4000) and Worker (:4001) share one Node.
 // ═══════════════════════════════════════════════════════════════
 
-try {
-  require('./worker.cjs');
-  console.log('🤖 WhatsApp Worker embedded in same process (single-service mode).');
-} catch (err) {
-  console.error('⚠️ Failed to start embedded Worker:', err.message);
+if (EMBEDDED_WORKER_ENABLED) {
+  try {
+    require('./worker.cjs');
+    console.log('🤖 WhatsApp Worker embedded in same process (single-service mode).');
+  } catch (err) {
+    console.error('⚠️ Failed to start embedded Worker:', err.message);
+  }
+} else {
+  console.log('ℹ️ Embedded WhatsApp worker disabled for this API process.');
 }

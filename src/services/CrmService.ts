@@ -440,10 +440,14 @@ class CrmServiceImpl {
 
       this.cleanupOldProcessedMessages();
 
-      const savedLead = await this.addLead(newLead);
-      // Attach transient message metadata for the UI layer (not persisted in DB)
-      const enrichedLead = { ...(savedLead as any), __fromMe: Boolean(data.fromMe), __message_whatsapp_id: data.whatsapp_id || null } as any;
-      console.log('✨ New lead saved:', savedLead.phone);
+      const messageLead = this.normalizeLead({
+        ...(cachedLead || {}),
+        ...newLead,
+        id: data.lead_id || cachedLead?.id || '',
+        created_at: cachedLead?.created_at || data.timestamp || new Date().toISOString(),
+        updated_at: data.timestamp || new Date().toISOString(),
+      } as any);
+      const enrichedLead = { ...(messageLead as any), __fromMe: Boolean(data.fromMe), __message_whatsapp_id: data.whatsapp_id || null } as any;
       this.notifyMessageListeners(enrichedLead as any);
     });
 
@@ -509,9 +513,10 @@ class CrmServiceImpl {
         const leadId = data?.leadId;
         if (!leadId) return;
         const ts = data?.timestamp || new Date().toISOString();
+        const nextUnread = Number.isFinite(Number(data?.unread_count)) ? Number(data.unread_count) : 0;
         const idx = this.leadsCache.findIndex(l => l.id === leadId);
         if (idx !== -1) {
-          const updated = { ...this.leadsCache[idx], unread_count: 0, last_read_at: ts } as any;
+          const updated = { ...this.leadsCache[idx], unread_count: nextUnread, last_read_at: ts } as any;
           this.leadsCache[idx] = updated;
 
           const raw = localStorage.getItem(getStorageKey());
@@ -809,13 +814,15 @@ class CrmServiceImpl {
         headers: this.getAuthHeaders()
       });
 
-      // Optimistic local update: some deployments may not emit `lead_read` over socket.
-      // Keep UI badge in sync immediately after successful API call.
       if (res.ok) {
         try {
+          const data = await res.json().catch(() => ({}));
+          const lead = data?.lead || null;
+          const nextUnread = Number.isFinite(Number(lead?.unread_count)) ? Number(lead.unread_count) : 0;
+          const nextReadAt = lead?.last_read_at || new Date().toISOString();
           const idx = this.leadsCache.findIndex(l => l.id === leadId);
           if (idx !== -1) {
-            const updated = { ...this.leadsCache[idx], unread_count: 0, last_read_at: new Date().toISOString() } as any;
+            const updated = { ...this.leadsCache[idx], unread_count: nextUnread, last_read_at: nextReadAt } as any;
             this.leadsCache[idx] = updated;
 
             const raw = localStorage.getItem(getStorageKey());

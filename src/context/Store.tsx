@@ -216,9 +216,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
           newList[existingIndex] = { ...newList[existingIndex], ...finalLead };
           return newList;
         });
-      } else {
-        // New Conversation!
-        console.log('➕ Adding new lead to UI:', finalLead.phone);
+      } else if (finalLead.id || finalLead.phone) {
+        console.log('➕ Adding new lead to UI from scoped socket event:', finalLead.phone);
         setLeads(prev => [finalLead, ...prev]);
       }
     });
