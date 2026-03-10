@@ -84,6 +84,7 @@ type SavedConfig = {
 
 type MetricType = 'message' | 'lead' | 'purchase';
 type PresetType = 'today' | 'yesterday' | '7d' | '30d' | 'all' | 'custom';
+type SortType = 'spend_desc' | 'results_desc' | 'cost_per_result_asc' | 'ctr_desc' | 'name_asc';
 
 const EMPTY_CONFIG: SavedConfig = {
   hasToken: false,
@@ -109,7 +110,7 @@ const EMPTY_INSIGHTS: InsightsPayload = {
 };
 
 function formatMoney(v: number) {
-  return `₼ ${Number(v || 0).toFixed(2)}`;
+  return `$${Number(v || 0).toFixed(2)}`;
 }
 
 function formatNum(v: number) {
@@ -195,6 +196,7 @@ export default function FacebookImportPage() {
   const [dateRange, setDateRange] = useState<{ start: string; end: string }>({ start: '', end: '' });
   const [metric, setMetric] = useState<MetricType>('message');
   const [activePreset, setActivePreset] = useState<PresetType>('all');
+  const [sortBy, setSortBy] = useState<SortType>('spend_desc');
 
   const selectedAccounts = useMemo(
     () => accounts.filter((a) => selectedAccountIds.includes(a.account_id) || selectedAccountIds.includes(a.id) || selectedAccountIds.includes(a.api_id)),
@@ -225,6 +227,32 @@ export default function FacebookImportPage() {
     }
     return map;
   }, [filteredCampaigns]);
+
+  const sortedCampaigns = useMemo(() => {
+    const rows = [...insights.campaigns].filter((campaign) => {
+      const q = campaignSearch.trim().toLowerCase();
+      if (!q) return true;
+      return [campaign.name, campaign.account_name, campaign.objective, campaign.status].filter(Boolean).join(' ').toLowerCase().includes(q);
+    });
+
+    rows.sort((a, b) => {
+      switch (sortBy) {
+        case 'results_desc':
+          return b.metrics.results - a.metrics.results;
+        case 'cost_per_result_asc':
+          return a.metrics.cost_per_result - b.metrics.cost_per_result;
+        case 'ctr_desc':
+          return b.metrics.ctr - a.metrics.ctr;
+        case 'name_asc':
+          return a.name.localeCompare(b.name);
+        case 'spend_desc':
+        default:
+          return b.metrics.spend - a.metrics.spend;
+      }
+    });
+
+    return rows;
+  }, [insights.campaigns, campaignSearch, sortBy]);
 
   const rangeLabel = useMemo(() => {
     if (!dateRange.start && !dateRange.end) return 'Tum zamanlar';
@@ -271,10 +299,7 @@ export default function FacebookImportPage() {
   useEffect(() => {
     (async () => {
       try {
-        const cfg = await loadConfig();
-        if ((cfg.selectedCampaignIds || []).length > 0) {
-          await loadInsights({ start: '', end: '' }, 'message');
-        }
+        await loadConfig();
       } catch (e: any) {
         setMessage(e?.message || 'Facebook config oxunmadi');
       }
@@ -367,9 +392,8 @@ export default function FacebookImportPage() {
       setSelectedAccountIds(cfg.selectedAccountIds);
       setSelectedCampaignIds(cfg.selectedCampaignIds);
       setTokenInput('');
-      setShowSettings(false);
       setMessage('Facebook ayarlari saxlanildi.');
-      await loadInsights(dateRange, metric);
+      setShowSettings(false);
     } catch (e: any) {
       setMessage(e?.message || 'Save xetasi');
     } finally {
@@ -394,7 +418,6 @@ export default function FacebookImportPage() {
       setSelectedAccountIds(cfg.selectedAccountIds);
       setSelectedCampaignIds(cfg.selectedCampaignIds);
       setMessage('Facebook cache yenilendi.');
-      await loadInsights(dateRange, metric);
     } catch (e: any) {
       setMessage(e?.message || 'Refresh xetasi');
     } finally {
@@ -415,12 +438,11 @@ export default function FacebookImportPage() {
     const next = buildPresetRange(preset);
     setActivePreset(preset);
     setDateRange(next);
-    await loadInsights(next, metric);
+    // only set the range; fetch happens on manual update
   };
 
-  const handleMetricChange = async (nextMetric: MetricType) => {
+  const handleMetricChange = (nextMetric: MetricType) => {
     setMetric(nextMetric);
-    await loadInsights(dateRange, nextMetric);
   };
 
   if (currentUser?.role !== 'admin' && currentUser?.role !== 'superadmin') {
@@ -447,7 +469,6 @@ export default function FacebookImportPage() {
 
           <div className="flex flex-wrap items-center gap-2">
             <HeaderBadge label="Range" value={rangeLabel} />
-            <HeaderBadge label="Metric" value={metricLabel(metric)} />
             <HeaderBadge label="Campaigns" value={String(selectedCampaignIds.length)} />
             <ActionButton variant="secondary" onClick={() => setShowSettings(true)} icon={<Settings2 className="w-4 h-4" />}>
               Ayarlar
@@ -459,23 +480,9 @@ export default function FacebookImportPage() {
         </div>
 
         <div className="px-5 py-4 border-b border-slate-800 bg-slate-900/30 flex flex-col xl:flex-row xl:items-center justify-between gap-4">
-          <div className="flex flex-wrap items-center gap-2">
-            {(['message', 'lead', 'purchase'] as MetricType[]).map((m) => (
-              <button
-                key={m}
-                type="button"
-                onClick={() => handleMetricChange(m)}
-                disabled={busyInsights || selectedCampaignIds.length === 0}
-                className={cn(
-                  'rounded-xl border px-3 py-2 text-sm font-semibold transition-colors',
-                  metric === m
-                    ? 'border-blue-500/30 bg-blue-600/15 text-blue-200'
-                    : 'border-slate-700 bg-slate-900/50 text-slate-300 hover:bg-slate-800'
-                )}
-              >
-                {metricLabel(m)}
-              </button>
-            ))}
+          <div className="flex flex-wrap items-center gap-2 text-sm text-slate-400">
+            <span>Metric:</span>
+            <span className="rounded-xl border border-slate-700 bg-slate-900/50 px-3 py-2 font-semibold text-slate-200">{metricLabel(metric)}</span>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -507,6 +514,18 @@ export default function FacebookImportPage() {
           <DateField value={dateRange.start} onChange={(v) => { setDateRange((p) => ({ ...p, start: v })); setActivePreset('custom'); }} />
           <span className="text-slate-500 text-sm">-</span>
           <DateField value={dateRange.end} onChange={(v) => { setDateRange((p) => ({ ...p, end: v })); setActivePreset('custom'); }} />
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value as SortType)}
+            className="rounded-xl border border-slate-800 bg-slate-950/35 px-3 py-2 text-sm text-slate-200 outline-none"
+            title="Sort by"
+          >
+            <option value="spend_desc">Sort: Spend high-low</option>
+            <option value="results_desc">Sort: Results high-low</option>
+            <option value="cost_per_result_asc">Sort: Cost/result low-high</option>
+            <option value="ctr_desc">Sort: CTR high-low</option>
+            <option value="name_asc">Sort: Name A-Z</option>
+          </select>
           <ActionButton onClick={applyDateFilter} busy={busyInsights} icon={<Filter className="w-4 h-4" />} disabled={selectedCampaignIds.length === 0}>
             Guncelle
           </ActionButton>
@@ -514,7 +533,7 @@ export default function FacebookImportPage() {
 
         <div className="p-5 grid grid-cols-2 xl:grid-cols-5 gap-4">
           <MetricCard label="Harcanan Tutar" value={formatMoney(insights.summary.spend)} />
-          <MetricCard label={`${metricLabel(metric)} sayi`} value={formatNum(insights.summary.results)} />
+          <MetricCard label="Sonuclar" value={formatNum(insights.summary.results)} />
           <MetricCard label="Sonuc basina ucret" value={formatMoney(insights.summary.cost_per_result)} />
           <MetricCard label="CPM" value={formatMoney(insights.summary.cpm)} />
           <MetricCard label="CTR" value={formatPct(insights.summary.ctr)} />
@@ -553,11 +572,11 @@ export default function FacebookImportPage() {
               </tr>
             </thead>
             <tbody>
-              {insights.campaigns.length === 0 ? (
+              {sortedCampaigns.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="px-4 py-16 text-center text-slate-500">Secilmis kampaniyalar ucun data gorunmur. Ayarlardan kampaniya secib sonra tarix filtrini tetbiq et.</td>
                 </tr>
-              ) : insights.campaigns.map((campaign, idx) => (
+              ) : sortedCampaigns.map((campaign, idx) => (
                 <tr key={campaign.id} className={cn('border-t border-slate-800/60', idx % 2 === 0 ? 'bg-slate-900/20' : 'bg-slate-950/10')}>
                   <td className="px-4 py-4 align-top min-w-[320px]">
                     <div className="font-semibold text-slate-100">{campaign.name}</div>
@@ -578,10 +597,10 @@ export default function FacebookImportPage() {
                 </tr>
               ))}
             </tbody>
-            {insights.campaigns.length > 0 ? (
+            {sortedCampaigns.length > 0 ? (
               <tfoot className="border-t border-slate-800 bg-slate-950/50">
                 <tr className="text-sm font-semibold text-slate-100">
-                  <td className="px-4 py-4">{insights.campaigns.length} kampaniyadan netice</td>
+                  <td className="px-4 py-4">{sortedCampaigns.length} kampaniyadan netice</td>
                   <td className="px-4 py-4 text-slate-400">Toplam</td>
                   <td className="px-4 py-4 text-right">{formatNum(insights.summary.results)}</td>
                   <td className="px-4 py-4 text-right">{formatMoney(insights.summary.cost_per_result)}</td>
@@ -623,6 +642,27 @@ export default function FacebookImportPage() {
                     Hesablari getir
                   </ActionButton>
                 </div>
+              </DrawerSection>
+
+              <DrawerSection title="Metric tipi">
+                <div className="flex flex-wrap gap-2">
+                  {(['message', 'lead', 'purchase'] as MetricType[]).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => handleMetricChange(m)}
+                      className={cn(
+                        'rounded-xl border px-3 py-2 text-sm font-semibold transition-colors',
+                        metric === m
+                          ? 'border-blue-500/30 bg-blue-600/15 text-blue-200'
+                          : 'border-slate-700 bg-slate-900/50 text-slate-300 hover:bg-slate-800'
+                      )}
+                    >
+                      {metricLabel(m)}
+                    </button>
+                  ))}
+                </div>
+                <div className="mt-3 text-xs text-slate-500">Bu secim ana panelde gorunmur. Yalniz hansı netice tipinin hesablanacagini idare edir.</div>
               </DrawerSection>
 
               <DrawerSection title="2. Reklam hesablari" right={<SearchInline value={accountSearch} onChange={setAccountSearch} />}>

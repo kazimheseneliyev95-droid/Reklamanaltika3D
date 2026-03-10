@@ -4257,7 +4257,7 @@ async function fetchFacebookInsightsForCampaigns(userAccessToken, campaigns = []
 
     let nextUrl = `https://graph.facebook.com/v19.0/${encodeURIComponent(campaignId)}/insights?fields=${encodeURIComponent(
       'campaign_id,campaign_name,spend,impressions,clicks,ctr,cpm,actions,cost_per_action_type,date_start,date_stop'
-    )}&limit=200&time_increment=1&access_token=${encodeURIComponent(token)}`;
+    )}&limit=200&access_token=${encodeURIComponent(token)}`;
     if (hasRange) nextUrl += `&time_range=${encodeURIComponent(JSON.stringify({ since, until }))}`;
     else nextUrl += '&date_preset=maximum';
 
