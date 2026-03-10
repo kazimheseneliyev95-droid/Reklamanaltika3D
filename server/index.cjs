@@ -2557,29 +2557,46 @@ async function loadAccessibleLead(req, leadId) {
 
 const MEDIA_ROOT = path.join(__dirname, 'media');
 
-app.use('/api/media', requireTenantAuthFlexible, (req, res, next) => {
-  // URL shape: /api/media/:tenantSafe/:file
-  const parts = String(req.path || '').split('/').filter(Boolean);
-  const tenantFromUrl = parts[0] ? String(parts[0]) : '';
-  if (!tenantFromUrl) return res.status(400).send('Missing tenant');
+app.get('/api/media/:tenantSafe/:file', requireTenantAuthFlexible, asyncHandler(async (req, res) => {
+  const tenantFromUrl = String(req.params.tenantSafe || '');
+  const fileKey = String(req.params.file || '').trim();
+  if (!tenantFromUrl || !fileKey) return res.status(400).send('Missing media path');
 
   const safeFromToken = toSafeTenantId(req.tenantId);
   const safeFromUrl = toSafeTenantId(tenantFromUrl);
   if (safeFromToken !== safeFromUrl) return res.status(403).send('Forbidden');
+  if (/[/\\]/.test(fileKey)) return res.status(400).send('Invalid media key');
 
-  // Basic hardening (express.static also prevents path traversal)
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  next();
-}, express.static(MEDIA_ROOT, {
-  index: false,
-  fallthrough: false,
-  etag: true,
-  maxAge: NODE_ENV === 'production' ? '7d' : 0,
-  setHeaders: (res) => {
-    if (NODE_ENV !== 'production') {
-      res.setHeader('Cache-Control', 'no-store');
+  if (NODE_ENV !== 'production') {
+    res.setHeader('Cache-Control', 'no-store');
+  } else {
+    res.setHeader('Cache-Control', 'public, max-age=604800, immutable');
+  }
+
+  const fullPath = path.join(MEDIA_ROOT, safeFromUrl, fileKey);
+  if (fs.existsSync(fullPath)) {
+    return res.sendFile(fullPath);
+  }
+
+  if (process.env.DATABASE_URL && db && typeof db.getWhatsAppMediaAsset === 'function') {
+    const asset = await db.getWhatsAppMediaAsset(req.tenantId, fileKey).catch(() => null);
+    if (asset && asset.data) {
+      try {
+        const dir = path.join(MEDIA_ROOT, safeFromUrl);
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, fileKey), asset.data);
+      } catch {
+        // ignore disk restore issues; DB response below is enough
+      }
+      if (asset.mime_type) res.type(String(asset.mime_type));
+      const inlineName = String(asset.original_file_name || fileKey).replace(/[\r\n"]/g, '_');
+      res.setHeader('Content-Disposition', `inline; filename="${inlineName}"`);
+      return res.send(asset.data);
     }
   }
+
+  return res.status(404).send('Media not found');
 }));
 
 // Tenant profile (display name, etc.)

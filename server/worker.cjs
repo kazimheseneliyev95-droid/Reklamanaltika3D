@@ -227,6 +227,22 @@ async function maybePersistWhatsAppMedia(tenantId, msg, unwrapped, msgType, what
 
         fs.writeFileSync(fullPath, buffer);
 
+        if (HAS_DATABASE && db && typeof db.upsertWhatsAppMediaAsset === 'function') {
+            try {
+                await db.upsertWhatsAppMediaAsset({
+                    tenantId: tenantId,
+                    fileKey: storedFileName,
+                    kind: msgType,
+                    mimeType: mimeType || null,
+                    originalFileName: fileNameHint || null,
+                    bytes: buffer.length,
+                    data: buffer,
+                });
+            } catch (assetErr) {
+                console.warn('⚠️ [' + tenantId + '] Media DB backup failed:', assetErr && assetErr.message ? assetErr.message : assetErr);
+            }
+        }
+
         return {
             kind: msgType,
             mimeType: mimeType || null,

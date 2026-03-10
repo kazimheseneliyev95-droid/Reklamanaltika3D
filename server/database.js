@@ -136,6 +136,18 @@ async function initDb() {
           CONSTRAINT messages_wa_tenant_unique UNIQUE (whatsapp_id, tenant_id)
         );
 
+        CREATE TABLE IF NOT EXISTS whatsapp_media_assets (
+          tenant_id VARCHAR(50) NOT NULL,
+          file_key VARCHAR(255) NOT NULL,
+          kind VARCHAR(30),
+          mime_type VARCHAR(120),
+          original_file_name VARCHAR(255),
+          bytes INTEGER DEFAULT 0,
+          data BYTEA NOT NULL,
+          created_at TIMESTAMP DEFAULT NOW(),
+          PRIMARY KEY (tenant_id, file_key)
+        );
+
         CREATE TABLE IF NOT EXISTS meta_pages (
           tenant_id VARCHAR(50) NOT NULL,
           page_id VARCHAR(64) NOT NULL,
@@ -643,6 +655,24 @@ async function initDb() {
             console.error('Migration warning (messages.metadata):', e.message);
         }
 
+        try {
+            await client.query(`
+              CREATE TABLE IF NOT EXISTS whatsapp_media_assets (
+                tenant_id VARCHAR(50) NOT NULL,
+                file_key VARCHAR(255) NOT NULL,
+                kind VARCHAR(30),
+                mime_type VARCHAR(120),
+                original_file_name VARCHAR(255),
+                bytes INTEGER DEFAULT 0,
+                data BYTEA NOT NULL,
+                created_at TIMESTAMP DEFAULT NOW(),
+                PRIMARY KEY (tenant_id, file_key)
+              );
+            `);
+        } catch (e) {
+            console.warn('⚠️ Migration warning (whatsapp_media_assets):', e.message);
+        }
+
         // Ensure outbox retry columns exist
         try {
             await client.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS attempts INTEGER DEFAULT 0;');
@@ -716,6 +746,7 @@ async function initDb() {
             CREATE INDEX IF NOT EXISTS idx_messages_polling ON messages(direction, status);
             CREATE INDEX IF NOT EXISTS idx_messages_next_attempt_at ON messages(next_attempt_at);
             CREATE INDEX IF NOT EXISTS idx_messages_claimed_at ON messages(claimed_at);
+            CREATE INDEX IF NOT EXISTS idx_whatsapp_media_assets_created_at ON whatsapp_media_assets(tenant_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_fb_ad_imports_auto_sync_due ON facebook_ad_imports (auto_sync_enabled, auto_sync_next_at);
             CREATE INDEX IF NOT EXISTS idx_fb_ad_insight_cache_lookup ON facebook_ad_insight_cache (tenant_id, metric, date_start, campaign_id);
             CREATE INDEX IF NOT EXISTS idx_meta_pages_tenant ON meta_pages(tenant_id);
@@ -1540,6 +1571,44 @@ async function appendMessage({ leadId, phone, body, direction, whatsappId, metad
         // Non-fatal - log and continue
         console.warn('⚠️ appendMessage error:', error.message);
     }
+}
+
+async function upsertWhatsAppMediaAsset({ tenantId, fileKey, kind, mimeType, originalFileName, bytes, data }) {
+    if (!tenantId || !fileKey || !data) return null;
+    const res = await pool.query(
+        `INSERT INTO whatsapp_media_assets (tenant_id, file_key, kind, mime_type, original_file_name, bytes, data, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+         ON CONFLICT (tenant_id, file_key)
+         DO UPDATE SET
+           kind = EXCLUDED.kind,
+           mime_type = EXCLUDED.mime_type,
+           original_file_name = EXCLUDED.original_file_name,
+           bytes = EXCLUDED.bytes,
+           data = EXCLUDED.data
+         RETURNING tenant_id, file_key, kind, mime_type, original_file_name, bytes, created_at`,
+        [
+            String(tenantId),
+            String(fileKey),
+            kind ? String(kind) : null,
+            mimeType ? String(mimeType) : null,
+            originalFileName ? String(originalFileName) : null,
+            Number(bytes || 0),
+            data
+        ]
+    );
+    return res.rows[0] || null;
+}
+
+async function getWhatsAppMediaAsset(tenantId, fileKey) {
+    if (!tenantId || !fileKey) return null;
+    const res = await pool.query(
+        `SELECT tenant_id, file_key, kind, mime_type, original_file_name, bytes, data, created_at
+         FROM whatsapp_media_assets
+         WHERE tenant_id = $1 AND file_key = $2
+         LIMIT 1`,
+        [String(tenantId), String(fileKey)]
+    );
+    return res.rows[0] || null;
 }
 
 async function messageExists(whatsappId, tenantId = 'admin') {
@@ -2618,6 +2687,8 @@ module.exports = {
     completeMetaWebhookEvent,
     failMetaWebhookEvent,
     upsertMetaUserToken,
+    upsertWhatsAppMediaAsset,
+    getWhatsAppMediaAsset,
     upsertFacebookAdImport,
     getFacebookAdImport,
     upsertFacebookInsightRows,
