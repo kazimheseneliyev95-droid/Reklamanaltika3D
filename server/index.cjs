@@ -4570,6 +4570,18 @@ async function fetchFacebookAdAccountsForToken(userAccessToken) {
 
 function sanitizeFacebookAdImportConfig(row) {
   const raw = row && typeof row === 'object' ? row : {};
+  const formatDateOnly = (value) => {
+    if (!value) return '';
+    if (value instanceof Date && !Number.isNaN(value.getTime())) {
+      return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
+    }
+    const rawValue = String(value || '').trim();
+    if (!rawValue) return '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(rawValue)) return rawValue;
+    const parsed = new Date(rawValue);
+    if (Number.isNaN(parsed.getTime())) return '';
+    return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}-${String(parsed.getDate()).padStart(2, '0')}`;
+  };
   const accountCache = Array.isArray(raw.account_cache) ? raw.account_cache.map(normalizeFacebookAdAccount) : [];
   const campaignCache = Array.isArray(raw.campaign_cache) ? raw.campaign_cache.map(normalizeFacebookCampaign) : [];
   const selectedAccountIds = Array.isArray(raw.selected_account_ids)
@@ -4594,8 +4606,8 @@ function sanitizeFacebookAdImportConfig(row) {
     autoSync: {
       mode: raw.auto_sync_enabled === true ? 'automatic' : 'manual',
       enabled: raw.auto_sync_enabled === true,
-      startDate: raw.auto_sync_start_date ? String(raw.auto_sync_start_date).slice(0, 10) : '',
-      endDate: raw.auto_sync_end_date ? String(raw.auto_sync_end_date).slice(0, 10) : '',
+      startDate: formatDateOnly(raw.auto_sync_start_date),
+      endDate: formatDateOnly(raw.auto_sync_end_date),
       everyHours: Math.max(1, parseInt(String(raw.auto_sync_every_hours || '1'), 10) || 1),
       minute: Math.min(59, Math.max(0, parseInt(String(raw.auto_sync_minute || '0'), 10) || 0)),
       nextAt: raw.auto_sync_next_at || null,
@@ -4634,8 +4646,20 @@ function sanitizeFacebookAutoSyncInput(input) {
 }
 
 function buildFacebookSyncRange(config) {
-  const startDate = String(config?.auto_sync_start_date || '').trim();
-  const endDate = String(config?.auto_sync_end_date || '').trim();
+  const normalizeDate = (value) => {
+    if (!value) return '';
+    if (value instanceof Date && !Number.isNaN(value.getTime())) {
+      return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
+    }
+    const rawValue = String(value || '').trim();
+    if (!rawValue) return '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(rawValue)) return rawValue;
+    const parsed = new Date(rawValue);
+    if (Number.isNaN(parsed.getTime())) return '';
+    return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}-${String(parsed.getDate()).padStart(2, '0')}`;
+  };
+  const startDate = normalizeDate(config?.auto_sync_start_date);
+  const endDate = normalizeDate(config?.auto_sync_end_date);
   const today = new Date();
   const todayIso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
   return {
