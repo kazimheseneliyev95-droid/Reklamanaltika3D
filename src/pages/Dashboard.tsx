@@ -138,6 +138,94 @@ function FunnelCard({
   );
 }
 
+function SpendCard({ spend, campaignCount }: { spend: number; campaignCount: number }) {
+  return (
+    <div className="relative overflow-hidden rounded-[24px] border border-slate-800 bg-[linear-gradient(180deg,rgba(19,31,52,0.9),rgba(9,16,31,0.98))] p-4 shadow-[0_20px_60px_rgba(2,8,23,0.28)]">
+      <div className="absolute left-0 top-0 h-full w-1.5 bg-blue-500" />
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">Total Xerc</div>
+          <div className="mt-5 text-5xl font-extrabold tracking-tight text-white tabular-nums">{formatMoney(spend)}</div>
+          <div className="mt-3 text-[12px] text-slate-400">{campaignCount} import olunmuş kampaniya</div>
+        </div>
+      </div>
+
+      <div className="mt-5 space-y-2">
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-slate-500">Campaign hovuzu</div>
+          <div className="mt-1 text-lg font-bold text-white tabular-nums">{formatCount(campaignCount)}</div>
+        </div>
+        <div className="h-1.5 rounded-full bg-slate-800/80 overflow-hidden">
+          <div className="h-full w-full rounded-full bg-blue-500" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GroupMobileCard({
+  group,
+  visibleSummaryCards,
+  totalSpend,
+  totalRevenue,
+  fieldLabel,
+}: {
+  group: GroupRow;
+  visibleSummaryCards: DashboardResponse['summaryCards'];
+  totalSpend: number;
+  totalRevenue: number;
+  fieldLabel: string;
+}) {
+  const spendShare = totalSpend > 0 ? (Number(group.facebook.spend || 0) / totalSpend) * 100 : 0;
+  const revenueShare = totalRevenue > 0 ? (Number(group.crm.won_revenue || 0) / totalRevenue) * 100 : 0;
+
+  return (
+    <div className="rounded-[24px] border border-slate-800 bg-[linear-gradient(180deg,rgba(10,18,33,0.98),rgba(8,14,28,0.98))] p-4 shadow-[0_14px_40px_rgba(2,8,23,0.28)]">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-xl font-extrabold text-slate-100 break-words">{group.value}</div>
+          <div className="mt-1 text-[11px] text-slate-500">
+            {fieldLabel} · {group.campaigns.length} kampaniya
+          </div>
+        </div>
+        <div className="rounded-2xl border border-blue-500/20 bg-blue-500/10 px-3 py-2 text-right">
+          <div className="text-[10px] uppercase tracking-wide text-blue-200/70">ROAS</div>
+          <div className="text-lg font-extrabold text-blue-100 tabular-nums">{group.merged.roas.toFixed(2)}x</div>
+        </div>
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-3">
+        <div className="rounded-2xl border border-slate-800 bg-slate-950/35 p-3">
+          <div className="text-[10px] uppercase tracking-wide text-slate-500">Spend</div>
+          <div className="mt-1 text-2xl font-extrabold text-white tabular-nums">{formatMoney(group.facebook.spend)}</div>
+          <div className="mt-1 text-[11px] text-slate-500">Totalın {formatPercent(spendShare)}</div>
+        </div>
+        <div className="rounded-2xl border border-slate-800 bg-slate-950/35 p-3">
+          <div className="text-[10px] uppercase tracking-wide text-slate-500">Revenue</div>
+          <div className="mt-1 text-2xl font-extrabold text-emerald-300 tabular-nums">{formatMoney(group.crm.won_revenue, '₼')}</div>
+          <div className="mt-1 text-[11px] text-slate-500">Totalın {formatPercent(revenueShare)}</div>
+        </div>
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-3">
+        {visibleSummaryCards.map((card) => {
+          const count = getGroupMetricCount(group, card.key);
+          const costPer = count > 0 ? Number(group.facebook.spend || 0) / count : 0;
+          const pct = card.count > 0 ? (count / Number(card.count || 0)) * 100 : 0;
+          return (
+            <div key={card.key} className="rounded-2xl border border-slate-800 bg-slate-950/20 p-3">
+              <div className="text-[10px] uppercase tracking-wide font-bold" style={{ color: card.color }}>{card.label}</div>
+              <div className="mt-2 text-3xl font-extrabold text-white tabular-nums">{formatCount(count)}</div>
+              <div className="mt-1 text-[11px] text-slate-500 tabular-nums">1 ədəd xərc {formatMoney(costPer)}</div>
+              <div className="mt-1 text-[11px] font-semibold" style={{ color: card.color }}>{formatPercent(pct)}</div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 type GroupRow = DashboardResponse['groups'][number];
 
 function getGroupMetricCount(group: GroupRow, key: string) {
@@ -209,17 +297,17 @@ export default function DashboardPage() {
   );
 
   return (
-    <div className="p-4 sm:p-6 space-y-5">
+    <div className="p-3 sm:p-6 space-y-4 sm:space-y-5">
       <div className="rounded-[30px] border border-slate-800 bg-[linear-gradient(180deg,rgba(6,12,25,0.98),rgba(7,14,28,0.96))] overflow-hidden">
-        <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4 px-5 py-5 border-b border-slate-800/80">
+        <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4 px-4 sm:px-5 py-4 sm:py-5 border-b border-slate-800/80">
           <div className="min-w-0">
             <div className="flex items-center gap-3">
               <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-slate-800 bg-slate-950/50 text-blue-300">
                 <BarChart3 className="h-5 w-5" />
               </div>
               <div>
-                <h1 className="text-[30px] leading-none font-extrabold tracking-tight text-white">Dashboard</h1>
-                <p className="mt-1 text-sm text-slate-400">Facebook import edilən kampaniyalar və CRM nəticələrinin ümumi görünüşü.</p>
+                <h1 className="text-[24px] sm:text-[30px] leading-none font-extrabold tracking-tight text-white">Dashboard</h1>
+                <p className="mt-1 text-xs sm:text-sm text-slate-400">Facebook import edilən kampaniyalar və CRM nəticələrinin ümumi görünüşü.</p>
               </div>
             </div>
           </div>
@@ -238,15 +326,15 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        <div className="px-5 py-4 flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4 border-b border-slate-800/60">
-          <div className="flex flex-wrap items-center gap-2">
+        <div className="px-4 sm:px-5 py-4 flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4 border-b border-slate-800/60">
+          <div className="grid grid-cols-3 sm:flex sm:flex-wrap items-center gap-2 w-full xl:w-auto">
             {(['today', 'yesterday', '7d', '30d', 'all'] as Exclude<PresetType, 'custom'>[]).map((item) => (
               <button
                 key={item}
                 type="button"
                 onClick={() => setPreset(item)}
                 className={cn(
-                  'rounded-xl px-3.5 py-2 text-xs font-bold transition-colors',
+                  'rounded-xl px-3 py-2 text-xs font-bold transition-colors',
                   preset === item ? 'bg-blue-600 text-white' : 'bg-slate-900 text-slate-400 hover:text-slate-200'
                 )}
               >
@@ -273,7 +361,7 @@ export default function DashboardPage() {
                   type="date"
                   value={customRange.start}
                   onChange={(e) => setCustomRange((prev) => ({ ...prev, start: e.target.value }))}
-                  className="pl-9 pr-3 py-2 rounded-xl border border-slate-800 bg-slate-900 text-sm text-slate-100"
+                  className="pl-9 pr-3 py-2 rounded-xl border border-slate-800 bg-slate-900 text-sm text-slate-100 w-full"
                 />
               </div>
               <div className="relative">
@@ -282,7 +370,7 @@ export default function DashboardPage() {
                   type="date"
                   value={customRange.end}
                   onChange={(e) => setCustomRange((prev) => ({ ...prev, end: e.target.value }))}
-                  className="pl-9 pr-3 py-2 rounded-xl border border-slate-800 bg-slate-900 text-sm text-slate-100"
+                  className="pl-9 pr-3 py-2 rounded-xl border border-slate-800 bg-slate-900 text-sm text-slate-100 w-full"
                 />
               </div>
             </div>
@@ -294,7 +382,7 @@ export default function DashboardPage() {
           )}
         </div>
 
-        <div className="p-5">
+        <div className="p-4 sm:p-5">
           {error ? <div className="rounded-2xl border border-red-900/50 bg-red-950/15 px-4 py-3 text-sm text-red-300 mb-4">{error}</div> : null}
 
           {(data.warnings || []).map((warning, index) => (
@@ -318,7 +406,30 @@ export default function DashboardPage() {
               {loading ? (
                 <div className="rounded-3xl border border-slate-800 bg-slate-950/20 px-5 py-8 text-sm text-slate-400">Dashboard yüklənir...</div>
               ) : (
-                <div className="grid grid-cols-1 xl:grid-cols-[repeat(5,minmax(0,1fr))] gap-3 xl:gap-2 items-stretch">
+                <>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 md:hidden">
+                    <SpendCard spend={data.totals.facebook.spend} campaignCount={data.importedCampaigns.length} />
+                    {visibleSummaryCards.map((card) => (
+                      <FunnelCard
+                        key={card.key}
+                        title={card.label}
+                        count={card.count}
+                        percent={card.pct_of_total}
+                        costPer={card.cost_per}
+                        color={card.color}
+                      />
+                    ))}
+                  </div>
+
+                  <div className="hidden md:grid grid-cols-1 xl:grid-cols-[repeat(6,minmax(0,1fr))] gap-3 xl:gap-2 items-stretch">
+                  <div className="flex items-center gap-2">
+                    <div className="min-w-0 flex-1">
+                      <SpendCard spend={data.totals.facebook.spend} campaignCount={data.importedCampaigns.length} />
+                    </div>
+                    <div className="hidden xl:flex h-full items-center px-1 text-slate-700">
+                      <ChevronRight className="w-5 h-5" />
+                    </div>
+                  </div>
                   {visibleSummaryCards.map((card, index) => (
                     <div key={card.key} className="flex items-center gap-2">
                       <div className="min-w-0 flex-1">
@@ -328,11 +439,6 @@ export default function DashboardPage() {
                           percent={card.pct_of_total}
                           costPer={card.cost_per}
                           color={card.color}
-                          accent={card.key === 'total_leads' ? (
-                            <span>
-                              Toplam xerc <span className="font-bold text-slate-100">{formatMoney(data.totals.facebook.spend)}</span>
-                            </span>
-                          ) : undefined}
                         />
                       </div>
                       {index < visibleSummaryCards.length - 1 ? (
@@ -342,11 +448,26 @@ export default function DashboardPage() {
                       ) : null}
                     </div>
                   ))}
-                </div>
+                  </div>
+                </>
               )}
 
               {!loading && activeGroups.length > 0 ? (
-                <div className="rounded-[28px] border border-slate-800 bg-slate-950/18 overflow-hidden">
+                <>
+                  <div className="space-y-3 md:hidden">
+                    {activeGroups.map((group) => (
+                      <GroupMobileCard
+                        key={group.value}
+                        group={group}
+                        visibleSummaryCards={visibleSummaryCards}
+                        totalSpend={Number(data.totals.facebook.spend || 0)}
+                        totalRevenue={Number(data.totals.crm.won_revenue || 0)}
+                        fieldLabel={data.field?.label || 'Xüsusi sahə'}
+                      />
+                    ))}
+                  </div>
+
+                  <div className="hidden md:block rounded-[28px] border border-slate-800 bg-slate-950/18 overflow-hidden">
                   <div className="overflow-x-auto">
                     <table className="min-w-[1120px] w-full">
                       <thead>
@@ -411,7 +532,8 @@ export default function DashboardPage() {
                       </tbody>
                     </table>
                   </div>
-                </div>
+                  </div>
+                </>
               ) : null}
             </div>
           )}
