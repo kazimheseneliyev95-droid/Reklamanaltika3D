@@ -283,10 +283,33 @@ function getSession(tenantId) {
             lastInitError: null,
             sock: null,
             connectedNumber: null,
-            keys: null
+            keys: null,
+            reconnectAttempts: 0,
+            reconnectTimer: null,
+            lastStartAt: 0,
         });
     }
     return sessions.get(tenantId);
+}
+
+function clearReconnectTimer(session) {
+    try {
+        if (session && session.reconnectTimer) {
+            clearTimeout(session.reconnectTimer);
+            session.reconnectTimer = null;
+        }
+    } catch {
+        // ignore
+    }
+}
+
+function scheduleSessionRestart(tenantId, session, delayMs) {
+    if (!session) return;
+    if (session.reconnectTimer) return;
+    session.reconnectTimer = setTimeout(function () {
+        session.reconnectTimer = null;
+        startWhatsAppClient(tenantId);
+    }, delayMs);
 }
 
 const REPAIR_SCAN_COOLDOWN_MS = 30000;
@@ -816,6 +839,10 @@ async function startWhatsAppClient(tenantId) {
     var session = getSession(tenantId);
 
     if (session.isInitializing || session.isReady) return;
+    var now = Date.now();
+    if (session.lastStartAt && (now - session.lastStartAt) < 4000) return;
+    session.lastStartAt = now;
+    clearReconnectTimer(session);
     session.isInitializing = true;
 
     try {
@@ -866,15 +893,20 @@ async function startWhatsAppClient(tenantId) {
                 console.log('⚠️ Closed [' + tenantId + '] Status:' + statusCode + ' reconnect:' + shouldReconnect);
                 session.isReady = false;
                 session.isInitializing = false;
+                session.sock = null;
 
                 if (shouldReconnect) {
-                    setTimeout(function () { startWhatsAppClient(tenantId); }, 5000);
+                    session.reconnectAttempts = (session.reconnectAttempts || 0) + 1;
+                    var baseDelay = (session.qrCodeData || !session.isAuthenticated) ? 15000 : 5000;
+                    var delay = Math.min(60000, baseDelay * Math.max(1, session.reconnectAttempts));
+                    scheduleSessionRestart(tenantId, session, delay);
                 } else {
                     session.isAuthenticated = false;
                     session.qrCodeData = null;
                     notifyApiServer(tenantId, 'auth_failure', 'Logged out.');
                     if (auth.clearState) await auth.clearState();
-                    setTimeout(function () { startWhatsAppClient(tenantId); }, 3000);
+                    session.reconnectAttempts = 0;
+                    scheduleSessionRestart(tenantId, session, 3000);
                 }
             } else if (update.connection === 'connecting') {
                 session.isInitializing = true;
@@ -884,6 +916,8 @@ async function startWhatsAppClient(tenantId) {
                 session.isAuthenticated = true;
                 session.isInitializing = false;
                 session.qrCodeData = null;
+                session.reconnectAttempts = 0;
+                clearReconnectTimer(session);
 
                 if (session.sock && session.sock.user && session.sock.user.id) {
                     session.connectedNumber = '+' + session.sock.user.id.split(':')[0].split('@')[0];
@@ -928,6 +962,8 @@ async function startWhatsAppClient(tenantId) {
         console.error('❌ Init FAILED [' + tenantId + ']: ' + err.message);
         session.lastInitError = err && (err.stack || err.message) ? String(err.stack || err.message) : 'init_failed';
         session.isInitializing = false;
+        session.reconnectAttempts = (session.reconnectAttempts || 0) + 1;
+        scheduleSessionRestart(tenantId, session, Math.min(60000, 5000 * session.reconnectAttempts));
     }
 }
 

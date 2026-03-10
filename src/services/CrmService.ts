@@ -2,6 +2,12 @@ import { Lead, LeadStatus, DateRange } from '../types/crm';
 import { io, Socket } from 'socket.io-client';
 import { toNumberSafe } from '../lib/utils';
 
+const DEV_LOG = import.meta.env.DEV;
+
+function debugLog(...args: any[]) {
+  if (DEV_LOG) console.log(...args);
+}
+
 const getStorageKey = () => `dualite_crm_leads_v3_${localStorage.getItem('crm_tenant_id') || 'admin'}`;
 const SERVER_URL_KEY = 'dualite_server_url';
 const DEMO_NAMES = ['Aysel', 'Murad', 'Nigar', 'Kamran', 'Laman', 'Elvin'];
@@ -81,7 +87,7 @@ class CrmServiceImpl {
       : localStorage.getItem(SERVER_URL_KEY);
 
     if (urlToUse && !this.socket) {
-      console.log('🔄 Auto-connecting to CRM backend:', urlToUse);
+      debugLog('🔄 Auto-connecting to CRM backend:', urlToUse);
       this.connectToServer(urlToUse).catch(err => {
         console.warn('⚠️ Auto-connect failed:', err);
       });
@@ -99,7 +105,7 @@ class CrmServiceImpl {
     this.serverUrl = url;
 
     localStorage.setItem(SERVER_URL_KEY, url);
-    console.log('💾 Server URL saved to localStorage:', url);
+    debugLog('💾 Server URL saved to localStorage:', url);
 
     try {
       if (this.socket) {
@@ -124,13 +130,13 @@ class CrmServiceImpl {
 
       // Always re-attach app listeners on (re)connect.
       this.socket.on('connect', () => {
-        console.log('✅ Connected to backend:', this.socket?.id);
+        debugLog('✅ Connected to backend:', this.socket?.id);
         // Ensure we don't accumulate duplicate listeners after reconnect
         this.cleanupSocketListeners();
         this.setupSocketListeners();
 
         if (hasConnectedOnce) {
-          console.log('🔁 Socket reconnected — triggering data refresh...');
+          debugLog('🔁 Socket reconnected — triggering data refresh...');
           this.notifyReconnectListeners();
         }
         hasConnectedOnce = true;
@@ -139,7 +145,7 @@ class CrmServiceImpl {
       // Manager-level reconnect events (socket.io-client)
       try {
         (this.socket as any).io?.on('reconnect', () => {
-          console.log('🔁 Manager reconnect event');
+          debugLog('🔁 Manager reconnect event');
           this.notifyReconnectListeners();
         });
       } catch {
@@ -194,7 +200,7 @@ class CrmServiceImpl {
       const token = localStorage.getItem('crm_auth_token');
       if (!url || !token) return false;
 
-      console.log('🚀 Triggering manual WhatsApp start...');
+      debugLog('🚀 Triggering manual WhatsApp start...');
       const response = await fetch(`${url}/api/whatsapp/start`, {
         method: 'POST',
         headers: {
@@ -205,7 +211,7 @@ class CrmServiceImpl {
       });
 
       const data = await response.json();
-      console.log('🚀 Manual start response:', data);
+      debugLog('🚀 Manual start response:', data);
       return data.success;
     } catch (e) {
       console.error('❌ Failed to trigger manual WhatsApp start:', e);
@@ -296,7 +302,7 @@ class CrmServiceImpl {
     this.socket.off('followup_due');
     this.socket.off('notification:new');
 
-    console.log('🧹 Socket listeners cleaned up');
+    debugLog('🧹 Socket listeners cleaned up');
   }
 
   private startDemoSimulation() {
@@ -333,17 +339,17 @@ class CrmServiceImpl {
     if (!this.socket) return;
 
     this.socket.on('qr_code', (qr) => {
-      console.log('📱 QR RECEIVED');
+      debugLog('📱 QR RECEIVED');
       if (this.qrCallback) this.qrCallback(qr);
     });
 
     this.socket.on('authenticated', () => {
-      console.log('🔑 AUTHENTICATED');
+      debugLog('🔑 AUTHENTICATED');
       if (this.authCallback) this.authCallback();
     });
 
     this.socket.on('crm:test_incoming_message', (data: any) => {
-      console.log('🧪 TEST MESSAGE:', data);
+      debugLog('🧪 TEST MESSAGE:', data);
       this.notifyTestMessageListeners(data);
     });
 
@@ -352,12 +358,12 @@ class CrmServiceImpl {
     });
 
     this.socket.on('settings_updated', (settings: any) => {
-      console.log('⚙️ SOCKET: settings_updated received');
+      debugLog('⚙️ SOCKET: settings_updated received');
       this.settingsListeners.forEach(cb => cb(settings));
     });
 
     this.socket.on('new_message', async (data: any) => {
-      console.log('⚡ SOCKET: new_message received', data);
+      debugLog('⚡ SOCKET: new_message received', data);
 
       const now = Date.now();
 
@@ -365,7 +371,7 @@ class CrmServiceImpl {
       if (data.whatsapp_id) {
         const lastProcessed = this.processedMessageIds.get(data.whatsapp_id);
         if (lastProcessed && (now - lastProcessed) < this.PROCESSED_MESSAGES_TTL) {
-          console.log('⏭️ Skipping recently processed message:', data.whatsapp_id);
+          debugLog('⏭️ Skipping recently processed message:', data.whatsapp_id);
           return;
         }
       }
@@ -453,7 +459,7 @@ class CrmServiceImpl {
 
 
     this.socket.on('lead_updated', async (updatedLead: Lead) => {
-      console.log('🔄 SOCKET: lead_updated received', updatedLead);
+      debugLog('🔄 SOCKET: lead_updated received', updatedLead);
 
       const normalized = this.normalizeLead(updatedLead as any);
 
@@ -481,12 +487,12 @@ class CrmServiceImpl {
       }
 
       localStorage.setItem(getStorageKey(), JSON.stringify(allLeads));
-      console.log('✅ Lead synced with database');
+      debugLog('✅ Lead synced with database');
       this.notifyLeadUpdateListeners(normalized);
     });
 
     this.socket.on('lead_deleted', (id: string) => {
-      console.log('🗑️ SOCKET: lead_deleted received', id);
+      debugLog('🗑️ SOCKET: lead_deleted received', id);
 
       const raw = localStorage.getItem(getStorageKey());
       const allLeads: Lead[] = raw ? JSON.parse(raw) : [];
@@ -535,7 +541,7 @@ class CrmServiceImpl {
     });
 
     this.socket.on('leads_reset', () => {
-      console.log('🌀 SOCKET: leads_reset received');
+      debugLog('🌀 SOCKET: leads_reset received');
       this.leadsCache = [];
       localStorage.removeItem(getStorageKey());
       this.resetListeners.forEach((cb) => cb());
@@ -920,7 +926,7 @@ class CrmServiceImpl {
 
         if (response.ok) {
           const savedLead = this.normalizeLead(await response.json());
-          console.log('✅ Lead saved to database:', savedLead.phone);
+          debugLog('✅ Lead saved to database:', savedLead.phone);
           this.updateCacheAndStorage(savedLead);
           return savedLead;
         }
@@ -942,7 +948,7 @@ class CrmServiceImpl {
     });
 
     if (existingIndex !== -1) {
-      console.log(`♻️ Upserting existing lead (localStorage): ${lead.phone}`);
+      debugLog(`♻️ Upserting existing lead (localStorage): ${lead.phone}`);
       const existingLead = allLeads[existingIndex];
       existingLead.last_message = lead.last_message;
       existingLead.updated_at = new Date().toISOString();
@@ -1011,7 +1017,7 @@ class CrmServiceImpl {
         });
 
         if (response.ok) {
-          console.log(`✅ Lead ${isStatusOnly ? 'status' : 'fields'} updated in database and broadcasted`);
+          debugLog(`✅ Lead ${isStatusOnly ? 'status' : 'fields'} updated in database and broadcasted`);
         } else {
           console.warn('⚠️ Server returned non-ok status for update');
         }
@@ -1048,7 +1054,7 @@ class CrmServiceImpl {
           headers: this.getAuthHeaders()
         });
         if (response.ok) {
-          console.log(`✅ Lead ${id} deleted from database`);
+          debugLog(`✅ Lead ${id} deleted from database`);
         } else {
           console.warn(`⚠️ Failed to delete lead from database: ${response.status}`);
         }
@@ -1082,7 +1088,7 @@ class CrmServiceImpl {
             headers: this.getAuthHeaders()
           });
         }
-        console.log('✅ All leads cleared from database');
+        debugLog('✅ All leads cleared from database');
       } catch (error) {
         console.warn('⚠️ Failed to clear database leads:', error);
       }
@@ -1092,7 +1098,7 @@ class CrmServiceImpl {
     localStorage.removeItem(getStorageKey());
     this.leadsCache = [];
     this.processedMessageIds.clear();
-    console.log('✅ All leads cleared');
+    debugLog('✅ All leads cleared');
   }
 }
 

@@ -369,7 +369,9 @@ let followUpTickBusy = false;
 const tenantSettingsCache = new Map(); // tenantId -> { atMs, settings }
 const tenantAdminIdsCache = new Map(); // tenantId -> { atMs, userIds }
 const tenantAutomationCache = new Map(); // tenantId -> { atMs, settings }
+const dashboardCombinedCache = new Map(); // cacheKey -> { atMs, payload }
 const SETTINGS_CACHE_TTL_MS = 60 * 1000;
+const DASHBOARD_CACHE_TTL_MS = 15000;
 
 function pickAutomationSettingsFromCrmSettings(settings) {
   const s = settings && typeof settings === 'object' ? settings : {};
@@ -5420,6 +5422,19 @@ app.get('/api/facebook-import/insights', requireTenantAuth, requireAdmin, asyncH
 app.get('/api/dashboard/combined', requireTenantAuth, requirePermission('view_stats', 'Dashboard görmək icazəniz yoxdur'), asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
 
+  const cacheKey = JSON.stringify({
+    tenantId: req.tenantId,
+    userId: req.userId || null,
+    role: req.userRole || null,
+    metric: String(req.query.metric || 'message').trim().toLowerCase(),
+    start: String(req.query.start || '').trim() || null,
+    end: String(req.query.end || '').trim() || null,
+  });
+  const cached = dashboardCombinedCache.get(cacheKey);
+  if (cached && (Date.now() - cached.atMs) < DASHBOARD_CACHE_TTL_MS) {
+    return res.json(cached.payload);
+  }
+
   const settings = await db.getCRMSettings(req.tenantId).catch(() => null);
   const { field, mappings } = normalizeDashboardMappings(settings || {});
   const stageLegend = Array.isArray(settings?.pipelineStages) ? settings.pipelineStages : [];
@@ -5664,7 +5679,7 @@ app.get('/api/dashboard/combined', requireTenantAuth, requirePermission('view_st
     } : null,
   ].filter(Boolean);
 
-  res.json({
+  const payload = {
     metric,
     range: dateRange,
     field: field ? { id: field.id, label: field.label, options: field.options || [] } : null,
@@ -5682,7 +5697,19 @@ app.get('/api/dashboard/combined', requireTenantAuth, requirePermission('view_st
       }
     },
     warnings,
-  });
+  };
+
+  dashboardCombinedCache.set(cacheKey, { atMs: Date.now(), payload });
+  if (dashboardCombinedCache.size > 150) {
+    const now = Date.now();
+    for (const [key, value] of dashboardCombinedCache.entries()) {
+      if ((now - value.atMs) > DASHBOARD_CACHE_TTL_MS * 2) {
+        dashboardCombinedCache.delete(key);
+      }
+    }
+  }
+
+  res.json(payload);
 }));
 
 app.get('/api/meta/webhook/status', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {

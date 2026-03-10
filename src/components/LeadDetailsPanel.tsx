@@ -780,7 +780,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
     const [noteBusy, setNoteBusy] = useState(false);
 
     const loadStory = useCallback(async () => {
-        if (!serverUrl || !lead?.id) return;
+        if (!serverUrl || !lead?.id || activeTab !== 'feed') return;
         setStoryLoading(true);
         setStoryError('');
         try {
@@ -800,15 +800,15 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
         } finally {
             setStoryLoading(false);
         }
-    }, [serverUrl, lead?.id]);
+    }, [serverUrl, lead?.id, activeTab]);
 
     useEffect(() => {
-        loadStory();
-    }, [loadStory]);
+        if (activeTab === 'feed') loadStory();
+    }, [loadStory, activeTab]);
 
     // Refresh story on live updates
     useEffect(() => {
-        if (!lead?.id) return;
+        if (!lead?.id || activeTab !== 'feed') return;
         let t: any = null;
         const schedule = () => {
             if (t) clearTimeout(t);
@@ -825,7 +825,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
             cleanupUpdate();
             cleanupNew();
         };
-    }, [lead.id, lead.phone, loadStory]);
+    }, [lead.id, lead.phone, loadStory, activeTab]);
 
     const canAddNote = currentUser?.role !== 'viewer';
     const addNote = async () => {

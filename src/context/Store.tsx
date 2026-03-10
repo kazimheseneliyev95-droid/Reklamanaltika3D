@@ -2,6 +2,22 @@ import { createContext, useContext, useState, useEffect, useCallback, useRef, Re
 import { Lead, LeadStatus, DateRange, User } from '../types/crm';
 import { CrmService } from '../services/CrmService';
 import { loadCRMSettings, syncCRMSettingsFromServer } from '../lib/crmSettings';
+
+const DEV_LOG = import.meta.env.DEV;
+
+function debugLog(...args: any[]) {
+  if (DEV_LOG) console.log(...args);
+}
+
+function isLeadVisualStateEqual(a?: Lead | null, b?: Lead | null) {
+  if (!a || !b) return false;
+  return String(a.id || '') === String(b.id || '')
+    && String(a.status || '') === String(b.status || '')
+    && String(a.last_message || '') === String(b.last_message || '')
+    && String((a as any).updated_at || '') === String((b as any).updated_at || '')
+    && Number((a as any).unread_count || 0) === Number((b as any).unread_count || 0)
+    && Number((a as any).value || 0) === Number((b as any).value || 0);
+}
 import { toNumberSafe } from '../lib/utils';
 
 interface AppContextType {
@@ -63,6 +79,42 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // 🆕 Ref for tracking leads to prevent stale closures
   const leadsRef = useRef<Lead[]>([]);
   leadsRef.current = leads;
+  const pendingLeadUpsertsRef = useRef<Map<string, Lead>>(new Map());
+  const flushLeadUpdatesRafRef = useRef<number | null>(null);
+
+  const flushPendingLeadUpserts = useCallback(() => {
+    flushLeadUpdatesRafRef.current = null;
+    const pending = pendingLeadUpsertsRef.current;
+    if (pending.size === 0) return;
+    const batch = Array.from(pending.values());
+    pending.clear();
+
+    setLeads(prev => {
+      let changed = false;
+      const next = [...prev];
+      for (const lead of batch) {
+        const index = next.findIndex((item) => item.id === lead.id || item.phone === lead.phone || item.whatsapp_id === lead.whatsapp_id);
+        if (index !== -1) {
+          if (isLeadVisualStateEqual(next[index], lead)) continue;
+          next[index] = lead;
+          changed = true;
+        } else {
+          next.unshift(lead);
+          changed = true;
+        }
+      }
+      if (!changed) return prev;
+      leadsRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const scheduleLeadUpsert = useCallback((lead: Lead) => {
+    const key = String(lead.id || lead.phone || lead.whatsapp_id || `lead-${Date.now()}`);
+    pendingLeadUpsertsRef.current.set(key, lead);
+    if (flushLeadUpdatesRafRef.current != null) return;
+    flushLeadUpdatesRafRef.current = window.requestAnimationFrame(flushPendingLeadUpserts);
+  }, [flushPendingLeadUpserts]);
 
   const DATE_RANGE_STORAGE_KEY = 'crm_date_range';
 
@@ -159,10 +211,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const loadLeads = useCallback(async () => {
     setIsLoading(true);
-    console.log('🔍 Loading leads for range:', dateRange);
+    debugLog('🔍 Loading leads for range:', dateRange);
     try {
       const data = await CrmService.getLeads(dateRange);
-      console.log(`📊 Found ${data.length} leads in range.`);
+      debugLog(`📊 Found ${data.length} leads in range.`);
       setLeads(data);
       leadsRef.current = data;
     } catch (error) {
@@ -188,15 +240,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // 🆕 Improved WhatsApp Message Listener with proper cleanup
   useEffect(() => {
-    console.log('🚀 Registering WhatsApp message listener...');
+    debugLog('🚀 Registering WhatsApp message listener...');
 
     const cleanupFunctions: (() => void)[] = [];
 
     // ALWAYS listen for new incoming messages from backend
     const cleanupNewMessage = CrmService.onNewMessage(async (newLead) => {
-      console.log('%c📩 NEW WHATSAPP MESSAGE!', 'background: #25d366; color: white; font-size: 16px; font-weight: bold; padding: 4px 8px; border-radius: 4px;');
-      console.log('   Phone:', newLead.phone);
-      console.log('   Message:', newLead.last_message);
+      debugLog('%c📩 NEW WHATSAPP MESSAGE!', 'background: #25d366; color: white; font-size: 16px; font-weight: bold; padding: 4px 8px; border-radius: 4px;');
+      debugLog('   Phone:', newLead.phone);
+      debugLog('   Message:', newLead.last_message);
       const finalLead = { ...newLead };
 
       // Ensure new leads have a resilient ID mapping in case backend hasn't supplied one sequentially yet
@@ -210,45 +262,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
       );
 
       if (existingIndex !== -1) {
-        console.log('🔄 Updating existing lead in UI:', finalLead.phone);
-        setLeads(prev => {
-          const newList = [...prev];
-          newList[existingIndex] = { ...newList[existingIndex], ...finalLead };
-          return newList;
-        });
+        debugLog('🔄 Updating existing lead in UI:', finalLead.phone);
+        scheduleLeadUpsert({ ...leadsRef.current[existingIndex], ...finalLead });
       } else if (finalLead.id || finalLead.phone) {
-        console.log('➕ Adding new lead to UI from scoped socket event:', finalLead.phone);
-        setLeads(prev => [finalLead, ...prev]);
+        debugLog('➕ Adding new lead to UI from scoped socket event:', finalLead.phone);
+        scheduleLeadUpsert(finalLead);
       }
     });
     cleanupFunctions.push(cleanupNewMessage);
 
     // Listen for lead updates (status changes, etc.)
     const cleanupLeadUpdated = CrmService.onLeadUpdated(async (updatedLead) => {
-      console.log('🔄 LEAD UPDATED:', updatedLead);
+      debugLog('🔄 LEAD UPDATED:', updatedLead);
 
       // Update UI state
-      setLeads(prev => {
-        const existingIndex = prev.findIndex(l =>
-          l.id === updatedLead.id || l.phone === updatedLead.phone
-        );
-
-        if (existingIndex !== -1) {
-          console.log('✅ Updating lead in UI:', updatedLead.phone);
-          const newList = [...prev];
-          newList[existingIndex] = updatedLead;
-          return newList;
-        }
-
-        console.log('⚠️ Lead not found in UI, adding:', updatedLead.phone);
-        return [updatedLead, ...prev];
-      });
+      const existing = leadsRef.current.find(l => l.id === updatedLead.id || l.phone === updatedLead.phone);
+      if (existing && isLeadVisualStateEqual(existing, updatedLead)) return;
+      debugLog(existing ? '✅ Updating lead in UI:' : '⚠️ Lead not found in UI, adding:', updatedLead.phone);
+      scheduleLeadUpsert(updatedLead);
     });
     cleanupFunctions.push(cleanupLeadUpdated);
 
     // Listen for lead deletions
     const cleanupLeadDeleted = CrmService.onLeadDeleted((deletedLeadId) => {
-      console.log('🗑️ LEAD DELETED IN UI:', deletedLeadId);
+      debugLog('🗑️ LEAD DELETED IN UI:', deletedLeadId);
       setLeads(prev => prev.filter(l => l.id !== deletedLeadId));
     });
     cleanupFunctions.push(cleanupLeadDeleted);
@@ -261,14 +298,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     // Listen for full database reset (Formatla)
     const cleanupLeadsReset = CrmService.onLeadsReset(() => {
-      console.log('🌀 LEADS RESET IN UI: Clearing all local state');
+      debugLog('🌀 LEADS RESET IN UI: Clearing all local state');
       setLeads([]);
     });
     cleanupFunctions.push(cleanupLeadsReset);
 
     // Listen for settings updates from other clients
     const cleanupSettingsUpdated = CrmService.onSettingsUpdated(async () => {
-      console.log('⚙️ SETTINGS UPDATED: Syncing from server...');
+      debugLog('⚙️ SETTINGS UPDATED: Syncing from server...');
       try {
         await syncCRMSettingsFromServer();
         setCrmSettingsRev((v) => v + 1);
@@ -280,12 +317,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     // 🧪 TEST MODE LISTENER
     const cleanupTestMessage = CrmService.onTestMessage((data: any) => {
-      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-      console.log('🧠 CRM TEST MESSAGE RECEIVED (TEST_MODE)');
-      console.log('   Phone:', data.phone);
-      console.log('   Name:', data.name);
-      console.log('   Message:', data.message);
-      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      debugLog('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      debugLog('🧠 CRM TEST MESSAGE RECEIVED (TEST_MODE)');
+      debugLog('   Phone:', data.phone);
+      debugLog('   Name:', data.name);
+      debugLog('   Message:', data.message);
+      debugLog('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
       const settings = loadCRMSettings();
       const defaultStatus = settings.pipelineStages.length > 0 ? settings.pipelineStages[0].id : 'new';
@@ -303,13 +340,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       };
 
       setLeads((prev) => [testLead, ...prev]);
-      console.log('✅ WhatsApp → Backend → Frontend → CRM SUCCESS');
+      debugLog('✅ WhatsApp → Backend → Frontend → CRM SUCCESS');
     });
     cleanupFunctions.push(cleanupTestMessage);
 
     // 🏥 HEALTH CHECK LISTENER
     const cleanupHealthCheck = CrmService.onHealthCheck((health: any) => {
-      console.log('🏥 SYSTEM HEALTH:', health);
+      debugLog('🏥 SYSTEM HEALTH:', health);
       // Update connection state based on health without stale closure coupling
       setIsWhatsAppConnected((prev) => {
         if (health.whatsapp === 'CONNECTED') return true;
@@ -322,19 +359,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // 🆕 RECONNECT — reload leads from DB whenever the socket re-establishes.
     // This is what makes messages visible after tab close, screen sleep, or account switch.
     const cleanupReconnect = CrmService.onReconnect(() => {
-      console.log('🔁 Socket reconnected — reloading leads from DB...');
+      debugLog('🔁 Socket reconnected — reloading leads from DB...');
       loadLeads();
     });
     cleanupFunctions.push(cleanupReconnect);
 
-    console.log('✅ Message listener registered successfully!');
+    debugLog('✅ Message listener registered successfully!');
 
     // Cleanup function
     return () => {
-      console.log('🔌 Unregistering all message listeners');
+      debugLog('🔌 Unregistering all message listeners');
       cleanupFunctions.forEach(cleanup => cleanup());
     };
-  }, [loadLeads]);
+  }, [loadLeads, scheduleLeadUpsert]);
+
+  useEffect(() => {
+    return () => {
+      if (flushLeadUpdatesRafRef.current != null) {
+        window.cancelAnimationFrame(flushLeadUpdatesRafRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -410,7 +455,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const syncLeadsFromWhatsApp = useCallback(async () => {
     setIsLoading(true);
     try {
-      console.log('🔄 Starting manual sync from WhatsApp (DB-backed)...');
+      debugLog('🔄 Starting manual sync from WhatsApp (DB-backed)...');
 
       // Always reload leads from DB first
       await loadLeads();
@@ -449,7 +494,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
       }
 
-      console.log(`✅ Sync complete. Added ${newLeadsAdded} new leads.`);
+      debugLog(`✅ Sync complete. Added ${newLeadsAdded} new leads.`);
       // Reload from DB to ensure UI is always in sync
       await loadLeads();
     } catch (e) {
@@ -464,7 +509,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       try {
         await CrmService.clearAllLeads();
         setLeads([]);
-        console.log('✅ All leads cleared');
+        debugLog('✅ All leads cleared');
       } catch (error) {
         console.error('❌ Error clearing leads:', error);
       }
