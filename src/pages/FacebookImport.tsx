@@ -84,6 +84,7 @@ type SavedConfig = {
     endDate: string;
     everyHours: number;
     minute: number;
+    tzOffsetMinutes: number;
     nextAt: string | null;
     lastInsightSyncAt: string | null;
     lastInsightSyncError: string | null;
@@ -113,6 +114,7 @@ const EMPTY_CONFIG: SavedConfig = {
     endDate: '',
     everyHours: 1,
     minute: 0,
+    tzOffsetMinutes: new Date().getTimezoneOffset(),
     nextAt: null,
     lastInsightSyncAt: null,
     lastInsightSyncError: null,
@@ -222,6 +224,7 @@ export default function FacebookImportPage() {
   const [activePreset, setActivePreset] = useState<PresetType>('all');
   const [sortBy, setSortBy] = useState<SortType>('spend_desc');
   const [autoSync, setAutoSync] = useState(EMPTY_CONFIG.autoSync);
+  const tzOffsetMinutes = useMemo(() => new Date().getTimezoneOffset(), []);
 
   const selectedAccounts = useMemo(
     () => accounts.filter((a) => selectedAccountIds.includes(a.account_id) || selectedAccountIds.includes(a.id) || selectedAccountIds.includes(a.api_id)),
@@ -294,11 +297,11 @@ export default function FacebookImportPage() {
     setSaved(cfg);
     setAccounts(cfg.accountCache || []);
     setCampaigns(cfg.campaignCache || []);
-    setSelectedAccountIds(cfg.selectedAccountIds || []);
-    setSelectedCampaignIds(cfg.selectedCampaignIds || []);
-    setAutoSync({ ...EMPTY_CONFIG.autoSync, ...(cfg.autoSync || {}) });
-    return cfg;
-  }, [token]);
+      setSelectedAccountIds(cfg.selectedAccountIds || []);
+      setSelectedCampaignIds(cfg.selectedCampaignIds || []);
+      setAutoSync({ ...EMPTY_CONFIG.autoSync, ...(cfg.autoSync || {}), tzOffsetMinutes });
+      return cfg;
+  }, [token, tzOffsetMinutes]);
 
   const loadInsights = async (range = dateRange, metricType = metric) => {
     setBusyInsights(true);
@@ -307,6 +310,7 @@ export default function FacebookImportPage() {
       if (range.start) params.set('start', range.start);
       if (range.end) params.set('end', range.end);
       params.set('metric', metricType);
+      params.set('tzOffsetMinutes', String(tzOffsetMinutes));
       const res = await fetch(`${CrmService.getServerUrl()}/api/facebook-import/insights?${params.toString()}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
@@ -407,7 +411,7 @@ export default function FacebookImportPage() {
           campaigns,
           selectedAccountIds,
           selectedCampaignIds,
-          autoSync,
+          autoSync: { ...autoSync, tzOffsetMinutes },
         })
       });
       const data = await res.json();
@@ -418,7 +422,7 @@ export default function FacebookImportPage() {
       setCampaigns(cfg.campaignCache);
       setSelectedAccountIds(cfg.selectedAccountIds);
       setSelectedCampaignIds(cfg.selectedCampaignIds);
-      setAutoSync({ ...EMPTY_CONFIG.autoSync, ...(cfg.autoSync || {}) });
+      setAutoSync({ ...EMPTY_CONFIG.autoSync, ...(cfg.autoSync || {}), tzOffsetMinutes });
       setTokenInput('');
       setMessage('Facebook ayarlari saxlanildi.');
       setShowSettings(false);
@@ -445,7 +449,7 @@ export default function FacebookImportPage() {
       setCampaigns(cfg.campaignCache);
       setSelectedAccountIds(cfg.selectedAccountIds);
       setSelectedCampaignIds(cfg.selectedCampaignIds);
-      setAutoSync({ ...EMPTY_CONFIG.autoSync, ...(cfg.autoSync || {}) });
+      setAutoSync({ ...EMPTY_CONFIG.autoSync, ...(cfg.autoSync || {}), tzOffsetMinutes });
       setMessage('Facebook cache yenilendi.');
     } catch (e: any) {
       setMessage(e?.message || 'Refresh xetasi');
@@ -466,7 +470,7 @@ export default function FacebookImportPage() {
       if (!res.ok) throw new Error(data.error || 'Sync xetasi');
       const cfg = { ...EMPTY_CONFIG, ...(data.config || {}) } as SavedConfig;
       setSaved(cfg);
-      setAutoSync({ ...EMPTY_CONFIG.autoSync, ...(cfg.autoSync || {}) });
+      setAutoSync({ ...EMPTY_CONFIG.autoSync, ...(cfg.autoSync || {}), tzOffsetMinutes });
       setMessage('Facebook insight cache yeniləndi.');
       await loadInsights(dateRange, metric);
     } catch (e: any) {

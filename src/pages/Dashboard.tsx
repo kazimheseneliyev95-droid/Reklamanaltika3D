@@ -252,6 +252,7 @@ export default function DashboardPage() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [customRange, setCustomRange] = useState<{ start: string; end: string }>(() => buildPresetRange('30d'));
   const metric: MetricType = 'message';
+  const tzOffsetMinutes = useMemo(() => new Date().getTimezoneOffset(), []);
 
   const range = useMemo(() => {
     if (preset === 'custom') return customRange;
@@ -270,6 +271,7 @@ export default function DashboardPage() {
         const qs = new URLSearchParams({ metric });
         if (range.start) qs.set('start', range.start);
         if (range.end) qs.set('end', range.end);
+        qs.set('tzOffsetMinutes', String(tzOffsetMinutes));
 
         const res = await fetch(`${url}/api/dashboard/combined?${qs.toString()}`, {
           headers: { Authorization: `Bearer ${token}` }
@@ -285,7 +287,7 @@ export default function DashboardPage() {
       }
     };
     run();
-  }, [metric, range.end, range.start, refreshKey]);
+  }, [metric, range.end, range.start, refreshKey, tzOffsetMinutes]);
 
   const visibleSummaryCards = useMemo(
     () => data.summaryCards.filter((card) => ['total_leads', 'potential', 'won', 'unanswered', 'lost'].includes(card.key)),

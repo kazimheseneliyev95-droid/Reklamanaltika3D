@@ -867,6 +867,7 @@ class CrmServiceImpl {
         const params = new URLSearchParams();
         if (dateRange?.start) params.append('startDate', dateRange.start);
         if (dateRange?.end) params.append('endDate', dateRange.end);
+        params.append('tzOffsetMinutes', String(new Date().getTimezoneOffset()));
 
         const response = await fetch(`${url}/api/leads?${params}`, {
           headers: this.getAuthHeaders()

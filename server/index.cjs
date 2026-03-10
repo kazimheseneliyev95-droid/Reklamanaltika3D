@@ -2887,11 +2887,12 @@ app.post('/api/whatsapp/start', requireTenantAuth, asyncHandler(async (req, res)
 // 🗄️ LEADS API
 app.get('/api/leads', requireTenantAuth, asyncHandler(async (req, res) => {
   if (typeof db.getLeads !== 'function') return res.status(503).json({ error: 'Lead storage not configured' });
-  const { status, startDate, endDate, limit, offset } = req.query;
+  const { status, startDate, endDate, limit, offset, tzOffsetMinutes } = req.query;
   const leads = await db.getLeads({
     status,
     startDate,
     endDate,
+    tzOffsetMinutes,
     limit: limit ? parseInt(limit) : undefined,
     offset: offset ? parseInt(offset) : undefined,
     assigneeId: canViewAllLeads(req) ? undefined : req.userId,
@@ -4629,6 +4630,7 @@ function sanitizeFacebookAdImportConfig(row) {
       endDate: formatDateOnly(raw.auto_sync_end_date),
       everyHours: Math.max(1, parseInt(String(raw.auto_sync_every_hours || '1'), 10) || 1),
       minute: Math.min(59, Math.max(0, parseInt(String(raw.auto_sync_minute || '0'), 10) || 0)),
+      tzOffsetMinutes: Number.isFinite(Number(raw.auto_sync_tz_offset_minutes)) ? Number(raw.auto_sync_tz_offset_minutes) : 0,
       nextAt: raw.auto_sync_next_at || null,
       lastInsightSyncAt: raw.last_insight_sync_at || null,
       lastInsightSyncError: raw.last_insight_sync_error || null,
@@ -4654,6 +4656,7 @@ function sanitizeFacebookAutoSyncInput(input) {
   const endDate = mode === 'automatic' ? '' : normalizeDate(raw.endDate);
   const everyHours = Math.max(1, parseInt(String(raw.everyHours || '1'), 10) || 1);
   const minute = Math.min(59, Math.max(0, parseInt(String(raw.minute || '0'), 10) || 0));
+  const tzOffsetMinutes = Number.isFinite(Number(raw.tzOffsetMinutes)) ? Number(raw.tzOffsetMinutes) : 0;
   return {
     mode,
     enabled: mode === 'automatic' && raw.enabled !== false,
@@ -4661,6 +4664,7 @@ function sanitizeFacebookAutoSyncInput(input) {
     endDate,
     everyHours,
     minute,
+    tzOffsetMinutes,
   };
 }
 
@@ -4679,13 +4683,14 @@ function buildFacebookSyncRange(config) {
   };
   const startDate = normalizeDate(config?.auto_sync_start_date);
   const endDate = normalizeDate(config?.auto_sync_end_date);
-  const today = new Date();
-  const todayIso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  const tzOffsetMinutes = Number.isFinite(Number(config?.auto_sync_tz_offset_minutes)) ? Number(config.auto_sync_tz_offset_minutes) : 0;
+  const shiftedNow = new Date(Date.now() - (tzOffsetMinutes * 60000));
+  const todayIso = `${shiftedNow.getUTCFullYear()}-${String(shiftedNow.getUTCMonth() + 1).padStart(2, '0')}-${String(shiftedNow.getUTCDate()).padStart(2, '0')}`;
   return {
     start: startDate || (() => {
-      const d = new Date();
-      d.setDate(d.getDate() - 29);
-      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const d = new Date(shiftedNow);
+      d.setUTCDate(d.getUTCDate() - 29);
+      return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
     })(),
     end: endDate || todayIso,
   };
@@ -4704,6 +4709,25 @@ function computeNextFacebookSyncAt(config, fromDate = new Date()) {
     next.setHours(next.getHours() + everyHours);
   }
   return next;
+}
+
+function parseRequestTzOffsetMinutes(req) {
+  const candidates = [req.query?.tzOffsetMinutes, req.headers['x-tz-offset-minutes']];
+  for (const candidate of candidates) {
+    const n = parseInt(String(candidate ?? ''), 10);
+    if (Number.isFinite(n)) return n;
+  }
+  return 0;
+}
+
+function toUtcBoundaryFromLocalDate(dateStr, tzOffsetMinutes, endExclusive = false) {
+  const match = String(dateStr || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]) - 1;
+  const day = Number(match[3]);
+  const extraDays = endExclusive ? 1 : 0;
+  return new Date(Date.UTC(year, month, day + extraDays, 0, 0, 0, 0) + (tzOffsetMinutes || 0) * 60000);
 }
 
 function aggregateCachedInsightRows(rows = []) {
@@ -5320,6 +5344,7 @@ app.post('/api/facebook-import/save', requireTenantAuth, requireAdmin, asyncHand
     auto_sync_end_date: autoSync.endDate || null,
     auto_sync_every_hours: autoSync.everyHours,
     auto_sync_minute: autoSync.minute,
+    auto_sync_tz_offset_minutes: autoSync.tzOffsetMinutes,
     auto_sync_next_at: nextSyncAt,
     last_insight_sync_error: null,
     last_error: null,
@@ -5366,6 +5391,7 @@ app.post('/api/facebook-import/refresh', requireTenantAuth, requireAdmin, asyncH
     auto_sync_end_date: existing.auto_sync_end_date || null,
     auto_sync_every_hours: existing.auto_sync_every_hours || 1,
     auto_sync_minute: existing.auto_sync_minute || 0,
+    auto_sync_tz_offset_minutes: existing.auto_sync_tz_offset_minutes || 0,
     auto_sync_next_at: existing.auto_sync_enabled === true ? new Date() : existing.auto_sync_next_at || null,
     last_insight_sync_error: null,
     last_error: null,
@@ -5454,6 +5480,7 @@ app.get('/api/dashboard/combined', requireTenantAuth, requirePermission('view_st
     start: String(req.query.start || '').trim() || null,
     end: String(req.query.end || '').trim() || null,
   };
+  const tzOffsetMinutes = parseRequestTzOffsetMinutes(req);
 
   const warnings = [];
   const allCampaignIds = Array.from(new Set(mappings.flatMap((row) => row.campaignIds)));
@@ -5500,13 +5527,13 @@ app.get('/api/dashboard/combined', requireTenantAuth, requirePermission('view_st
       paramCount++;
     }
     if (dateRange.start) {
-      where += ` AND created_at >= $${paramCount}::date`;
-      values.push(String(dateRange.start));
+      where += ` AND created_at >= $${paramCount}::timestamptz`;
+      values.push(toUtcBoundaryFromLocalDate(dateRange.start, tzOffsetMinutes, false));
       paramCount++;
     }
     if (dateRange.end) {
-      where += ` AND created_at < ($${paramCount}::date + INTERVAL '1 day')`;
-      values.push(String(dateRange.end));
+      where += ` AND created_at < $${paramCount}::timestamptz`;
+      values.push(toUtcBoundaryFromLocalDate(dateRange.end, tzOffsetMinutes, true));
       paramCount++;
     }
 
@@ -5559,13 +5586,13 @@ app.get('/api/dashboard/combined', requireTenantAuth, requirePermission('view_st
     overallParamCount++;
   }
   if (dateRange.start) {
-    overallWhere += ` AND created_at >= $${overallParamCount}::date`;
-    overallValues.push(String(dateRange.start));
+    overallWhere += ` AND created_at >= $${overallParamCount}::timestamptz`;
+    overallValues.push(toUtcBoundaryFromLocalDate(dateRange.start, tzOffsetMinutes, false));
     overallParamCount++;
   }
   if (dateRange.end) {
-    overallWhere += ` AND created_at < ($${overallParamCount}::date + INTERVAL '1 day')`;
-    overallValues.push(String(dateRange.end));
+    overallWhere += ` AND created_at < $${overallParamCount}::timestamptz`;
+    overallValues.push(toUtcBoundaryFromLocalDate(dateRange.end, tzOffsetMinutes, true));
     overallParamCount++;
   }
 

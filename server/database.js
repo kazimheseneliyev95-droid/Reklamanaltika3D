@@ -17,6 +17,21 @@ function normalizeDatabaseUrl(rawUrl) {
 
 const normalizedDatabaseUrl = normalizeDatabaseUrl(process.env.DATABASE_URL);
 
+function parseTzOffsetMinutes(value) {
+    const n = parseInt(String(value ?? ''), 10);
+    return Number.isFinite(n) ? n : null;
+}
+
+function toUtcBoundaryFromLocalDate(dateStr, tzOffsetMinutes, endExclusive = false) {
+    const match = String(dateStr || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) return null;
+    const year = Number(match[1]);
+    const month = Number(match[2]) - 1;
+    const day = Number(match[3]);
+    const extraDays = endExclusive ? 1 : 0;
+    return new Date(Date.UTC(year, month, day + extraDays, 0, 0, 0, 0) + (tzOffsetMinutes || 0) * 60000);
+}
+
 // Database Configuration
 const pool = new Pool({
     connectionString: normalizedDatabaseUrl,
@@ -201,6 +216,7 @@ async function initDb() {
           auto_sync_end_date DATE,
           auto_sync_every_hours INTEGER DEFAULT 1,
           auto_sync_minute INTEGER DEFAULT 0,
+          auto_sync_tz_offset_minutes INTEGER DEFAULT 0,
           auto_sync_next_at TIMESTAMP,
           last_insight_sync_at TIMESTAMP,
           last_insight_sync_error TEXT,
@@ -416,6 +432,7 @@ async function initDb() {
                   auto_sync_end_date DATE,
                   auto_sync_every_hours INTEGER DEFAULT 1,
                   auto_sync_minute INTEGER DEFAULT 0,
+                  auto_sync_tz_offset_minutes INTEGER DEFAULT 0,
                   auto_sync_next_at TIMESTAMP,
                   last_insight_sync_at TIMESTAMP,
                   last_insight_sync_error TEXT,
@@ -506,6 +523,7 @@ async function initDb() {
             await client.query('ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS auto_sync_end_date DATE;');
             await client.query('ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS auto_sync_every_hours INTEGER DEFAULT 1;');
             await client.query('ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS auto_sync_minute INTEGER DEFAULT 0;');
+            await client.query('ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS auto_sync_tz_offset_minutes INTEGER DEFAULT 0;');
             await client.query('ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS auto_sync_next_at TIMESTAMP;');
             await client.query('ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS last_insight_sync_at TIMESTAMP;');
             await client.query('ALTER TABLE facebook_ad_imports ADD COLUMN IF NOT EXISTS last_insight_sync_error TEXT;');
@@ -1396,15 +1414,27 @@ async function getLeads(filters = {}, tenantId = 'admin', existingClient = null)
         }
 
         if (filters.startDate) {
-            query += ` AND l.created_at >= $${paramCount}::timestamptz`;
-            values.push(filters.startDate);
+            const tzOffsetMinutes = parseTzOffsetMinutes(filters.tzOffsetMinutes);
+            if (tzOffsetMinutes !== null) {
+                query += ` AND l.created_at >= $${paramCount}::timestamptz`;
+                values.push(toUtcBoundaryFromLocalDate(filters.startDate, tzOffsetMinutes, false));
+            } else {
+                query += ` AND l.created_at >= $${paramCount}::timestamptz`;
+                values.push(filters.startDate);
+            }
             paramCount++;
         }
 
         if (filters.endDate) {
-            // Inclusive end-of-day for YYYY-MM-DD filters from UI
-            query += ` AND l.created_at < ($${paramCount}::date + INTERVAL '1 day')`;
-            values.push(filters.endDate);
+            const tzOffsetMinutes = parseTzOffsetMinutes(filters.tzOffsetMinutes);
+            if (tzOffsetMinutes !== null) {
+                query += ` AND l.created_at < $${paramCount}::timestamptz`;
+                values.push(toUtcBoundaryFromLocalDate(filters.endDate, tzOffsetMinutes, true));
+            } else {
+                // Inclusive end-of-day for YYYY-MM-DD filters from UI
+                query += ` AND l.created_at < ($${paramCount}::date + INTERVAL '1 day')`;
+                values.push(filters.endDate);
+            }
             paramCount++;
         }
 
@@ -1714,7 +1744,7 @@ async function upsertMetaUserToken(tenantId, { user_access_token, expires_at, de
     return res.rows[0] || null;
 }
 
-async function upsertFacebookAdImport(tenantId, { access_token, selected_account_ids, selected_campaign_ids, account_cache, campaign_cache, last_error, auto_sync_enabled, auto_sync_start_date, auto_sync_end_date, auto_sync_every_hours, auto_sync_minute, auto_sync_next_at, last_insight_sync_at, last_insight_sync_error }) {
+async function upsertFacebookAdImport(tenantId, { access_token, selected_account_ids, selected_campaign_ids, account_cache, campaign_cache, last_error, auto_sync_enabled, auto_sync_start_date, auto_sync_end_date, auto_sync_every_hours, auto_sync_minute, auto_sync_tz_offset_minutes, auto_sync_next_at, last_insight_sync_at, last_insight_sync_error }) {
     if (!tenantId) throw new Error('tenantId is required');
     const safeSelected = Array.isArray(selected_account_ids) ? selected_account_ids.map((x) => String(x || '').trim()).filter(Boolean) : [];
     const safeCampaigns = Array.isArray(selected_campaign_ids) ? selected_campaign_ids.map((x) => String(x || '').trim()).filter(Boolean) : [];
@@ -1724,14 +1754,15 @@ async function upsertFacebookAdImport(tenantId, { access_token, selected_account
     const tokenHint = token ? `${token.slice(0, 6)}...${token.slice(-4)}` : null;
     const everyHours = Math.max(1, parseInt(String(auto_sync_every_hours || '1'), 10) || 1);
     const minute = Math.min(59, Math.max(0, parseInt(String(auto_sync_minute || '0'), 10) || 0));
+    const tzOffsetMinutes = parseTzOffsetMinutes(auto_sync_tz_offset_minutes) ?? 0;
 
     const res = await pool.query(
         `INSERT INTO facebook_ad_imports (
            tenant_id, access_token, token_hint, selected_account_ids, selected_campaign_ids, account_cache, campaign_cache,
-           auto_sync_enabled, auto_sync_start_date, auto_sync_end_date, auto_sync_every_hours, auto_sync_minute, auto_sync_next_at,
+           auto_sync_enabled, auto_sync_start_date, auto_sync_end_date, auto_sync_every_hours, auto_sync_minute, auto_sync_tz_offset_minutes, auto_sync_next_at,
            last_insight_sync_at, last_insight_sync_error, last_sync_at, last_error, updated_at
          )
-         VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7::jsonb, $8, $9, $10, $11, $12, $13, $14, $15, NOW(), $16, NOW())
+         VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7::jsonb, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW(), $17, NOW())
          ON CONFLICT (tenant_id)
          DO UPDATE SET
             access_token = COALESCE(EXCLUDED.access_token, facebook_ad_imports.access_token),
@@ -1745,6 +1776,7 @@ async function upsertFacebookAdImport(tenantId, { access_token, selected_account
             auto_sync_end_date = EXCLUDED.auto_sync_end_date,
             auto_sync_every_hours = EXCLUDED.auto_sync_every_hours,
             auto_sync_minute = EXCLUDED.auto_sync_minute,
+            auto_sync_tz_offset_minutes = EXCLUDED.auto_sync_tz_offset_minutes,
             auto_sync_next_at = EXCLUDED.auto_sync_next_at,
             last_insight_sync_at = COALESCE(EXCLUDED.last_insight_sync_at, facebook_ad_imports.last_insight_sync_at),
             last_insight_sync_error = EXCLUDED.last_insight_sync_error,
@@ -1752,7 +1784,7 @@ async function upsertFacebookAdImport(tenantId, { access_token, selected_account
             last_error = EXCLUDED.last_error,
             updated_at = NOW()
          RETURNING tenant_id, token_hint, selected_account_ids, selected_campaign_ids, account_cache, campaign_cache,
-                   auto_sync_enabled, auto_sync_start_date, auto_sync_end_date, auto_sync_every_hours, auto_sync_minute, auto_sync_next_at,
+                   auto_sync_enabled, auto_sync_start_date, auto_sync_end_date, auto_sync_every_hours, auto_sync_minute, auto_sync_tz_offset_minutes, auto_sync_next_at,
                    last_insight_sync_at, last_insight_sync_error, last_sync_at, last_error, updated_at`,
         [
             String(tenantId),
@@ -1767,6 +1799,7 @@ async function upsertFacebookAdImport(tenantId, { access_token, selected_account
             auto_sync_end_date || null,
             everyHours,
             minute,
+            tzOffsetMinutes,
             auto_sync_next_at ? new Date(auto_sync_next_at) : null,
             last_insight_sync_at ? new Date(last_insight_sync_at) : null,
             last_insight_sync_error ? String(last_insight_sync_error) : null,
@@ -1780,7 +1813,7 @@ async function getFacebookAdImport(tenantId) {
     if (!tenantId) throw new Error('tenantId is required');
     const res = await pool.query(
         `SELECT tenant_id, access_token, token_hint, selected_account_ids, selected_campaign_ids, account_cache, campaign_cache,
-                auto_sync_enabled, auto_sync_start_date, auto_sync_end_date, auto_sync_every_hours, auto_sync_minute, auto_sync_next_at,
+                auto_sync_enabled, auto_sync_start_date, auto_sync_end_date, auto_sync_every_hours, auto_sync_minute, auto_sync_tz_offset_minutes, auto_sync_next_at,
                 last_insight_sync_at, last_insight_sync_error, last_sync_at, last_error, updated_at
          FROM facebook_ad_imports
          WHERE tenant_id = $1

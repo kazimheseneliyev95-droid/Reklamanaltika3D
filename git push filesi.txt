@@ -1,0 +1,39 @@
+Repo yolu: C:\Users\kazim\Desktop\anit\Reklamanaltika3D
+Remote: https://github.com/kazimheseneliyev95-droid/Reklamanaltika3D.git
+
+Bu repo üçün standart iş axını:
+1. Həmişə bu qovluqda işlə.
+2. Dəyişiklikdən əvvəl repo vəziyyətini yoxla (`git status`, lazım olsa `git log -5 --oneline`).
+3. Kod dəyişikliyini et, mövcud dizayna və arxitekturaya uyğun qal.
+4. İş bitəndə mütləq bunları yoxla:
+   - `npm run build`
+   - lazım olsa server faylları üçün syntax check
+5. Sonra uyğun commit mesajı ilə commit et.
+6. Daha sonra `origin/main` branch-inə push et.
+7. Əgər `git push origin main` reject olarsa:
+   - əvvəl səbəbi analiz et
+   - əgər səbəb `non-fast-forward` / remote history rewrite / forced update-disə
+   - və əgər local repo bu layihənin düzgün son vəziyyətidirsə
+   - onda `git push --force-with-lease origin main:main` et
+8. `classic-crm` və ya başqa əlavə branch yaratma, mən xüsusi istəməsəm.
+9. Heç vaxt özbaşına PR açma.
+10. Push bitəndən sonra mənə bunları yaz:
+   - nə dəyişdi
+   - commit hash
+   - normal push oldu, ya force-with-lease oldu
+   - repo statusu clean-dir ya yox
+
+Git davranış qaydaları:
+- Revert, reset --hard, checkout -- kimi destruktiv əmrləri istifadə etmə, mən açıq istəməsəm.
+- Başqa istifadəçinin dəyişikliklərini silmə.
+- Commit message qısa və məzmunlu olsun.
+- Əgər build keçmirsə, push etmə; əvvəl problemi düzəlt.
+- Əgər remote ilə conflict varsa və force-with-lease lazım deyilsə, lazımsız force push etmə.
+- Əgər force-with-lease etmisənsə, bunu cavabında açıq qeyd et.
+
+Cavab formatı:
+- Dəyişiklik:
+- Build:
+- Commit:
+- Push:
+- Status:
