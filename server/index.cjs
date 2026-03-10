@@ -5500,13 +5500,13 @@ app.get('/api/dashboard/combined', requireTenantAuth, requirePermission('view_st
       paramCount++;
     }
     if (dateRange.start) {
-      where += ` AND created_at >= $${paramCount}`;
-      values.push(new Date(`${dateRange.start}T00:00:00.000Z`));
+      where += ` AND created_at >= $${paramCount}::date`;
+      values.push(String(dateRange.start));
       paramCount++;
     }
     if (dateRange.end) {
-      where += ` AND created_at < $${paramCount}`;
-      values.push(new Date(`${dateRange.end}T23:59:59.999Z`));
+      where += ` AND created_at < ($${paramCount}::date + INTERVAL '1 day')`;
+      values.push(String(dateRange.end));
       paramCount++;
     }
 
@@ -5559,13 +5559,13 @@ app.get('/api/dashboard/combined', requireTenantAuth, requirePermission('view_st
     overallParamCount++;
   }
   if (dateRange.start) {
-    overallWhere += ` AND created_at >= $${overallParamCount}`;
-    overallValues.push(new Date(`${dateRange.start}T00:00:00.000Z`));
+    overallWhere += ` AND created_at >= $${overallParamCount}::date`;
+    overallValues.push(String(dateRange.start));
     overallParamCount++;
   }
   if (dateRange.end) {
-    overallWhere += ` AND created_at < $${overallParamCount}`;
-    overallValues.push(new Date(`${dateRange.end}T23:59:59.999Z`));
+    overallWhere += ` AND created_at < ($${overallParamCount}::date + INTERVAL '1 day')`;
+    overallValues.push(String(dateRange.end));
     overallParamCount++;
   }
 
