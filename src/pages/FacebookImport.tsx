@@ -805,7 +805,7 @@ export default function FacebookImportPage() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => setAutoSync((prev) => ({ ...prev, mode: 'automatic', enabled: true }))}
+                      onClick={() => setAutoSync((prev) => ({ ...prev, mode: 'automatic', enabled: true, endDate: '' }))}
                       className={cn(
                         'rounded-2xl border px-4 py-4 text-left transition-colors',
                         autoSync.mode === 'automatic'
@@ -825,8 +825,8 @@ export default function FacebookImportPage() {
                     </div>
                     <div>
                       <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Bitis tarixi</div>
-                      <DateField value={autoSync.endDate} onChange={(v) => setAutoSync((prev) => ({ ...prev, endDate: v }))} />
-                      <div className="mt-2 text-[11px] text-slate-500">Bos qalsa sistem her sync zamani bugune qeder hesaplayacaq.</div>
+                      <DateField value={autoSync.endDate} disabled={autoSync.mode === 'automatic'} onChange={(v) => setAutoSync((prev) => ({ ...prev, endDate: v }))} />
+                      <div className="mt-2 text-[11px] text-slate-500">Avtomatik rejimde bu sahə hər zaman bugüne qədər hesablanır.</div>
                     </div>
                   </div>
 
@@ -916,11 +916,11 @@ function Tag({ children }: { children: React.ReactNode }) {
   return <span className="rounded-full border border-slate-800 bg-slate-900/60 px-2 py-0.5">{children}</span>;
 }
 
-function DateField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+function DateField({ value, onChange, disabled }: { value: string; onChange: (v: string) => void; disabled?: boolean }) {
   return (
-    <label className="flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-950/35 px-3 py-2 text-sm text-slate-300">
+    <label className={cn('flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-950/35 px-3 py-2 text-sm text-slate-300', disabled ? 'opacity-50' : '')}>
       <Calendar className="w-4 h-4 text-slate-500" />
-      <input type="date" value={value} onChange={(e) => onChange(e.target.value)} className="bg-transparent outline-none text-slate-100" />
+      <input type="date" disabled={disabled} value={value} onChange={(e) => onChange(e.target.value)} className="bg-transparent outline-none text-slate-100 disabled:cursor-not-allowed" />
     </label>
   );
 }

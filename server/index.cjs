@@ -4611,8 +4611,16 @@ function sanitizeFacebookAdImportConfig(row) {
 function sanitizeFacebookAutoSyncInput(input) {
   const raw = input && typeof input === 'object' ? input : {};
   const mode = String(raw.mode || '').trim().toLowerCase() === 'automatic' ? 'automatic' : 'manual';
-  const startDate = String(raw.startDate || '').trim();
-  const endDate = String(raw.endDate || '').trim();
+  const normalizeDate = (value) => {
+    const rawValue = String(value || '').trim();
+    if (!rawValue) return '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(rawValue)) return rawValue;
+    const parsed = new Date(rawValue);
+    if (Number.isNaN(parsed.getTime())) return '';
+    return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}-${String(parsed.getDate()).padStart(2, '0')}`;
+  };
+  const startDate = normalizeDate(raw.startDate);
+  const endDate = mode === 'automatic' ? '' : normalizeDate(raw.endDate);
   const everyHours = Math.max(1, parseInt(String(raw.everyHours || '1'), 10) || 1);
   const minute = Math.min(59, Math.max(0, parseInt(String(raw.minute || '0'), 10) || 0));
   return {
@@ -4998,7 +5006,7 @@ async function fetchFacebookInsightsForCampaigns(userAccessToken, campaigns = []
 
     let nextUrl = `https://graph.facebook.com/v19.0/${encodeURIComponent(campaignId)}/insights?fields=${encodeURIComponent(
       'campaign_id,campaign_name,spend,impressions,clicks,ctr,cpm,actions,cost_per_action_type,date_start,date_stop'
-    )}&limit=200&access_token=${encodeURIComponent(token)}`;
+    )}&limit=200&time_increment=1&access_token=${encodeURIComponent(token)}`;
     if (hasRange) nextUrl += `&time_range=${encodeURIComponent(JSON.stringify({ since, until }))}`;
     else nextUrl += '&date_preset=maximum';
 

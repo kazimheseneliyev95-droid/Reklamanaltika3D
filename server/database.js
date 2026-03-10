@@ -1731,14 +1731,12 @@ async function upsertFacebookInsightRows(tenantId, metric, rows = []) {
         const validRows = Array.isArray(rows) ? rows.filter((row) => row && row.campaign_id && row.date_start) : [];
         if (validRows.length > 0) {
             const keepCampaignIds = Array.from(new Set(validRows.map((row) => String(row.campaign_id))));
-            const keepDates = Array.from(new Set(validRows.map((row) => String(row.date_start))));
             await client.query(
                 `DELETE FROM facebook_ad_insight_cache
                  WHERE tenant_id = $1
                    AND metric = $2
-                   AND campaign_id = ANY($3::text[])
-                   AND date_start = ANY($4::date[])`,
-                [String(tenantId), safeMetric, keepCampaignIds, keepDates]
+                   AND campaign_id = ANY($3::text[])`,
+                [String(tenantId), safeMetric, keepCampaignIds]
             );
         }
         for (const row of validRows) {
