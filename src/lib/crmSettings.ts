@@ -93,6 +93,16 @@ export interface DelayDotsSettings {
     yellowMaxMinutes?: number;
 }
 
+export interface DashboardCampaignMapping {
+    value: string;
+    campaignIds: string[];
+}
+
+export interface DashboardSettings {
+    fieldId?: string;
+    mappings?: DashboardCampaignMapping[];
+}
+
 export interface ReopenOnInboundSettings {
     enabled?: boolean;
     // If true, only triggers for leads that were manually closed (conversation_closed=true)
@@ -125,6 +135,7 @@ export interface CRMSettings {
         leadCard?: LeadCardUISettings;
         delayDots?: DelayDotsSettings;
     };
+    dashboard?: DashboardSettings;
 }
 
 const DEFAULT_LEAD_CARD_UI: LeadCardUISettings = {
@@ -178,6 +189,11 @@ const DEFAULT_AUTOMATION = (firstStageId: string): CRMSettings['automation'] => 
         targetStage: '',
     }
 });
+
+const DEFAULT_DASHBOARD: DashboardSettings = {
+    fieldId: '',
+    mappings: [],
+};
 
 const SERVER_URL_KEY = 'dualite_server_url';
 const LEGACY_SERVER_URL_KEY = 'crm_server_url';
@@ -275,6 +291,24 @@ export function loadCRMSettings(): CRMSettings {
 
             if (!(parsed.ui as any).delayDots) (parsed.ui as any).delayDots = { ...DEFAULT_DELAY_DOTS };
             else (parsed.ui as any).delayDots = { ...DEFAULT_DELAY_DOTS, ...(parsed.ui as any).delayDots };
+
+            if (!parsed.dashboard) parsed.dashboard = { ...DEFAULT_DASHBOARD };
+            else {
+                parsed.dashboard = {
+                    ...DEFAULT_DASHBOARD,
+                    ...parsed.dashboard,
+                    mappings: Array.isArray(parsed.dashboard.mappings)
+                        ? parsed.dashboard.mappings
+                            .map((row) => ({
+                                value: String(row?.value || '').trim(),
+                                campaignIds: Array.isArray(row?.campaignIds)
+                                    ? row.campaignIds.map((x) => String(x || '').trim()).filter(Boolean)
+                                    : []
+                            }))
+                            .filter((row) => row.value)
+                        : [],
+                };
+            }
             return parsed;
         }
     } catch { }
@@ -286,7 +320,8 @@ export function loadCRMSettings(): CRMSettings {
         routingRules: [],
         notifications: { ...DEFAULT_NOTIFICATIONS },
         automation: DEFAULT_AUTOMATION(firstStageId),
-        ui: { leadCard: { ...DEFAULT_LEAD_CARD_UI }, delayDots: { ...DEFAULT_DELAY_DOTS } }
+        ui: { leadCard: { ...DEFAULT_LEAD_CARD_UI }, delayDots: { ...DEFAULT_DELAY_DOTS } },
+        dashboard: { ...DEFAULT_DASHBOARD }
     };
 }
 

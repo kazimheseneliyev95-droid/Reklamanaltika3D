@@ -370,20 +370,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const updateLead = async (id: string, updates: Partial<Lead>) => {
+    const prevLeads = leadsRef.current;
+    const nextLeads = prevLeads.map((lead) => lead.id === id ? { ...lead, ...updates, updated_at: new Date().toISOString() } : lead);
+    setLeads(nextLeads);
+    leadsRef.current = nextLeads;
     try {
       await CrmService.updateLead(id, updates);
-      setLeads(prev => prev.map(l => l.id === id ? { ...l, ...updates } : l));
     } catch (error) {
+      setLeads(prevLeads);
+      leadsRef.current = prevLeads;
       console.error('❌ Error updating lead:', error);
       // Could add toast notification here
     }
   };
 
   const updateLeadStatus = async (id: string, status: LeadStatus) => {
+    const prevLeads = leadsRef.current;
+    const nextLeads = prevLeads.map((lead) => lead.id === id ? { ...lead, status, updated_at: new Date().toISOString() } : lead);
+    setLeads(nextLeads);
+    leadsRef.current = nextLeads;
     try {
       await CrmService.updateStatus(id, status);
-      setLeads(prev => prev.map(l => l.id === id ? { ...l, status } : l));
     } catch (error) {
+      setLeads(prevLeads);
+      leadsRef.current = prevLeads;
       console.error('❌ Error updating lead status:', error);
       // Could add toast notification here
     }

@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, ShieldCheck, LogOut, BarChart3, Settings, Timer, Download } from 'lucide-react';
+import { LayoutDashboard, ShieldCheck, LogOut, BarChart3, Settings, Timer, Download, PieChart } from 'lucide-react';
 import { useAppStore } from '../context/Store';
 import { cn } from '../lib/utils';
 import { NotificationBell } from './NotificationBell';
@@ -22,6 +22,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       { name: 'CRM (Classic)', path: '/crm', icon: <LayoutDashboard className="w-5 h-5" /> },
       ...(currentUser?.role === 'admin' ? [{ name: 'Facebook', path: '/facebook-import', icon: <Download className="w-5 h-5" /> }] : []),
       ...(canViewStats ? [
+        { name: 'Dashboard', path: '/dashboard', icon: <PieChart className="w-5 h-5" /> },
         { name: 'Analitika', path: '/analytics', icon: <BarChart3 className="w-5 h-5" /> },
         { name: 'Cavab Sureleri', path: '/analytics/response-times', icon: <Timer className="w-5 h-5" /> },
       ] : []),

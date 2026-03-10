@@ -4,6 +4,7 @@ import Layout from './components/Layout';
 import { AppProvider, useAppStore } from './context/Store';
 
 const CRMPage = lazy(() => import('./pages/CRM'));
+const DashboardPage = lazy(() => import('./pages/Dashboard'));
 const AnalyticsPage = lazy(() => import('./pages/Analytics'));
 const ResponseTimesPage = lazy(() => import('./pages/ResponseTimes'));
 const SettingsPage = lazy(() => import('./pages/Settings'));
@@ -65,6 +66,7 @@ function RoleBasedRouter() {
       <Routes>
         <Route path="/" element={<Navigate to="/crm" replace />} />
         <Route path="/crm" element={<CRMPage />} />
+        <Route path="/dashboard" element={canViewStats ? <DashboardPage /> : <Navigate to="/crm" replace />} />
         <Route path="/analytics" element={canViewStats ? <AnalyticsPage /> : <Navigate to="/crm" replace />} />
         <Route path="/facebook-import" element={<FacebookImportPage />} />
         <Route path="/analytics/response-times" element={canViewStats ? <ResponseTimesPage /> : <Navigate to="/crm" replace />} />

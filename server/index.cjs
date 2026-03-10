@@ -4698,6 +4698,47 @@ function aggregateFacebookInsightRows(rows = []) {
   };
 }
 
+function normalizeDashboardText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/ı/g, 'i')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function getDashboardWonStageId(settings) {
+  const stages = Array.isArray(settings?.pipelineStages) ? settings.pipelineStages : [];
+  const byId = stages.find((stage) => String(stage?.id || '').trim() === 'won');
+  if (byId) return String(byId.id);
+  const byLabel = stages.find((stage) => {
+    const label = normalizeDashboardText(stage?.label || '');
+    return label === 'satis' || label === 'satış' || label === 'sale';
+  });
+  return byLabel ? String(byLabel.id) : 'won';
+}
+
+function normalizeDashboardMappings(settings) {
+  const dashboard = settings && typeof settings === 'object' ? settings.dashboard || {} : {};
+  const fieldId = String(dashboard?.fieldId || '').trim();
+  const customFields = Array.isArray(settings?.customFields) ? settings.customFields : [];
+  const field = customFields.find((item) => item && item.id === fieldId && item.type === 'select') || null;
+  const allowedValues = new Set((field?.options || []).map((item) => String(item || '').trim()).filter(Boolean));
+  const rows = Array.isArray(dashboard?.mappings) ? dashboard.mappings : [];
+  return {
+    field,
+    mappings: rows
+      .map((row) => ({
+        value: String(row?.value || '').trim(),
+        campaignIds: Array.isArray(row?.campaignIds)
+          ? row.campaignIds.map((id) => String(id || '').trim()).filter(Boolean)
+          : []
+      }))
+      .filter((row) => row.value && (!field || allowedValues.has(row.value)))
+  };
+}
+
 async function fetchFacebookInsightsForCampaigns(userAccessToken, campaigns = [], dateRange = {}, metric = 'message') {
   const token = String(userAccessToken || '').trim();
   if (!token) throw new Error('Token is required');
@@ -5076,6 +5117,174 @@ app.get('/api/facebook-import/insights', requireTenantAuth, requireAdmin, asyncH
     selectedCampaignIds,
     metric,
     range: dateRange,
+  });
+}));
+
+app.get('/api/dashboard/combined', requireTenantAuth, requirePermission('view_stats', 'Dashboard görmək icazəniz yoxdur'), asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+
+  const settings = await db.getCRMSettings(req.tenantId).catch(() => null);
+  const { field, mappings } = normalizeDashboardMappings(settings || {});
+  const stageLegend = Array.isArray(settings?.pipelineStages) ? settings.pipelineStages : [];
+  const wonStageId = getDashboardWonStageId(settings || {});
+  const metric = String(req.query.metric || 'message').trim().toLowerCase();
+  const facebookConfig = await db.getFacebookAdImport(req.tenantId).catch(() => null);
+  const campaignCache = Array.isArray(facebookConfig?.campaign_cache)
+    ? facebookConfig.campaign_cache.map(normalizeFacebookCampaign).filter((c) => c.id)
+    : [];
+
+  const dateRange = {
+    start: String(req.query.start || '').trim() || null,
+    end: String(req.query.end || '').trim() || null,
+  };
+
+  const warnings = [];
+  const allCampaignIds = Array.from(new Set(mappings.flatMap((row) => row.campaignIds)));
+  const selectedCampaigns = campaignCache.filter((campaign) => allCampaignIds.includes(campaign.id));
+
+  let insightRows = [];
+  if (selectedCampaigns.length > 0 && facebookConfig?.access_token) {
+    try {
+      insightRows = await fetchFacebookInsightsForCampaigns(facebookConfig.access_token, selectedCampaigns, dateRange, metric);
+    } catch (error) {
+      warnings.push(`Facebook insight alınmadı: ${String(error?.message || 'unknown_error')}`);
+    }
+  } else if (mappings.some((row) => row.campaignIds.length > 0)) {
+    warnings.push('Facebook token və ya kampaniya cache tapılmadı; yalnız CRM nəticələri göstərilir.');
+  }
+
+  const insightsByCampaignId = new Map();
+  for (const row of insightRows) {
+    insightsByCampaignId.set(String(row.campaign_id), row);
+  }
+
+  const mappingValues = mappings.map((row) => row.value);
+  const crmByValue = new Map();
+  const makeEmptyStages = () => stageLegend.map((stage) => ({
+    id: stage.id,
+    label: stage.label,
+    color: stage.color,
+    count: 0,
+    revenue: 0,
+  }));
+
+  if (field && mappingValues.length > 0) {
+    const values = [req.tenantId, field.id, mappingValues];
+    let where = `tenant_id = $1 AND COALESCE(extra_data->>$2, '') = ANY($3::text[])`;
+    let paramCount = 4;
+    if (!canViewAllLeads(req)) {
+      where += ` AND assignee_id = $${paramCount}`;
+      values.push(req.userId);
+      paramCount++;
+    }
+    if (dateRange.start) {
+      where += ` AND created_at >= $${paramCount}`;
+      values.push(new Date(`${dateRange.start}T00:00:00.000Z`));
+      paramCount++;
+    }
+    if (dateRange.end) {
+      where += ` AND created_at < $${paramCount}`;
+      values.push(new Date(`${dateRange.end}T23:59:59.999Z`));
+      paramCount++;
+    }
+
+    const crmRes = await db.pool.query(
+      `SELECT
+         COALESCE(extra_data->>$2, '') AS field_value,
+         status,
+         COUNT(*)::int AS lead_count,
+         COALESCE(SUM(COALESCE(value, 0)), 0)::float AS value_sum
+       FROM leads
+       WHERE ${where}
+       GROUP BY 1, 2`,
+      values
+    );
+
+    for (const row of crmRes.rows || []) {
+      const fieldValue = String(row.field_value || '');
+      if (!crmByValue.has(fieldValue)) {
+        crmByValue.set(fieldValue, {
+          leads: 0,
+          won_count: 0,
+          pipeline_value: 0,
+          won_revenue: 0,
+          stages: makeEmptyStages(),
+        });
+      }
+      const bucket = crmByValue.get(fieldValue);
+      const leadCount = Number(row.lead_count || 0);
+      const valueSum = Number(row.value_sum || 0);
+      bucket.leads += leadCount;
+      bucket.pipeline_value += valueSum;
+      if (String(row.status || '') === wonStageId) {
+        bucket.won_count += leadCount;
+        bucket.won_revenue += valueSum;
+      }
+      const stage = bucket.stages.find((item) => String(item.id) === String(row.status || ''));
+      if (stage) {
+        stage.count += leadCount;
+        stage.revenue += valueSum;
+      }
+    }
+  }
+
+  const groups = mappings.map((mapping) => {
+    const campaigns = selectedCampaigns.filter((campaign) => mapping.campaignIds.includes(campaign.id));
+    const facebookRows = campaigns.map((campaign) => insightsByCampaignId.get(campaign.id)).filter(Boolean);
+    const facebook = aggregateFacebookInsightRows(facebookRows);
+    const crm = crmByValue.get(mapping.value) || {
+      leads: 0,
+      won_count: 0,
+      pipeline_value: 0,
+      won_revenue: 0,
+      stages: makeEmptyStages(),
+    };
+    const leadCount = Number(crm.leads || 0);
+    const wonCount = Number(crm.won_count || 0);
+    const spend = Number(facebook.spend || 0);
+    const wonRevenue = Number(crm.won_revenue || 0);
+    return {
+      value: mapping.value,
+      campaigns,
+      campaignIds: mapping.campaignIds,
+      facebook,
+      crm,
+      merged: {
+        cost_per_crm_lead: leadCount > 0 ? spend / leadCount : 0,
+        cost_per_sale: wonCount > 0 ? spend / wonCount : 0,
+        roas: spend > 0 ? wonRevenue / spend : 0,
+        conversion_rate: leadCount > 0 ? (wonCount / leadCount) * 100 : 0,
+      }
+    };
+  });
+
+  const totals = {
+    facebook: aggregateFacebookInsightRows(selectedCampaigns.map((campaign) => insightsByCampaignId.get(campaign.id)).filter(Boolean)),
+    crm: groups.reduce((acc, group) => {
+      acc.leads += Number(group.crm.leads || 0);
+      acc.won_count += Number(group.crm.won_count || 0);
+      acc.pipeline_value += Number(group.crm.pipeline_value || 0);
+      acc.won_revenue += Number(group.crm.won_revenue || 0);
+      return acc;
+    }, { leads: 0, won_count: 0, pipeline_value: 0, won_revenue: 0 })
+  };
+
+  res.json({
+    metric,
+    range: dateRange,
+    field: field ? { id: field.id, label: field.label, options: field.options || [] } : null,
+    stageLegend,
+    groups,
+    totals: {
+      ...totals,
+      merged: {
+        cost_per_crm_lead: totals.crm.leads > 0 ? totals.facebook.spend / totals.crm.leads : 0,
+        cost_per_sale: totals.crm.won_count > 0 ? totals.facebook.spend / totals.crm.won_count : 0,
+        roas: totals.facebook.spend > 0 ? totals.crm.won_revenue / totals.facebook.spend : 0,
+        conversion_rate: totals.crm.leads > 0 ? (totals.crm.won_count / totals.crm.leads) * 100 : 0,
+      }
+    },
+    warnings,
   });
 }));
 
