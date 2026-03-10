@@ -598,12 +598,12 @@ export default function FacebookImportPage() {
       </section>
 
       <section className="rounded-3xl border border-slate-800 bg-slate-900/60 shadow-2xl shadow-black/20 overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/35 flex items-center justify-between gap-3">
+        <div className="px-4 sm:px-5 py-4 border-b border-slate-800 bg-slate-950/35 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>
             <div className="text-lg font-semibold text-slate-100">Kampaniya cedveli</div>
             <div className="text-sm text-slate-500">Facebook Ads Manager uslubunda yekun setirler</div>
           </div>
-          <div className="flex items-center gap-2 rounded-2xl border border-slate-800 bg-slate-950/40 px-3 py-2 min-w-[240px]">
+          <div className="flex items-center gap-2 rounded-2xl border border-slate-800 bg-slate-950/40 px-3 py-2 w-full sm:w-auto sm:min-w-[220px]">
             <Search className="w-4 h-4 text-slate-500" />
             <input
               value={campaignSearch}
@@ -614,8 +614,8 @@ export default function FacebookImportPage() {
           </div>
         </div>
 
-        <div className="overflow-auto">
-          <table className="min-w-full text-sm">
+        <div className="hidden md:block overflow-auto">
+          <table className="min-w-[1080px] text-sm">
             <thead className="bg-slate-950/60 text-slate-400 text-xs uppercase tracking-wide">
               <tr>
                 <th className="px-4 py-3 text-left">Kampaniya</th>
@@ -669,6 +669,31 @@ export default function FacebookImportPage() {
               </tfoot>
             ) : null}
           </table>
+        </div>
+        <div className="md:hidden p-3 space-y-3">
+          {sortedCampaigns.length === 0 ? (
+            <div className="rounded-2xl border border-slate-800 bg-slate-950/25 px-4 py-8 text-center text-slate-500 text-sm">Secilmis kampaniyalar ucun data gorunmur. Ayarlardan kampaniya secib sonra tarix filtrini tetbiq et.</div>
+          ) : sortedCampaigns.map((campaign) => (
+            <div key={campaign.id} className="rounded-2xl border border-slate-800 bg-slate-950/25 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="font-semibold text-slate-100 break-words">{campaign.name}</div>
+                  <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-500">
+                    {campaign.objective ? <Tag>{campaign.objective}</Tag> : null}
+                    {campaign.effective_status?.[0] ? <Tag>{campaign.effective_status[0]}</Tag> : null}
+                  </div>
+                </div>
+                <StatusCell status={campaign.status || campaign.effective_status?.[0] || 'Unknown'} />
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-2 text-[11px]">
+                <div className="rounded-xl bg-slate-950/35 px-3 py-2"><div className="text-slate-500">{metricLabel(metric)}</div><div className="mt-1 text-slate-100 font-semibold tabular-nums">{formatNum(campaign.metrics.results)}</div></div>
+                <div className="rounded-xl bg-slate-950/35 px-3 py-2"><div className="text-slate-500">Sonuc basina ucret</div><div className="mt-1 text-slate-100 font-semibold tabular-nums">{formatMoney(campaign.metrics.cost_per_result)}</div></div>
+                <div className="rounded-xl bg-slate-950/35 px-3 py-2"><div className="text-slate-500">Harcanan Tutar</div><div className="mt-1 text-slate-100 font-semibold tabular-nums">{formatMoney(campaign.metrics.spend)}</div></div>
+                <div className="rounded-xl bg-slate-950/35 px-3 py-2"><div className="text-slate-500">CPM / CTR</div><div className="mt-1 text-slate-100 font-semibold tabular-nums">{formatMoney(campaign.metrics.cpm)} · {formatPct(campaign.metrics.ctr)}</div></div>
+              </div>
+              <div className="mt-3 text-[11px] text-slate-500">Hesab: <span className="text-slate-300">{campaign.account_name || '-'}</span></div>
+            </div>
+          ))}
         </div>
       </section>
 
@@ -946,9 +971,9 @@ function ActionButton({ children, onClick, busy, icon, disabled, variant = 'prim
 function DrawerSection({ title, right, children }: { title: string; right?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="rounded-3xl border border-slate-800 bg-slate-950/20 overflow-hidden">
-      <div className="px-4 py-3 border-b border-slate-800 bg-slate-900/35 flex items-center justify-between gap-3">
+      <div className="px-4 py-3 border-b border-slate-800 bg-slate-900/35 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="text-base font-semibold text-slate-100">{title}</div>
-        <div>{right}</div>
+        <div className="w-full sm:w-auto">{right}</div>
       </div>
       <div className="p-4">{children}</div>
     </div>
@@ -957,7 +982,7 @@ function DrawerSection({ title, right, children }: { title: string; right?: Reac
 
 function SearchInline({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   return (
-    <div className="flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-950/40 px-3 py-2 min-w-[220px]">
+    <div className="flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-950/40 px-3 py-2 w-full sm:w-auto sm:min-w-[220px]">
       <Search className="w-4 h-4 text-slate-500" />
       <input value={value} onChange={(e) => onChange(e.target.value)} placeholder="Axtar..." className="bg-transparent outline-none text-sm text-slate-100 placeholder:text-slate-600 w-full" />
     </div>

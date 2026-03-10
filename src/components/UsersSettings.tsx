@@ -154,7 +154,7 @@ export function UsersSettings() {
                 <form onSubmit={handleCreateUser} className="bg-slate-900 border border-slate-700 rounded-xl p-4 space-y-4">
                     <h3 className="text-xs font-semibold text-white mb-2">Yeni İstifadəçi</h3>
 
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                         <div>
                             <label className="block text-[10px] font-medium text-slate-400 uppercase tracking-wider mb-1 m-1">İstifadəçi Adı</label>
                             <input
@@ -248,14 +248,14 @@ export function UsersSettings() {
                     const activePermsCount = user.permissions ? Object.keys(user.permissions).filter(k => (user.permissions as any)[k]).length : 0;
 
                     return (
-                        <div key={user.id} className="bg-slate-900 border border-slate-800 rounded-xl p-3 flex items-center justify-between">
-                            <div className="flex items-center gap-3">
+                        <div key={user.id} className="bg-slate-900 border border-slate-800 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                            <div className="flex items-center gap-3 min-w-0">
                                 <div className={`w-10 h-10 rounded-full flex items-center justify-center border ${roleColors[user.role] || roleColors['worker']}`}>
                                     {user.role === 'admin' || user.role === 'superadmin' ? <Shield className="w-4 h-4" /> : <UserIcon className="w-4 h-4" />}
                                 </div>
-                                <div>
-                                    <p className="text-sm font-semibold text-white flex items-center gap-2">
-                                        {user.username}
+                                <div className="min-w-0">
+                                    <p className="text-sm font-semibold text-white flex flex-wrap items-center gap-2">
+                                        <span className="truncate max-w-[170px] sm:max-w-none">{user.username}</span>
                                         <span className={`text-[9px] px-1.5 py-0.5 rounded-full uppercase tracking-wider border ${roleColors[user.role] || roleColors['worker']}`}>
                                             {user.role}
                                         </span>
@@ -267,7 +267,7 @@ export function UsersSettings() {
                                 </div>
                             </div>
 
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center justify-end gap-2 sm:self-auto self-end">
                                 {/* Future: Edit User button could go here */}
                                 <button onClick={() => handleDeleteUser(user.id, user.username)} className="p-2 text-slate-600 hover:text-red-400 transition-colors rounded-lg hover:bg-slate-800">
                                     <Trash2 className="w-4 h-4" />

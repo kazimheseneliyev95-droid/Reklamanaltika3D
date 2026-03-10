@@ -35,9 +35,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     .sort((a, b) => b.path.length - a.path.length)[0]?.path;
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-50 flex flex-col md:flex-row">
+    <div className="min-h-[100dvh] bg-slate-950 text-slate-50 flex flex-col md:flex-row">
       {/* Mobile Top Bar (Minimal) */}
-      <div className="mobile-topbar md:hidden flex items-center justify-between p-3 bg-slate-900 border-b border-slate-800 sticky top-0 z-40">
+      <div className="mobile-topbar md:hidden flex items-center justify-between px-3 py-3 bg-slate-900 border-b border-slate-800 sticky top-0 z-40" style={{ paddingTop: 'max(0.75rem, env(safe-area-inset-top))' }}>
         <div className="min-w-0">
           <h1 className="text-lg font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent leading-tight">
             ReklamAnalitika
@@ -61,34 +61,34 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       </div>
 
       {/* Mobile Bottom Navigation (PWA style) */}
-      <nav className="mobile-bottom-nav md:hidden fixed bottom-0 w-full bg-slate-900 border-t border-slate-800 z-50 flex items-center justify-around pb-safe">
+      <nav className="mobile-bottom-nav md:hidden fixed bottom-0 inset-x-0 h-[74px] bg-slate-900/98 border-t border-slate-800 z-50 flex items-stretch justify-around backdrop-blur-xl" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
          {navItems.map((item) => {
            const isActive = activePath === item.path;
-           return (
-             <Link
-              key={item.path}
-              to={item.path}
-              className={cn(
-                "flex flex-col items-center justify-center w-full py-2 gap-1 transition-colors",
-                isActive ? "text-blue-400" : "text-slate-500 hover:text-slate-300"
-              )}
-            >
-              <div className={cn("p-1.5 rounded-full", isActive && "bg-blue-600/20")}>
-                {item.icon}
-              </div>
-              <span className="text-[10px] font-medium">{item.name}</span>
-            </Link>
-          );
-        })}
+            return (
+              <Link
+               key={item.path}
+               to={item.path}
+               className={cn(
+                 "flex min-w-0 flex-col items-center justify-center w-full px-1 py-2 gap-1 transition-colors",
+                 isActive ? "text-blue-400" : "text-slate-500 hover:text-slate-300"
+               )}
+             >
+               <div className={cn("p-1.5 rounded-full", isActive && "bg-blue-600/20")}>
+                 {item.icon}
+               </div>
+               <span className="text-[10px] leading-tight font-medium text-center max-w-[72px] truncate">{item.name}</span>
+             </Link>
+           );
+         })}
         {currentUser?.role === 'superadmin' && (
           <button
             onClick={logout}
-            className="flex flex-col items-center justify-center w-full py-2 gap-1 transition-colors text-rose-500 hover:text-rose-400"
+            className="flex min-w-0 flex-col items-center justify-center w-full px-1 py-2 gap-1 transition-colors text-rose-500 hover:text-rose-400"
           >
             <div className="p-1.5 rounded-full">
               <LogOut className="w-5 h-5" />
             </div>
-            <span className="text-[10px] font-medium">Çıxış</span>
+            <span className="text-[10px] leading-tight font-medium text-center max-w-[72px] truncate">Çıxış</span>
           </button>
         )}
       </nav>
@@ -148,7 +148,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-auto min-h-0 pb-16 md:pb-0">
+      <main className="flex-1 overflow-auto min-h-0 pb-[calc(92px+env(safe-area-inset-bottom))] md:pb-0">
         {children}
       </main>
     </div>

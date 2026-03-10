@@ -1118,7 +1118,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
             >
 
                 {/* ════════════════════ TOP PIPELINE BAR ════════════════════ */}
-                <div className="min-h-14 flex items-center justify-between px-2 sm:px-4 border-b border-white/5 bg-[#111827] shrink-0 gap-2 sm:gap-3">
+                <div className="flex items-center justify-between px-2 sm:px-4 py-2 border-b border-white/5 bg-[#111827] shrink-0 gap-2 sm:gap-3">
 
                     {/* Back Button (Mobile) & Lead ID badge */}
                     <div className="flex items-center gap-1 sm:gap-2 shrink-0">
@@ -1129,7 +1129,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                             <span className="hidden sm:inline text-slate-500 text-[10px] uppercase font-bold tracking-wider">Kod:</span>
                             <span className="text-[10px] sm:text-sm font-mono text-slate-300 font-semibold">{leadIdShort}</span>
                         </div>
-                        <span className="text-slate-300 text-xs sm:text-sm font-semibold truncate max-w-[140px] sm:max-w-[180px]">
+                        <span className="text-slate-300 text-[11px] sm:text-sm font-semibold truncate max-w-[96px] xs:max-w-[120px] sm:max-w-[180px]">
                             {lead.name || lead.phone}
                         </span>
                     </div>
@@ -1154,7 +1154,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                     )}
                                 >
                                     {s.icon}
-                                    <span className="hidden xs:inline sm:inline">{s.label}</span>
+                                    <span className="hidden sm:inline">{s.label}</span>
                                 </button>
                             );
                         })}
@@ -1179,7 +1179,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                 </div>
 
                 {/* Mobile: single tab bar (app-like) */}
-                <div className="md:hidden px-2 py-2 border-b border-white/5 bg-[#0d1117]">
+                <div className="md:hidden px-2 py-1.5 border-b border-white/5 bg-[#0d1117]">
                     <div className="flex gap-1 bg-[#1c2436] p-1 rounded-xl w-full mx-auto shadow-md overflow-x-auto no-scrollbar">
                         {([
                             { id: 'info', label: 'Məlumat' },
@@ -1192,7 +1192,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                 key={t.id}
                                 onClick={() => setActiveTab(t.id as any)}
                                 className={cn(
-                                    'flex-1 min-w-[78px] py-2 px-2 rounded-lg text-[11px] font-semibold transition-all whitespace-nowrap',
+                                    'flex-1 min-w-[68px] py-1.5 px-2 rounded-lg text-[10px] font-semibold transition-all whitespace-nowrap',
                                     activeTab === t.id
                                         ? 'bg-blue-600 text-white shadow-sm'
                                         : 'text-slate-400 hover:text-slate-200'

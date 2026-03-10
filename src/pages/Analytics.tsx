@@ -199,12 +199,17 @@ function BarList({ data, total, mode, isMoney }: { data: Datum[]; total: number;
   return (
     <div className="space-y-2">
       {data.map((d) => (
-        <div key={d.label} className="flex items-center gap-2">
-          <div className="w-28 sm:w-36 text-[11px] text-slate-300 truncate" title={d.label}>{d.label}</div>
+        <div key={d.label} className="flex flex-col sm:flex-row sm:items-center gap-2">
+          <div className="flex items-center justify-between gap-3 sm:w-auto sm:flex-none">
+            <div className="w-auto sm:w-28 md:w-36 text-[11px] text-slate-300 truncate" title={d.label}>{d.label}</div>
+            <div className="sm:hidden text-right text-[11px] font-semibold text-slate-200 tabular-nums">
+              {valueLabel(d.value, total, mode, isMoney)}
+            </div>
+          </div>
           <div className="flex-1 h-2.5 bg-slate-900 border border-slate-800 rounded-full overflow-hidden">
             <div className="h-full" style={{ width: `${Math.round((d.value / max) * 100)}%`, background: d.color }} />
           </div>
-          <div className="w-24 text-right text-[11px] font-semibold text-slate-200 tabular-nums">
+          <div className="hidden sm:block w-24 text-right text-[11px] font-semibold text-slate-200 tabular-nums">
             {valueLabel(d.value, total, mode, isMoney)}
           </div>
         </div>
@@ -224,7 +229,7 @@ function Donut({ data, total, mode, isMoney }: { data: Datum[]; total: number; m
   const denom = sumShown || 1;
 
   return (
-    <div className="flex items-center gap-4">
+    <div className="flex flex-col sm:flex-row sm:items-center gap-4">
       <svg width={size} height={size} viewBox="0 0 140 140" className="shrink-0">
         <circle cx="70" cy="70" r={r} fill="none" stroke="rgba(148,163,184,0.15)" strokeWidth="14" />
         {shown.map((d) => {

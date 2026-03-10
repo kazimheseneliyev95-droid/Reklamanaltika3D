@@ -246,8 +246,8 @@ export default function ResponseTimesPage() {
       <div className="mt-6 grid grid-cols-1 xl:grid-cols-2 gap-4">
         <div className="rounded-2xl border border-slate-800 bg-slate-950/20 p-4">
           <div className="text-[11px] uppercase tracking-wide font-bold text-slate-500">Operatorlara gore</div>
-          <div className="mt-3 overflow-x-auto">
-            <table className="min-w-full text-sm">
+          <div className="mt-3 hidden sm:block overflow-x-auto">
+            <table className="min-w-[640px] text-sm">
               <thead>
                 <tr className="text-left text-[11px] text-slate-500">
                   <th className="py-2 pr-3">Operator</th>
@@ -272,6 +272,22 @@ export default function ResponseTimesPage() {
                 ) : null}
               </tbody>
             </table>
+          </div>
+          <div className="mt-3 sm:hidden space-y-2">
+            {(stats?.by_operator || []).slice(0, 25).map((r) => (
+              <div key={r.user_id || r.name} className="rounded-xl border border-slate-800 bg-slate-950/25 p-3">
+                <div className="text-sm font-bold text-slate-100">{r.name}</div>
+                <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
+                  <div className="rounded-lg bg-slate-950/40 px-3 py-2"><div className="text-slate-500">FRT say</div><div className="mt-1 text-slate-200 tabular-nums">{r.frt_count}</div></div>
+                  <div className="rounded-lg bg-slate-950/40 px-3 py-2"><div className="text-slate-500">Ort FRT</div><div className="mt-1 text-slate-200 tabular-nums">{fmtMinutes(r.frt_avg_minutes)}</div></div>
+                  <div className="rounded-lg bg-slate-950/40 px-3 py-2"><div className="text-slate-500">Ort ART</div><div className="mt-1 text-slate-200 tabular-nums">{fmtMinutes(r.art_avg_minutes)}</div></div>
+                  <div className="rounded-lg bg-slate-950/40 px-3 py-2"><div className="text-slate-500">Max CGT</div><div className="mt-1 text-slate-200 tabular-nums">{fmtMinutes(r.cgt_max_minutes)}</div></div>
+                </div>
+              </div>
+            ))}
+            {!loading && (stats?.by_operator || []).length === 0 ? (
+              <div className="rounded-xl border border-slate-800 bg-slate-950/25 px-3 py-4 text-sm text-slate-500">Data yoxdur.</div>
+            ) : null}
           </div>
         </div>
 
