@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import QRCode from 'react-qr-code';
 import { RefreshCcw, Smartphone, Wifi, WifiOff, Link2, CheckSquare, Square, Trash2, BellRing, Send, Bot, ShieldCheck, ScanSearch, AlertCircle, Info, ClipboardCopy, CheckCircle2 } from 'lucide-react';
 import { cn } from '../../../lib/utils';
@@ -437,7 +437,7 @@ export function ConnectionTab() {
   const tgServerChat = String(tgConfig?.chat_id || '').trim();
   const tgServerHasToken = Boolean(tgConfig?.has_bot_token);
   const tgGlobalEnabled = tgConfig?.enabled_global !== false;
-  const tgDirty = Boolean(tgConfig)
+  const tgDirty = tgConfig != null
     ? (tgEnabled !== tgServerEnabled || String(tgChatId || '').trim() !== tgServerChat || tgClearToken || String(tgBotToken || '').trim() !== '')
     : (Boolean(String(tgChatId || '').trim()) || Boolean(String(tgBotToken || '').trim()));
   const tgReady = tgGlobalEnabled && tgServerEnabled && tgServerHasToken && Boolean(tgServerChat);

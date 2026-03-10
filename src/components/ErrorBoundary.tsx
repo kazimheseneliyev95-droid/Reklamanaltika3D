@@ -19,7 +19,6 @@ export class ErrorBoundary extends React.Component<Props, State> {
 
   componentDidCatch(err: any) {
     try {
-      // eslint-disable-next-line no-console
       console.error('UI crashed:', err);
     } catch {
       // ignore

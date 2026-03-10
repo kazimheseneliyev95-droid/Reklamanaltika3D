@@ -2,9 +2,9 @@
   "name": "whatsapp-crm-server",
   "version": "1.0.0",
   "description": "Backend for ReklamAnalitika CRM",
-  "main": "index.js",
+  "main": "index.cjs",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.cjs"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

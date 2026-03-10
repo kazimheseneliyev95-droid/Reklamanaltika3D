@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Bell } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { CrmService } from '../services/CrmService';
@@ -51,7 +51,6 @@ export function NotificationBell({ className }: { className?: string }) {
       cleanupNew();
       cleanupReconnect();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {

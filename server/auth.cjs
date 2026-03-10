@@ -1,15 +1,29 @@
+const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 
 const JWT_ISSUER = 'reklamanaltika3d';
 const JWT_AUDIENCE = 'crm-ui';
 
+let generatedJwtSecret = '';
+let didWarnAboutEphemeralSecret = false;
+
 function getJwtSecret() {
-  const secret = process.env.JWT_SECRET || process.env.ADMIN_PASSWORD || 'dev-insecure-jwt-secret-change-me';
-  if (!process.env.JWT_SECRET) {
-    console.warn('⚠️ JWT_SECRET is not set. Using compatibility fallback secret. Set JWT_SECRET in production.');
+  const configuredSecret = String(process.env.JWT_SECRET || '').trim();
+  if (configuredSecret) {
+    return configuredSecret;
   }
-  return secret;
+
+  if (!generatedJwtSecret) {
+    generatedJwtSecret = crypto.randomBytes(48).toString('hex');
+  }
+
+  if (!didWarnAboutEphemeralSecret) {
+    didWarnAboutEphemeralSecret = true;
+    console.warn('⚠️ JWT_SECRET is not set. Generated an ephemeral in-memory secret; active sessions will reset after restart. Set JWT_SECRET in production.');
+  }
+
+  return generatedJwtSecret;
 }
 
 function signAuthToken(payload) {

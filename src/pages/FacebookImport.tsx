@@ -1,8 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   BarChart3,
   Calendar,
-  Check,
   CheckCircle2,
   Download,
   Filter,
@@ -358,7 +357,7 @@ export default function FacebookImportPage() {
       if (!res.ok) throw new Error(data.error || 'Kampaniyalar alina bilmedi');
       const next = Array.isArray(data.campaigns) ? data.campaigns : [];
       setCampaigns(next);
-      setSelectedCampaignIds((prev) => prev.filter((id) => next.some((c) => c.id === id)));
+      setSelectedCampaignIds((prev) => prev.filter((id) => next.some((c: Campaign) => c.id === id)));
       setMessage(`${next.length} kampaniya tapildi.`);
     } catch (e: any) {
       setMessage(e?.message || 'Kampaniya getirme xetasi');
@@ -863,8 +862,4 @@ function SelectableCard({ title, subtitle, meta, checked, onClick, tone, compact
 
 function EmptyHint({ text, compact }: { text: string; compact?: boolean }) {
   return <div className={cn('rounded-2xl border border-dashed border-slate-800 bg-slate-950/20 text-center text-sm text-slate-500', compact ? 'p-5' : 'p-8')}>{text}</div>;
-}
-
-function StatusBadge({ children }: { children: React.ReactNode }) {
-  return <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-bold text-emerald-200"><CheckCircle2 className="w-3.5 h-3.5" />{children}</span>;
 }

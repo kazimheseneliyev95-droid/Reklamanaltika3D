@@ -42,14 +42,38 @@ const WA_MEDIA_MAX_BYTES = (() => {
     return 15 * 1024 * 1024; // 15MB default
 })();
 
+function isLoopbackAddress(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (!normalized) return false;
+    if (normalized === '::1' || normalized === '127.0.0.1' || normalized === '::ffff:127.0.0.1') return true;
+    return normalized.startsWith('127.');
+}
+
+function isLoopbackRequest(req) {
+    const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    return [
+        req.ip,
+        req.socket && req.socket.remoteAddress,
+        req.connection && req.connection.remoteAddress,
+        forwarded
+    ].some(isLoopbackAddress);
+}
+
 workerApp.use('/api/internal', (req, res, next) => {
     if (!INTERNAL_WEBHOOK_SECRET) {
-        return next();
+        if (isLoopbackRequest(req)) {
+            return next();
+        }
+        return res.status(503).json({ error: 'Internal secret is not configured' });
     }
     const incoming = req.headers['x-internal-secret'];
     if (incoming === INTERNAL_WEBHOOK_SECRET) return next();
     return res.status(401).json({ error: 'Unauthorized internal request' });
 });
+
+if (!INTERNAL_WEBHOOK_SECRET) {
+    console.warn('⚠️ INTERNAL_WEBHOOK_SECRET is missing in worker process. Internal endpoints will only accept loopback requests.');
+}
 
 async function fetchWithRetry(url, options = {}, retryOptions = {}) {
     const retries = retryOptions.retries ?? 2;
@@ -422,7 +446,7 @@ async function notifyApiServer(tenantId, event, payload) {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'x-internal-secret': INTERNAL_WEBHOOK_SECRET
+                ...(INTERNAL_WEBHOOK_SECRET ? { 'x-internal-secret': INTERNAL_WEBHOOK_SECRET } : {})
             },
             body: JSON.stringify({ tenantId: tenantId, event: event, payload: payload })
         }, { retries: 1, timeoutMs: 4000 });

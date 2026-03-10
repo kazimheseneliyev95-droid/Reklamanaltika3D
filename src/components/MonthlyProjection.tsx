@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/Card';
 import { Input } from './ui/Input';
 import { Label } from './ui/Label';
@@ -210,12 +210,6 @@ export function MonthlyProjection({ inputs, uncertainty }: MonthlyProjectionProp
 }
 
 function ScenarioCard({ title, icon, data, color, isMain, description }: any) {
-  const colorStyles = {
-    red: "border-red-500/20 bg-red-950/10 text-red-200",
-    blue: "border-blue-500/50 bg-blue-950/20 text-blue-100",
-    green: "border-green-500/20 bg-green-950/10 text-green-200"
-  };
-
   const textColors = {
     red: "text-red-400",
     blue: "text-blue-400",

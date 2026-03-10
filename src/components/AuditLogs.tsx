@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Activity, Search, Server, Shield, Database, RefreshCw } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Activity, RefreshCw } from 'lucide-react';
 import { CrmService } from '../services/CrmService';
 import { format } from 'date-fns';
 

@@ -1,7 +1,5 @@
-import React from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from './ui/Card';
 import { Badge } from './ui/Badge';
-import { Activity, AlertTriangle, CheckCircle, TrendingDown, TrendingUp, Lightbulb } from 'lucide-react';
+import { Activity, AlertTriangle, CheckCircle, TrendingDown, Lightbulb } from 'lucide-react';
 import { cn, formatNumber, formatPercent } from '../lib/utils';
 import { THRESHOLDS } from '../lib/statistics';
 

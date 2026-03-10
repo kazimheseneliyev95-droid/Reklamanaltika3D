@@ -23,6 +23,7 @@ const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const INTERNAL_WEBHOOK_SECRET = process.env.INTERNAL_WEBHOOK_SECRET || '';
 const ALLOW_LEGACY_TOKEN = process.env.ALLOW_LEGACY_TOKEN !== 'false';
+const HAS_DATABASE = Boolean(process.env.DATABASE_URL);
 
 // Meta (Facebook/Instagram) Webhooks
 const META_APP_SECRET = process.env.META_APP_SECRET || '';
@@ -175,12 +176,16 @@ async function notifyTelegramInbound({ tenantId, source, phone, name, message, e
   }
 }
 
-if (!process.env.DATABASE_URL) {
-  console.warn('⚠️ DATABASE_URL is missing. The app will run in file-based fallback mode.');
+if (!HAS_DATABASE) {
+  console.warn('⚠️ DATABASE_URL is missing. The app will run in limited file-based fallback mode.');
 }
 
 if (!process.env.JWT_SECRET) {
-  console.warn('⚠️ JWT_SECRET is missing. Compatibility fallback will be used. Set JWT_SECRET in production.');
+  console.warn('⚠️ JWT_SECRET is missing. An ephemeral in-memory secret will be used until restart. Set JWT_SECRET in production.');
+}
+
+if (!INTERNAL_WEBHOOK_SECRET) {
+  console.warn('⚠️ INTERNAL_WEBHOOK_SECRET is missing. Internal endpoints will only accept loopback requests.');
 }
 
 async function fetchJsonWithRetry(url, options = {}, retryOptions = {}) {
@@ -257,6 +262,44 @@ function verifyAnyToken(token) {
     return legacy;
   }
 }
+
+function isLoopbackAddress(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return false;
+  if (normalized === '::1' || normalized === '127.0.0.1' || normalized === '::ffff:127.0.0.1') return true;
+  return normalized.startsWith('127.');
+}
+
+function isLoopbackRequest(req) {
+  const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  return [
+    req.ip,
+    req.socket && req.socket.remoteAddress,
+    req.connection && req.connection.remoteAddress,
+    forwarded
+  ].some(isLoopbackAddress);
+}
+
+function safeInternalHeaders() {
+  return INTERNAL_WEBHOOK_SECRET ? { 'x-internal-secret': INTERNAL_WEBHOOK_SECRET } : {};
+}
+
+function requireInternalRequest(req, res, next) {
+  if (INTERNAL_WEBHOOK_SECRET) {
+    const incomingSecret = req.headers['x-internal-secret'];
+    if (!safeEqual(incomingSecret, INTERNAL_WEBHOOK_SECRET)) {
+      return res.status(401).json({ error: 'Unauthorized internal request' });
+    }
+    return next();
+  }
+
+  if (isLoopbackRequest(req)) {
+    return next();
+  }
+
+  return res.status(503).json({ error: 'Internal secret is not configured' });
+}
+
 // Middleware
 const allowedOrigins = [
   FRONTEND_URL,
@@ -330,7 +373,7 @@ console.log('━━━━━━━━━━━━━━━━━━━━━━�
 
 // Initialize Database
 let db = require('./database');
-if (!process.env.DATABASE_URL) {
+if (!HAS_DATABASE) {
   console.log('ℹ️  No DATABASE_URL found, switching to FILE-BASED STORAGE (leads.json)');
   db = require('./simple_db');
 }
@@ -1729,7 +1772,7 @@ io.on('connection', (socket) => {
 
   // Async fetch health from worker
   fetchJsonWithRetry(`http://localhost:4001/api/internal/status/${tenantId}`, {
-    headers: { 'x-internal-secret': INTERNAL_WEBHOOK_SECRET }
+    headers: safeInternalHeaders()
   }, { retries: 1, timeoutMs: 4000 })
     .then(data => {
       let status = 'OFFLINE';
@@ -1886,16 +1929,7 @@ async function maybeApplyRoutingRulesToLead(tenantId, lead, message, meta) {
   return null;
 }
 
-app.post('/api/internal/webhook', async (req, res) => {
-  if (INTERNAL_WEBHOOK_SECRET) {
-    const incomingSecret = req.headers['x-internal-secret'];
-    if (!safeEqual(incomingSecret, INTERNAL_WEBHOOK_SECRET)) {
-      return res.status(401).json({ error: 'Unauthorized internal webhook' });
-    }
-  } else {
-    console.warn('⚠️ INTERNAL_WEBHOOK_SECRET is not set; internal webhook is running in compatibility mode');
-  }
-
+app.post('/api/internal/webhook', async (req, res) => requireInternalRequest(req, res, async () => {
   const { tenantId, event, payload } = req.body;
   if (!tenantId || !event) return res.status(400).json({ error: 'Invalid payload' });
 
@@ -1993,7 +2027,7 @@ app.post('/api/internal/webhook', async (req, res) => {
   // Events: 'new_message', 'qr_code', 'ready', 'authenticated', 'auth_failure', 'message_sent'
   io.to(tenantId).emit(event, payload);
   res.json({ success: true });
-});
+}));
 
 // ═══════════════════════════════════════════════════════════════
 // 🛠️ API ENDPOINTS
@@ -2020,10 +2054,41 @@ app.post('/api/auth/login', asyncHandler(async (req, res) => {
     return res.status(400).json({ success: false, error: 'Şifrə daxil edilməlidir' });
   }
 
-  if (!process.env.DATABASE_URL || typeof db.findUserByUsername !== 'function') {
-    return res.status(503).json({
-      success: false,
-      error: 'Database not configured. Render Environment-da DATABASE_URL əlavə edin.'
+  if (!HAS_DATABASE || typeof db.findUserByUsername !== 'function') {
+    const fallbackUser = typeof db.findUserByUsername === 'function'
+      ? await db.findUserByUsername(normalizedUsername)
+      : null;
+
+    if (!fallbackUser) {
+      return res.status(503).json({
+        success: false,
+        error: 'Fallback login üçün ADMIN_PASSWORD konfiqurasiya edilməlidir.'
+      });
+    }
+
+    const validFallbackPassword = await verifyPassword(password, fallbackUser.password_hash);
+    if (!validFallbackPassword) {
+      return res.status(401).json({ success: false, error: 'Şifrə yalnışdır' });
+    }
+
+    const tokenPayload = {
+      id: fallbackUser.id,
+      username: fallbackUser.username,
+      tenantId: fallbackUser.tenant_id,
+      role: fallbackUser.role,
+      permissions: fallbackUser.permissions || {},
+      displayName: fallbackUser.display_name || null
+    };
+
+    return res.json({
+      success: true,
+      token: signAuthToken(tokenPayload),
+      tenantId: fallbackUser.tenant_id,
+      role: fallbackUser.role,
+      id: fallbackUser.id,
+      username: fallbackUser.username,
+      permissions: fallbackUser.permissions || {},
+      displayName: fallbackUser.display_name || null
     });
   }
 
@@ -2062,7 +2127,7 @@ app.post('/api/auth/login', asyncHandler(async (req, res) => {
   // Ensure WhatsApp session is pre-initialized for their tenant cleanly via worker
   fetchJsonWithRetry(`http://localhost:4001/api/internal/start/${user.tenant_id}`, {
     method: 'POST',
-    headers: { 'x-internal-secret': INTERNAL_WEBHOOK_SECRET }
+    headers: safeInternalHeaders()
   }, { retries: 1, timeoutMs: 4000 })
     .catch((err) => {
       console.warn(`⚠️ Worker start request failed [${user.tenant_id}]:`, err.message);
@@ -2126,6 +2191,8 @@ const requireTenantAuth = (req, res, next) => {
     req.userRole = data.role; // Extract role from token
     req.userId = data.id;     // Extract ID from token
     req.userPermissions = data.permissions || {}; // Extract permissions
+    req.username = data.username || null;
+    req.displayName = data.displayName || null;
     next();
   } catch (err) {
     res.status(401).json({ error: 'Unauthorized: Invalid token' });
@@ -2151,6 +2218,8 @@ const requireTenantAuthFlexible = (req, res, next) => {
     req.userRole = data.role;
     req.userId = data.id;
     req.userPermissions = data.permissions || {};
+    req.username = data.username || null;
+    req.displayName = data.displayName || null;
     next();
   } catch {
     res.status(401).send('Unauthorized');
@@ -2197,18 +2266,17 @@ app.use('/api/media', requireTenantAuthFlexible, (req, res, next) => {
 
 // Tenant profile (display name, etc.)
 app.get('/api/tenant/profile', requireTenantAuth, asyncHandler(async (req, res) => {
-  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
-  const adminUser = await db.getTenantAdmin(req.tenantId);
+  const adminUser = typeof db.getTenantAdmin === 'function' ? await db.getTenantAdmin(req.tenantId) : null;
   res.json({
     tenantId: req.tenantId,
-    displayName: adminUser?.display_name || null
+    displayName: adminUser?.display_name || req.displayName || null
   });
 }));
 
 // 👥 USER MANAGEMENT API (Phase 2)
 app.get('/api/users', requireTenantAuth, asyncHandler(async (req, res) => {
-  if (!process.env.DATABASE_URL) {
-    return res.status(503).json({ error: 'Database not configured' });
+  if (typeof db.getUsers !== 'function') {
+    return res.status(503).json({ error: 'User storage not configured' });
   }
   // Superadmin can see all, regular admin/worker only sees their tenant's users
   const targetTenant = req.userRole === 'superadmin' ? null : req.tenantId;
@@ -2225,8 +2293,8 @@ app.post('/api/users', requireTenantAuth, requireAdmin, asyncHandler(async (req,
     return res.status(400).json({ error: 'Username, password, and role are required' });
   }
 
-  if (role !== 'admin' && role !== 'worker') {
-    return res.status(400).json({ error: 'Invalid role. Must be admin or worker' });
+  if (!['admin', 'worker', 'manager', 'viewer'].includes(role)) {
+    return res.status(400).json({ error: 'Invalid role. Must be admin, manager, viewer, or worker' });
   }
 
   // Regular admins cannot create users for other tenants
@@ -2250,7 +2318,7 @@ app.put('/api/users/:id/role', requireTenantAuth, requireAdmin, asyncHandler(asy
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   const { role } = req.body;
 
-  if (role !== 'admin' && role !== 'worker') {
+  if (!['admin', 'worker', 'manager', 'viewer'].includes(role)) {
     return res.status(400).json({ error: 'Invalid role' });
   }
 
@@ -2316,7 +2384,7 @@ app.post('/api/admin/tenants', requireTenantAuth, requireAdmin, asyncHandler(asy
     // Auto-init WhatsApp session for the new tenant via worker
     fetchJsonWithRetry(`http://localhost:4001/api/internal/start/${cleanTenantId}`, {
       method: 'POST',
-      headers: { 'x-internal-secret': INTERNAL_WEBHOOK_SECRET }
+      headers: safeInternalHeaders()
     }, { retries: 1, timeoutMs: 4000 })
       .catch((err) => {
         console.warn(`⚠️ Worker start request failed [${cleanTenantId}]:`, err.message);
@@ -2471,7 +2539,7 @@ app.post('/api/whatsapp/start', requireTenantAuth, asyncHandler(async (req, res)
   try {
     const data = await fetchJsonWithRetry(`http://localhost:4001/api/internal/start/${req.tenantId}`, {
       method: 'POST',
-      headers: { 'x-internal-secret': INTERNAL_WEBHOOK_SECRET }
+      headers: safeInternalHeaders()
     }, { retries: 1, timeoutMs: 5000 });
     res.json(data);
   } catch (err) {
@@ -2481,38 +2549,43 @@ app.post('/api/whatsapp/start', requireTenantAuth, asyncHandler(async (req, res)
 
 // 🗄️ LEADS API
 app.get('/api/leads', requireTenantAuth, asyncHandler(async (req, res) => {
-  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  if (typeof db.getLeads !== 'function') return res.status(503).json({ error: 'Lead storage not configured' });
   const { status, startDate, endDate, limit, offset } = req.query;
   const leads = await db.getLeads({ status, startDate, endDate, limit: limit ? parseInt(limit) : undefined, offset: offset ? parseInt(offset) : undefined }, req.tenantId);
   res.json(leads);
 }));
 
 app.post('/api/leads', requireTenantAuth, asyncHandler(async (req, res) => {
-  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  if (typeof db.createLead !== 'function') return res.status(503).json({ error: 'Lead storage not configured' });
   const lead = await db.createLead(req.body, req.tenantId);
   res.status(201).json(lead);
 }));
 
 app.put('/api/leads/:id/status', requireTenantAuth, asyncHandler(async (req, res) => {
-  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
-  const beforeRes = await db.pool.query(
-    'SELECT status FROM leads WHERE id = $1 AND tenant_id = $2',
-    [req.params.id, req.tenantId]
-  );
-  const oldStatus = beforeRes.rows[0]?.status || null;
+  if (typeof db.updateLeadStatus !== 'function') return res.status(503).json({ error: 'Lead storage not configured' });
+  let oldStatus = null;
+  if (HAS_DATABASE && db.pool) {
+    const beforeRes = await db.pool.query(
+      'SELECT status FROM leads WHERE id = $1 AND tenant_id = $2',
+      [req.params.id, req.tenantId]
+    );
+    oldStatus = beforeRes.rows[0]?.status || null;
+  }
   const lead = await db.updateLeadStatus(req.params.id, req.body.status, req.tenantId);
   if (!lead) return res.status(404).json({ error: 'Lead not found' });
   io.to(req.tenantId).emit('lead_updated', lead);
 
   // Audit Log
-  await db.logAuditAction({
-    tenantId: req.tenantId,
-    userId: req.userId,
-    action: 'UPDATE_STATUS',
-    entityType: 'lead',
-    entityId: req.params.id,
-    details: { oldStatus, newStatus: req.body.status }
-  });
+  if (typeof db.logAuditAction === 'function') {
+    await db.logAuditAction({
+      tenantId: req.tenantId,
+      userId: req.userId,
+      action: 'UPDATE_STATUS',
+      entityType: 'lead',
+      entityId: req.params.id,
+      details: { oldStatus, newStatus: req.body.status }
+    });
+  }
 
   res.json(lead);
 }));
@@ -2723,30 +2796,38 @@ app.delete('/api/leads/all', requireTenantAuth, asyncHandler(async (req, res) =>
   }
   const { password } = req.body;
 
-  const user = await db.pool.query('SELECT password_hash FROM users WHERE id = $1', [req.userId]);
-  if (!user.rows[0]) return res.status(404).json({ error: 'İstifadəçi tapılmadı' });
+  let storedPasswordHash = '';
+  if (HAS_DATABASE && db.pool) {
+    const user = await db.pool.query('SELECT password_hash FROM users WHERE id = $1', [req.userId]);
+    if (!user.rows[0]) return res.status(404).json({ error: 'İstifadəçi tapılmadı' });
+    storedPasswordHash = user.rows[0].password_hash;
+  } else {
+    storedPasswordHash = String(process.env.ADMIN_PASSWORD || '');
+  }
 
-  const validPass = await verifyPassword(password, user.rows[0].password_hash);
+  const validPass = await verifyPassword(password, storedPasswordHash);
   if (!validPass) return res.status(401).json({ error: 'Şifrə yalnışdır' });
 
-  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  if (typeof db.deleteAllLeads !== 'function') return res.status(503).json({ error: 'Lead storage not configured' });
   await db.deleteAllLeads(req.tenantId);
   io.to(req.tenantId).emit('leads_reset', {});
 
-  await db.logAuditAction({
-    tenantId: req.tenantId,
-    userId: req.userId,
-    action: 'FACTORY_RESET',
-    entityType: 'tenant',
-    entityId: null,
-    details: {}
-  });
+  if (typeof db.logAuditAction === 'function') {
+    await db.logAuditAction({
+      tenantId: req.tenantId,
+      userId: req.userId,
+      action: 'FACTORY_RESET',
+      entityType: 'tenant',
+      entityId: null,
+      details: {}
+    });
+  }
 
   res.json({ success: true, message: 'All leads and messages deleted for tenant' });
 }));
 
 app.delete('/api/leads/:id', requireTenantAuth, asyncHandler(async (req, res) => {
-  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  if (typeof db.deleteLead !== 'function') return res.status(503).json({ error: 'Lead storage not configured' });
   const lead = await db.deleteLead(req.params.id, req.tenantId);
   if (!lead) return res.status(404).json({ error: 'Lead not found' });
 
@@ -2754,14 +2835,16 @@ app.delete('/api/leads/:id', requireTenantAuth, asyncHandler(async (req, res) =>
   io.to(req.tenantId).emit('lead_deleted', lead.id);
 
   // Audit Log
-  await db.logAuditAction({
-    tenantId: req.tenantId,
-    userId: req.userId,
-    action: 'DELETE_LEAD',
-    entityType: 'lead',
-    entityId: req.params.id,
-    details: { phone: lead.phone }
-  });
+  if (typeof db.logAuditAction === 'function') {
+    await db.logAuditAction({
+      tenantId: req.tenantId,
+      userId: req.userId,
+      action: 'DELETE_LEAD',
+      entityType: 'lead',
+      entityId: req.params.id,
+      details: { phone: lead.phone }
+    });
+  }
 
   res.json(lead);
 }));
@@ -3670,7 +3753,7 @@ app.get('/api/routing-rules/stats', requireTenantAuth, requireAdmin, asyncHandle
 app.get('/health', requireTenantAuth, asyncHandler(async (req, res) => {
   try {
     const data = await fetchJsonWithRetry(`http://localhost:4001/api/internal/status/${req.tenantId}`, {
-      headers: { 'x-internal-secret': INTERNAL_WEBHOOK_SECRET }
+      headers: safeInternalHeaders()
     }, { retries: 1, timeoutMs: 5000 });
     const status = data.isReady ? 'CONNECTED' : (data.qr ? 'SYNCING' : 'OFFLINE');
 
@@ -3708,7 +3791,7 @@ app.get('/readyz', async (req, res) => {
     }
 
     await fetchJsonWithRetry('http://localhost:4001/api/internal/status/admin', {
-      headers: { 'x-internal-secret': INTERNAL_WEBHOOK_SECRET }
+      headers: safeInternalHeaders()
     }, { retries: 0, timeoutMs: 2500 });
     checks.worker = 'ok';
 

@@ -27,7 +27,6 @@ class CrmServiceImpl {
 
   // 🆕 In-memory cache for better performance and deduplication
   private leadsCache: Lead[] = [];
-  private cacheTimestamp: number = 0;
 
   // 🆕 De-duplication cache
   private readonly PROCESSED_MESSAGES_TTL = 30000; // 30 seconds
@@ -265,7 +264,6 @@ class CrmServiceImpl {
 
     // Clear cache
     this.leadsCache = [];
-    this.cacheTimestamp = 0;
     this.processedMessageIds.clear();
   }
 

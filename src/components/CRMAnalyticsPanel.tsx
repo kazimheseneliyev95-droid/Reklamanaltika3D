@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { BarChart3, X, PieChart, BarChart2, Filter, Plus, Trash2, GripVertical } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { BarChart3, X, BarChart2, Filter, Plus, Trash2, GripVertical } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useAppStore } from '../context/Store';
 import { loadCRMSettings } from '../lib/crmSettings';

@@ -131,7 +131,7 @@ const TABS: { id: Tab; label: string; icon: React.ReactNode; reqRole?: string[] 
   { id: 'cards', label: 'Lead Kartları', icon: <LayoutGrid className="w-4 h-4" /> },
   { id: 'fields', label: 'Xüsusi Sahələr', icon: <Type className="w-4 h-4" /> },
   { id: 'notifications', label: 'Bildirişlər & SLA', icon: <Bell className="w-4 h-4" /> },
-  { id: 'users', label: 'İstifadəçilər', icon: <Users className="w-4 h-4" />, reqRole: ['admin', 'manager'] },
+  { id: 'users', label: 'İstifadəçilər', icon: <Users className="w-4 h-4" />, reqRole: ['admin'] },
   { id: 'audit', label: 'Audit Log', icon: <Activity className="w-4 h-4" />, reqRole: ['admin'] },
 ];
 
@@ -147,7 +147,7 @@ export function CRMSettingsPanel({ onClose, variant = 'modal' }: CRMSettingsPane
   const serverUrl = CrmService.getServerUrl();
 
   const canSaveToDb = currentUser?.role === 'admin' || currentUser?.role === 'superadmin';
-  const canFactoryReset = (currentUser?.role === 'superadmin') || (currentUser?.permissions?.factory_reset !== false);
+  const canFactoryReset = currentUser?.role === 'superadmin';
 
   const visibleTabs: SettingsShellTab[] = useMemo(() => {
     return TABS.map((t) => {

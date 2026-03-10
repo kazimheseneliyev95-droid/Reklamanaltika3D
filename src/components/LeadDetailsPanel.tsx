@@ -490,7 +490,7 @@ function FollowUpsTab({
     lead,
     serverUrl,
     teamMembers,
-    currentUserId,
+    currentUserId: _currentUserId,
 }: {
     lead: Lead;
     serverUrl: string;
@@ -1809,23 +1809,6 @@ function FieldGroup({ label, icon, children }: { label: string; icon: React.Reac
                 {icon} {label}
             </label>
             {children}
-        </div>
-    );
-}
-
-function MessageBubble({ name, message, time }: { name: string; message: string; time: string }) {
-    return (
-        <div className="flex gap-3 items-start">
-            <div className="w-7 h-7 rounded-full bg-green-900/50 border border-green-800 flex items-center justify-center shrink-0 mt-0.5">
-                <MessageSquare className="w-3.5 h-3.5 text-green-400" />
-            </div>
-            <div className="flex-1 bg-[#162032] border border-slate-700/60 rounded-xl rounded-tl-sm p-3 max-w-[90%]">
-                <div className="flex justify-between items-center mb-1.5">
-                    <span className="text-xs font-bold text-green-400">{name}</span>
-                    <span className="text-[10px] text-slate-500">{time}</span>
-                </div>
-                <p className="text-sm text-slate-200 whitespace-pre-wrap leading-relaxed">{message}</p>
-            </div>
         </div>
     );
 }

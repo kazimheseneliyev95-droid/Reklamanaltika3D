@@ -1,6 +1,5 @@
 import React, { useMemo, useState } from 'react';
 import { Calendar, ChevronDown, ChevronUp, Plus, Trash2, Type, Hash, List, X } from 'lucide-react';
-import { cn } from '../../../lib/utils';
 import { CRMSettings, CustomField, FieldType, generateFieldId } from '../../../lib/crmSettings';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/Card';
 import { HelpCallout } from '../HelpCallout';

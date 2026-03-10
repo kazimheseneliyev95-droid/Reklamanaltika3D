@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useAppStore } from '../context/Store';
 import { Lead, LeadStatus } from '../types/crm';
 import { Badge } from '../components/ui/Badge';
@@ -8,7 +8,6 @@ import { businessMinutesBetween, type BusinessHoursCfg } from '../lib/businessHo
 import { LeadDetailsPanel } from '../components/LeadDetailsPanel';
 import { loadCRMSettings, CustomField, LeadCardUISettings, DelayDotsSettings } from '../lib/crmSettings';
 import { CRMFilterSidebar, countActiveFilters, makeDefaultCRMFilters, type CRMFilters } from '../components/CRMFilterSidebar';
-import { CrmService } from '../services/CrmService';
 
 export default function CRMPage() {
   const [activeMobileTab, setActiveMobileTab] = useState<string>('new');
@@ -704,7 +703,7 @@ function LeadCard({
   onViewMessage,
   customFields,
   teamMembers,
-  pipelineStages,
+  pipelineStages: _pipelineStages,
   leadCardUi,
   delayDots,
   slaIgnoreStages,

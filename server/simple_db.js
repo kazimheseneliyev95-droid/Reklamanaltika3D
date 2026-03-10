@@ -4,13 +4,32 @@ const crypto = require('crypto');
 
 const DB_FILE = path.join(__dirname, 'leads.json');
 
+function buildFallbackUser() {
+    const username = String(process.env.ADMIN_USERNAME || 'admin').trim().toLowerCase();
+    const passwordHash = String(process.env.ADMIN_PASSWORD || '').trim();
+    if (!passwordHash) {
+        return null;
+    }
+    return {
+        id: 'file-admin',
+        username,
+        password_hash: passwordHash,
+        role: 'admin',
+        permissions: {},
+        tenant_id: 'admin',
+        display_name: process.env.ADMIN_DISPLAY_NAME || 'Local Admin',
+        tenant_status: 'active',
+        tenant_display_name: process.env.ADMIN_DISPLAY_NAME || 'Local Admin'
+    };
+}
+
 function readDb() {
     if (!fs.existsSync(DB_FILE)) {
         return { leads: [] };
     }
     try {
         return JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
-    } catch (e) {
+    } catch {
         return { leads: [] };
     }
 }
@@ -25,7 +44,47 @@ if (!fs.existsSync(DB_FILE)) {
 }
 
 module.exports = {
-    initDb: async () => console.log('✅ FileDB: Ready'),
+    initDb: async () => {
+        if (!buildFallbackUser()) {
+            console.warn('⚠️ FileDB auth is disabled because ADMIN_PASSWORD is not set.');
+        }
+        console.log('✅ FileDB: Ready');
+    },
+
+    findUserByUsername: async (username) => {
+        const user = buildFallbackUser();
+        if (!user) return null;
+        return user.username === String(username || '').trim().toLowerCase() ? { ...user } : null;
+    },
+
+    getUsers: async () => {
+        const user = buildFallbackUser();
+        if (!user) return [];
+        return [{
+            id: user.id,
+            username: user.username,
+            role: user.role,
+            permissions: user.permissions,
+            tenant_id: user.tenant_id,
+            display_name: user.display_name,
+            created_at: null
+        }];
+    },
+
+    getTenantAdmin: async (tenantId) => {
+        if (String(tenantId || 'admin') !== 'admin') return null;
+        const user = buildFallbackUser();
+        if (!user) return null;
+        return {
+            id: user.id,
+            username: user.username,
+            role: user.role,
+            permissions: user.permissions,
+            tenant_id: user.tenant_id,
+            display_name: user.display_name,
+            tenant_status: user.tenant_status
+        };
+    },
 
     createLead: async (data) => {
         const db = readDb();
@@ -88,6 +147,20 @@ module.exports = {
         return null;
     },
 
+    deleteLead: async (id) => {
+        const db = readDb();
+        const index = db.leads.findIndex(l => l.id === id);
+        if (index === -1) return null;
+        const [removed] = db.leads.splice(index, 1);
+        writeDb(db);
+        return removed;
+    },
+
+    deleteAllLeads: async () => {
+        writeDb({ leads: [] });
+        return true;
+    },
+
     getLeads: async (filters = {}) => {
         let leads = readDb().leads;
         if (filters.status) leads = leads.filter(l => l.status === filters.status);
@@ -103,6 +176,8 @@ module.exports = {
             won: leads.filter(l => l.status === 'won').length
         };
     },
+
+    logAuditAction: async () => true,
 
     healthCheck: async () => ({ status: 'healthy', type: 'json-file' })
 };
