@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { BarChart3, Calendar, ChevronRight, RefreshCcw, Wallet } from 'lucide-react';
+import { BarChart3, Calendar, ChevronRight, RefreshCcw } from 'lucide-react';
 import { CrmService } from '../services/CrmService';
 import { cn } from '../lib/utils';
 
 type MetricType = 'message' | 'lead' | 'purchase';
-type PresetType = 'today' | '7d' | '30d' | 'all' | 'custom';
+type PresetType = 'today' | 'yesterday' | '7d' | '30d' | 'all' | 'custom';
 
 type DashboardResponse = {
   metric: MetricType;
@@ -86,39 +86,14 @@ function buildPresetRange(preset: Exclude<PresetType, 'custom'>) {
     const iso = toLocalISO(end);
     return { start: iso, end: iso };
   }
+  if (preset === 'yesterday') {
+    end.setDate(end.getDate() - 1);
+    const iso = toLocalISO(end);
+    return { start: iso, end: iso };
+  }
   if (preset === '7d') start.setDate(end.getDate() - 6);
   if (preset === '30d') start.setDate(end.getDate() - 29);
   return { start: toLocalISO(start), end: toLocalISO(end) };
-}
-
-function SpendHero({
-  spend,
-  results,
-  campaignCount,
-  metric,
-}: {
-  spend: number;
-  results: number;
-  campaignCount: number;
-  metric: MetricType;
-}) {
-  return (
-    <div className="rounded-[26px] border border-slate-800 bg-[linear-gradient(135deg,rgba(24,37,63,0.95),rgba(15,23,42,0.98))] p-5 shadow-[0_20px_80px_rgba(2,8,23,0.35)]">
-      <div className="flex items-center gap-4">
-        <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl border border-blue-500/20 bg-blue-500/10 text-blue-300">
-          <Wallet className="h-8 w-8" />
-        </div>
-        <div className="min-w-0">
-          <div className="text-[11px] font-bold uppercase tracking-[0.22em] text-blue-200/70">Total Spend</div>
-          <div className="mt-1 text-4xl font-extrabold tracking-tight text-white tabular-nums">{formatMoney(spend)}</div>
-          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-400">
-            <span>{campaignCount} import olunmuş kampaniya</span>
-            <span>{formatCount(results)} {metric === 'message' ? 'nəticə' : metric === 'lead' ? 'lead nəticəsi' : 'purchase nəticəsi'}</span>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
 }
 
 function FunnelCard({
@@ -127,12 +102,14 @@ function FunnelCard({
   percent,
   costPer,
   color,
+  accent,
 }: {
   title: string;
   count: number;
   percent: number;
   costPer: number;
   color: string;
+  accent?: React.ReactNode;
 }) {
   return (
     <div className="relative overflow-hidden rounded-[24px] border border-slate-800 bg-[linear-gradient(180deg,rgba(19,31,52,0.9),rgba(9,16,31,0.98))] p-4 shadow-[0_20px_60px_rgba(2,8,23,0.28)]">
@@ -141,6 +118,7 @@ function FunnelCard({
         <div>
           <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">{title}</div>
           <div className="mt-5 text-5xl font-extrabold tracking-tight text-white tabular-nums">{formatCount(count)}</div>
+          {accent ? <div className="mt-3 text-[12px] text-slate-400">{accent}</div> : null}
         </div>
         <div className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] font-semibold text-slate-200">
           Total: {formatPercent(percent)}
@@ -182,10 +160,10 @@ export default function DashboardPage() {
   const [data, setData] = useState<DashboardResponse>(EMPTY_DATA);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [metric, setMetric] = useState<MetricType>('message');
   const [preset, setPreset] = useState<PresetType>('30d');
   const [refreshKey, setRefreshKey] = useState(0);
   const [customRange, setCustomRange] = useState<{ start: string; end: string }>(() => buildPresetRange('30d'));
+  const metric: MetricType = 'message';
 
   const range = useMemo(() => {
     if (preset === 'custom') return customRange;
@@ -221,7 +199,6 @@ export default function DashboardPage() {
     run();
   }, [metric, range.end, range.start, refreshKey]);
 
-  const campaignPreview = useMemo(() => data.importedCampaigns.slice(0, 8), [data.importedCampaigns]);
   const visibleSummaryCards = useMemo(
     () => data.summaryCards.filter((card) => ['total_leads', 'potential', 'won', 'unanswered', 'lost'].includes(card.key)),
     [data.summaryCards]
@@ -248,19 +225,9 @@ export default function DashboardPage() {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {(['message', 'lead', 'purchase'] as MetricType[]).map((item) => (
-              <button
-                key={item}
-                type="button"
-                onClick={() => setMetric(item)}
-                className={cn(
-                  'rounded-xl border px-3.5 py-2 text-xs font-bold transition-colors',
-                  metric === item ? 'border-blue-500/40 bg-blue-500/10 text-blue-100' : 'border-slate-800 bg-slate-950/30 text-slate-400 hover:text-slate-200'
-                )}
-              >
-                {item === 'message' ? 'Mesaj' : item === 'lead' ? 'Lead' : 'Purchase'}
-              </button>
-            ))}
+            <div className="rounded-xl border border-slate-800 bg-slate-950/30 px-3.5 py-2 text-xs font-bold text-slate-300">
+              {data.importedCampaigns.length} kampaniya import olunub
+            </div>
             <button
               type="button"
               onClick={() => setRefreshKey((value) => value + 1)}
@@ -273,7 +240,7 @@ export default function DashboardPage() {
 
         <div className="px-5 py-4 flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4 border-b border-slate-800/60">
           <div className="flex flex-wrap items-center gap-2">
-            {(['today', '7d', '30d', 'all'] as Exclude<PresetType, 'custom'>[]).map((item) => (
+            {(['today', 'yesterday', '7d', '30d', 'all'] as Exclude<PresetType, 'custom'>[]).map((item) => (
               <button
                 key={item}
                 type="button"
@@ -283,7 +250,7 @@ export default function DashboardPage() {
                   preset === item ? 'bg-blue-600 text-white' : 'bg-slate-900 text-slate-400 hover:text-slate-200'
                 )}
               >
-                {item === 'today' ? 'Bugün' : item === '7d' ? '7 gün' : item === '30d' ? '30 gün' : 'Bütün zaman'}
+                {item === 'today' ? 'Bugün' : item === 'yesterday' ? 'Dün' : item === '7d' ? '7 gün' : item === '30d' ? '30 gün' : 'Bütün zaman'}
               </button>
             ))}
             <button
@@ -320,26 +287,12 @@ export default function DashboardPage() {
               </div>
             </div>
           ) : (
-            <div className="text-xs text-slate-500">
-              CRM mapping sahəsi: <span className="text-slate-200 font-semibold">{data.field?.label || 'qurulmayıb'}</span>
+            <div className="text-xs text-slate-500 flex flex-wrap items-center gap-x-4 gap-y-1">
+              <span>CRM sahəsi: <span className="text-slate-200 font-semibold">{data.field?.label || 'qurulmayıb'}</span></span>
+              <span>Data mənbəyi: <span className="text-slate-200 font-semibold">Facebook cache + CRM</span></span>
             </div>
           )}
         </div>
-
-        {campaignPreview.length > 0 ? (
-          <div className="px-5 py-4 flex flex-wrap gap-2 border-b border-slate-800/60">
-            {campaignPreview.map((campaign) => (
-              <span key={campaign.id} className="inline-flex items-center rounded-full border border-slate-800 bg-slate-950/30 px-3 py-1.5 text-[11px] font-semibold text-slate-300">
-                {campaign.name}
-              </span>
-            ))}
-            {data.importedCampaigns.length > campaignPreview.length ? (
-              <span className="inline-flex items-center rounded-full border border-slate-800 bg-slate-950/30 px-3 py-1.5 text-[11px] font-semibold text-slate-500">
-                +{data.importedCampaigns.length - campaignPreview.length} daha
-              </span>
-            ) : null}
-          </div>
-        ) : null}
 
         <div className="p-5">
           {error ? <div className="rounded-2xl border border-red-900/50 bg-red-950/15 px-4 py-3 text-sm text-red-300 mb-4">{error}</div> : null}
@@ -362,13 +315,6 @@ export default function DashboardPage() {
             </div>
           ) : (
             <div className="space-y-6">
-              <SpendHero
-                spend={data.totals.facebook.spend}
-                results={data.totals.facebook.results}
-                campaignCount={data.importedCampaigns.length}
-                metric={metric}
-              />
-
               {loading ? (
                 <div className="rounded-3xl border border-slate-800 bg-slate-950/20 px-5 py-8 text-sm text-slate-400">Dashboard yüklənir...</div>
               ) : (
@@ -382,6 +328,11 @@ export default function DashboardPage() {
                           percent={card.pct_of_total}
                           costPer={card.cost_per}
                           color={card.color}
+                          accent={card.key === 'total_leads' ? (
+                            <span>
+                              Toplam xerc <span className="font-bold text-slate-100">{formatMoney(data.totals.facebook.spend)}</span>
+                            </span>
+                          ) : undefined}
                         />
                       </div>
                       {index < visibleSummaryCards.length - 1 ? (
@@ -422,18 +373,6 @@ export default function DashboardPage() {
                                   <div className="text-lg font-extrabold text-slate-100">{group.value}</div>
                                   <div className="mt-1 text-[11px] text-slate-500">
                                     {data.field?.label || 'Xüsusi sahə'} · {group.campaigns.length} kampaniya · {formatMoney(group.facebook.spend)}
-                                  </div>
-                                  <div className="mt-3 flex flex-wrap gap-2">
-                                    {group.campaigns.slice(0, 3).map((campaign) => (
-                                      <span key={campaign.id} className="inline-flex items-center rounded-full border border-slate-800 bg-slate-900/60 px-2.5 py-1 text-[10px] font-semibold text-slate-300">
-                                        {campaign.name}
-                                      </span>
-                                    ))}
-                                    {group.campaigns.length > 3 ? (
-                                      <span className="inline-flex items-center rounded-full border border-slate-800 bg-slate-900/60 px-2.5 py-1 text-[10px] font-semibold text-slate-500">
-                                        +{group.campaigns.length - 3} daha
-                                      </span>
-                                    ) : null}
                                   </div>
                                 </div>
                               </td>
