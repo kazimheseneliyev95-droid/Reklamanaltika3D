@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react';
 import { Lead, LeadStatus, DateRange, User } from '../types/crm';
 import { CrmService } from '../services/CrmService';
-import { loadCRMSettings, applyAutoRules, applyRoutingRules, syncCRMSettingsFromServer } from '../lib/crmSettings';
+import { loadCRMSettings, syncCRMSettingsFromServer } from '../lib/crmSettings';
 import { toNumberSafe } from '../lib/utils';
 
 interface AppContextType {
@@ -30,7 +30,6 @@ interface AppContextType {
   updateLeadStatus: (id: string, status: LeadStatus) => void;
   removeLead: (id: string) => void;
   syncLeadsFromWhatsApp: () => Promise<void>;
-  toggleWhatsAppConnection: () => void;
   clearAllLeads: () => Promise<void>;
 
   login: (username: string, pass: string) => Promise<void>;
@@ -198,95 +197,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       console.log('%c📩 NEW WHATSAPP MESSAGE!', 'background: #25d366; color: white; font-size: 16px; font-weight: bold; padding: 4px 8px; border-radius: 4px;');
       console.log('   Phone:', newLead.phone);
       console.log('   Message:', newLead.last_message);
-
-       // ─── Apply Auto-Rules ────────────────────────────────────────────────
-       const crmSettings = loadCRMSettings();
-       let finalLead = { ...newLead };
-
-       // ─── Return-to-New on inbound message (closed conversations) ─────────
-       // If the operator manually closed the conversation and the customer messages again,
-       // move the lead back to the configured stage so the new message is visible.
-       let skipAutoRules = false;
-       try {
-         const reopen = crmSettings.automation?.reopenOnInbound;
-         const enabled = reopen?.enabled === true;
-         const onlyWhenClosed = reopen?.onlyWhenClosed !== false;
-         const fromStages = Array.isArray(reopen?.fromStages) ? reopen!.fromStages! : [];
-         const excludeStages = Array.isArray(reopen?.excludeStages) ? reopen!.excludeStages! : [];
-         const targetStage = String(reopen?.targetStage || '').trim();
-
-         const fromMeRaw = (newLead as any)?.__fromMe;
-         const isInbound = fromMeRaw === false
-           ? true
-           : (fromMeRaw === true
-             ? false
-             : (() => {
-               const inMs = newLead.last_inbound_at ? new Date(String(newLead.last_inbound_at)).getTime() : 0;
-               const outMs = (newLead as any).last_outbound_at ? new Date(String((newLead as any).last_outbound_at)).getTime() : 0;
-               if (!inMs && !outMs) return false;
-               return inMs >= outMs;
-             })());
-
-         if (enabled && isInbound && targetStage) {
-           const prev = leadsRef.current.find(l =>
-             l.id === newLead.id ||
-             (newLead.whatsapp_id && l.whatsapp_id && l.whatsapp_id === newLead.whatsapp_id) ||
-             l.phone === newLead.phone
-           );
-           const wasClosed = Boolean((prev as any)?.conversation_closed);
-           const prevStatus = String((prev?.status ?? newLead.status) || '').trim();
-           const stageExists = crmSettings.pipelineStages.find(s => s.id === targetStage);
-
-           const blockedByClosed = onlyWhenClosed && !wasClosed;
-           const blockedByFromStages = fromStages.length > 0 && !fromStages.includes(prevStatus);
-           const blockedByExclude = excludeStages.includes(prevStatus);
-
-           if (!blockedByClosed && !blockedByFromStages && !blockedByExclude && prevStatus && prevStatus !== targetStage && stageExists) {
-             console.log(`↩️ Inbound message → returning ${newLead.phone} from ${prevStatus} to ${targetStage}`);
-             finalLead = { ...finalLead, status: targetStage } as any;
-             skipAutoRules = true;
-
-             if (newLead.id && !newLead.id.startsWith('test-')) {
-               CrmService.updateStatus(newLead.id, targetStage).catch((err: unknown) =>
-                 console.warn('⚠️ Reopen status update failed:', err)
-               );
-             }
-           }
-         }
-       } catch {
-         // ignore
-       }
-       
-       if (!skipAutoRules && newLead.last_message && crmSettings.autoRules?.length > 0) {
-         const ruleMatch = applyAutoRules(newLead.last_message, crmSettings.autoRules);
-         if (ruleMatch) {
-           const stageExists = crmSettings.pipelineStages.find(s => s.id === ruleMatch.targetStage);
-           if (stageExists) {
-             console.log(`🤖 Auto-rule triggered → moving ${newLead.phone} to stage: ${ruleMatch.targetStage}`);
-
-            // Apply optimistic update immediately
-            finalLead = {
-              ...finalLead,
-              status: ruleMatch.targetStage,
-              ...(ruleMatch.extractedValue !== null ? { value: ruleMatch.extractedValue } : {}),
-            };
-
-            // Persist to DB in background
-            if (newLead.id && !newLead.id.startsWith('test-')) {
-              CrmService.updateStatus(newLead.id, ruleMatch.targetStage).catch((err: unknown) =>
-                console.warn('⚠️ Auto-rule status update failed:', err)
-              );
-
-              if (ruleMatch.extractedValue !== null) {
-                CrmService.updateLead(newLead.id, { value: ruleMatch.extractedValue }).catch((err: unknown) =>
-                  console.warn('⚠️ Auto-rule value update failed:', err)
-                );
-              }
-            }
-          }
-        }
-      }
-      // ─────────────────────────────────────────────────────────────────────
+      const finalLead = { ...newLead };
 
       // Ensure new leads have a resilient ID mapping in case backend hasn't supplied one sequentially yet
       if (!finalLead.id) {
@@ -342,6 +253,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setLeads(prev => prev.filter(l => l.id !== deletedLeadId));
     });
     cleanupFunctions.push(cleanupLeadDeleted);
+
+    const cleanupLeadsUpdated = CrmService.onLeadsUpdated((nextLeads) => {
+      setLeads(nextLeads);
+      leadsRef.current = nextLeads;
+    });
+    cleanupFunctions.push(cleanupLeadsUpdated);
 
     // Listen for full database reset (Formatla)
     const cleanupLeadsReset = CrmService.onLeadsReset(() => {
@@ -435,73 +352,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const stages = settings.pipelineStages;
       const defaultStatus = stages.length > 0 ? stages[0].id : 'new';
 
-      // Apply user-configured auto-rules
-      // Preserve incoming status (for existing leads) unless rules override
-      let status: LeadStatus = (leadData.status as any) || defaultStatus;
-      let autoValue: number | null = null;
-      const message = leadData.last_message || '';
-
-      const ruleMatch = applyAutoRules(message, settings.autoRules);
-      if (ruleMatch) {
-        // Verify the target stage still exists before applying
-        const stageExists = stages.find(s => s.id === ruleMatch.targetStage);
-        if (stageExists) {
-          status = ruleMatch.targetStage;
-          autoValue = ruleMatch.extractedValue;
-          console.log(`🤖 Auto-rule matched → stage: ${status}, value: ${autoValue}`);
-        }
-      }
-
-      // Apply routing rules (message -> custom select field)
-      const routingMatch = applyRoutingRules(message, settings.routingRules);
-      let extraData: Record<string, any> = {};
-      let routingBlockedByLock = false;
-      try {
-        const raw = (leadData as any).extra_data;
-        if (raw) {
-          extraData = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        }
-      } catch {
-        extraData = {};
-      }
-
-      if (routingMatch?.extra) {
-        const matchedRule = (settings.routingRules || []).find(r => r.id === (routingMatch as any).ruleId);
-        const lock = matchedRule?.lockFieldAfterMatch !== false;
-
-        const nextExtra: Record<string, any> = { ...(extraData || {}) };
-        for (const [k, v] of Object.entries(routingMatch.extra || {})) {
-          const already = nextExtra[k] !== undefined && String(nextExtra[k] || '').trim() !== '';
-          if (lock && already) {
-            routingBlockedByLock = true;
-            continue;
-          }
-          nextExtra[k] = v;
-        }
-        extraData = nextExtra;
-      }
-
-      // Optional stage change via routing only if auto-rules didn't set a stage
-      if (!ruleMatch && routingMatch?.targetStage) {
-        const stageExists = stages.find(s => s.id === routingMatch.targetStage);
-        if (stageExists) {
-          if (!routingBlockedByLock) {
-            status = routingMatch.targetStage as any;
-            console.log(`🧭 Routing matched → stage: ${status}`);
-          }
-        }
-      }
-
-      // Build lead data, auto-fill value if rule says so
-      const leadToCreate: typeof leadData = {
+      const newLead = await CrmService.addLead({
         ...leadData,
-        status,
-        ...(autoValue !== null ? { value: autoValue } : {}),
-        ...(extraData && Object.keys(extraData).length > 0 ? { extra_data: extraData } as any : {}),
-      };
-
-      // Create Lead
-      const newLead = await CrmService.addLead(leadToCreate);
+        status: (leadData.status as LeadStatus) || defaultStatus,
+      });
 
       // Update State - check if within current date range
       const inRange = !dateRange.start || new Date(newLead.created_at) >= new Date(dateRange.start);
@@ -607,10 +461,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
     }
   }, []);
-
-  const toggleWhatsAppConnection = () => {
-    setIsWhatsAppConnected(!isWhatsAppConnected);
-  };
 
   // --- METRICS ---
   const getMetrics = () => {
@@ -748,7 +598,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       updateLeadStatus,
       removeLead,
       syncLeadsFromWhatsApp,
-      toggleWhatsAppConnection,
       clearAllLeads,
       getMetrics,
 

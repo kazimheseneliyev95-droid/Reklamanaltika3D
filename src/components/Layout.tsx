@@ -7,6 +7,7 @@ import { NotificationBell } from './NotificationBell';
 export default function Layout({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const { logout, currentUser } = useAppStore();
+  const canViewStats = currentUser?.permissions?.view_stats !== false;
 
   const isPathMatch = (path: string) => {
     if (path === '/') return location.pathname === '/';
@@ -20,8 +21,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     : [
       { name: 'CRM (Classic)', path: '/crm', icon: <LayoutDashboard className="w-5 h-5" /> },
       ...(currentUser?.role === 'admin' ? [{ name: 'Facebook', path: '/facebook-import', icon: <Download className="w-5 h-5" /> }] : []),
-      { name: 'Analitika', path: '/analytics', icon: <BarChart3 className="w-5 h-5" /> },
-      { name: 'Cavab Sureleri', path: '/analytics/response-times', icon: <Timer className="w-5 h-5" /> },
+      ...(canViewStats ? [
+        { name: 'Analitika', path: '/analytics', icon: <BarChart3 className="w-5 h-5" /> },
+        { name: 'Cavab Sureleri', path: '/analytics/response-times', icon: <Timer className="w-5 h-5" /> },
+      ] : []),
       { name: 'Ayarlar', path: '/settings', icon: <Settings className="w-5 h-5" /> },
     ];
 

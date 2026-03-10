@@ -1049,7 +1049,8 @@ async function upsertMetaInbound({ tenantId, source, contactKey, displayName, te
     try {
       const routed = await maybeApplyRoutingRulesToLead(tenantId, finalLead, safeText, { whatsapp_id: metaId, fromMe: false });
       if (routed) {
-        io.to(tenantId).emit('lead_updated', routed);
+        Object.assign(finalLead, routed);
+        await emitLeadUpdatedScoped(tenantId, routed);
       }
     } catch {
       // ignore
@@ -1069,10 +1070,11 @@ async function upsertMetaInbound({ tenantId, source, contactKey, displayName, te
       const okClosed = onlyWhenClosed ? closedBefore : true;
       const okFromStages = fromStages.length > 0 ? fromStages.includes(statusBefore) : true;
       const okExclude = excludeStages.includes(statusBefore) ? false : true;
-      if (enabled && okClosed && targetStage && statusBefore && okFromStages && okExclude && statusBefore !== targetStage) {
-        const moved = await db.updateLeadStatus(finalLead.id, targetStage, tenantId).catch(() => null);
-        if (moved) {
-          await logLeadAudit(tenantId, null, 'AUTO_STAGE_RETURN', finalLead.id, {
+        if (enabled && okClosed && targetStage && statusBefore && okFromStages && okExclude && statusBefore !== targetStage) {
+          const moved = await db.updateLeadStatus(finalLead.id, targetStage, tenantId).catch(() => null);
+          if (moved) {
+            Object.assign(finalLead, moved);
+            await logLeadAudit(tenantId, null, 'AUTO_STAGE_RETURN', finalLead.id, {
             from_status: statusBefore,
             to_status: targetStage,
             reason: 'inbound_message',
@@ -1081,7 +1083,7 @@ async function upsertMetaInbound({ tenantId, source, contactKey, displayName, te
             source,
             whatsapp_id: metaId
           });
-          io.to(tenantId).emit('lead_updated', moved);
+          await emitLeadUpdatedScoped(tenantId, moved);
         }
       }
     } catch {
@@ -1089,7 +1091,19 @@ async function upsertMetaInbound({ tenantId, source, contactKey, displayName, te
     }
   }
 
-  io.to(tenantId).emit('new_message', {
+  if (dir === 'in') {
+    try {
+      const automated = await maybeApplyAutoRulesToLead(tenantId, finalLead, safeText, { whatsapp_id: metaId, source });
+      if (automated) {
+        Object.assign(finalLead, automated);
+        await emitLeadUpdatedScoped(tenantId, automated);
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  await emitNewMessageScoped(tenantId, finalLead, {
     phone: finalLead.phone,
     name: finalLead.name || displayName || safeKey,
     message: safeText,
@@ -1470,11 +1484,11 @@ async function pollMetaOutbox() {
       [finalKey, { graph: graphResult || null, sent_at: nowIso }, row.id, tenantId]
     ).catch(() => null);
 
-    await db.updateLeadMessage(row.phone, row.body, finalKey, null, tenantId, 'out').catch(() => null);
+    const updatedLead = await db.updateLeadMessage(row.phone, row.body, finalKey, null, tenantId, 'out').catch(() => null);
 
     // Notify UI so chat can reload
     try {
-      io.to(tenantId).emit('new_message', {
+      await emitNewMessageScoped(tenantId, updatedLead, {
         phone: row.phone,
         name: null,
         message: row.body,
@@ -1806,6 +1820,61 @@ io.on('connection', (socket) => {
   });
 });
 
+function socketCanViewAllLeads(socket) {
+  if (!socket) return false;
+  const permissions = getEffectivePermissions(socket.userRole, socket.userPermissions || {});
+  return permissions.view_all_leads !== false;
+}
+
+function socketCanAccessLead(socket, lead) {
+  if (!socket || !lead) return false;
+  if (socketCanViewAllLeads(socket)) return true;
+  const assigneeId = lead.assignee_id ? String(lead.assignee_id) : '';
+  const userId = socket.userId ? String(socket.userId) : '';
+  return Boolean(assigneeId && userId && assigneeId === userId);
+}
+
+async function emitLeadUpdatedScoped(tenantId, lead) {
+  if (!lead) return;
+  const sockets = await io.in(tenantId).fetchSockets().catch(() => []);
+  for (const socket of sockets) {
+    if (socketCanAccessLead(socket, lead)) {
+      socket.emit('lead_updated', lead);
+    } else if (lead.id) {
+      socket.emit('lead_deleted', lead.id);
+    }
+  }
+}
+
+async function emitLeadDeletedScoped(tenantId, lead) {
+  if (!lead || !lead.id) return;
+  const sockets = await io.in(tenantId).fetchSockets().catch(() => []);
+  for (const socket of sockets) {
+    if (socketCanAccessLead(socket, lead)) {
+      socket.emit('lead_deleted', lead.id);
+    }
+  }
+}
+
+async function emitNewMessageScoped(tenantId, lead, payload) {
+  const sockets = await io.in(tenantId).fetchSockets().catch(() => []);
+  for (const socket of sockets) {
+    if (!lead || socketCanAccessLead(socket, lead)) {
+      socket.emit('new_message', payload);
+    }
+  }
+}
+
+async function emitScopedLeadList(tenantId) {
+  if (!db || typeof db.getLeads !== 'function') return;
+  const sockets = await io.in(tenantId).fetchSockets().catch(() => []);
+  await Promise.all(sockets.map(async (socket) => {
+    const filters = socketCanViewAllLeads(socket) ? {} : { assigneeId: socket.userId };
+    const leads = await db.getLeads(filters, tenantId).catch(() => []);
+    socket.emit('leads_updated', leads);
+  }));
+}
+
 // ═══════════════════════════════════════════════════════════════
 // 🪝 INTERNAL WEBHOOK (From WhatsApp Worker to UI)
 // ═══════════════════════════════════════════════════════════════
@@ -1869,6 +1938,92 @@ function matchRoutingRule(rule, message) {
     : kws.some(matchOne);
 
   return Boolean(matched);
+}
+
+function matchAutoRule(rule, message) {
+  if (!rule || !rule.enabled) return null;
+  const keyword = String(rule.keyword || '').trim();
+  if (!keyword) return null;
+
+  const rawMessage = String(message || '');
+  if (!rawMessage.trim()) return null;
+  if (!rawMessage.toLowerCase().includes(keyword.toLowerCase())) return null;
+
+  let extractedValue = null;
+  if (rule.fixedValue !== undefined && rule.fixedValue !== null && String(rule.fixedValue).trim() !== '') {
+    const fixed = Number(String(rule.fixedValue).replace(',', '.'));
+    extractedValue = Number.isFinite(fixed) ? fixed : null;
+  } else if (rule.extractValue) {
+    const currencyTag = String(rule.currencyTag || '').trim();
+    if (currencyTag) {
+      const tag = currencyTag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const regex = new RegExp(`(?:${tag}\\s*(\\d+(?:[.,]\\d+)?))|(?:(\\d+(?:[.,]\\d+)?)\\s*${tag})`, 'i');
+      const match = rawMessage.match(regex);
+      const valueStr = match ? (match[1] || match[2]) : '';
+      if (valueStr) {
+        const parsed = parseFloat(valueStr.replace(',', '.'));
+        extractedValue = Number.isFinite(parsed) ? parsed : null;
+      }
+    } else {
+      const match = rawMessage.match(/[\d]+(?:[.,]\d+)?/);
+      if (match) {
+        const parsed = parseFloat(String(match[0] || '').replace(',', '.'));
+        extractedValue = Number.isFinite(parsed) ? parsed : null;
+      }
+    }
+  }
+
+  return {
+    targetStage: String(rule.targetStage || '').trim(),
+    extractedValue,
+    ruleId: rule.id || null,
+  };
+}
+
+async function maybeApplyAutoRulesToLead(tenantId, lead, message, meta) {
+  if (!process.env.DATABASE_URL) return null;
+  if (!db || typeof db.getCRMSettings !== 'function' || typeof db.updateLeadFields !== 'function') return null;
+  if (!lead || !lead.id) return null;
+
+  const settings = await db.getCRMSettings(tenantId).catch(() => null);
+  const rules = settings && Array.isArray(settings.autoRules) ? settings.autoRules : [];
+  const stages = settings && Array.isArray(settings.pipelineStages) ? settings.pipelineStages : [];
+  if (!rules.length) return null;
+
+  for (const rule of rules) {
+    const matched = matchAutoRule(rule, message);
+    if (!matched) continue;
+
+    const updates = {};
+    if (matched.targetStage && stages.some((stage) => String(stage.id) === matched.targetStage) && String(lead.status || '') !== matched.targetStage) {
+      updates.status = matched.targetStage;
+    }
+    if (matched.extractedValue !== null && matched.extractedValue !== undefined) {
+      updates.value = matched.extractedValue;
+    }
+    if (Object.keys(updates).length === 0) return null;
+
+    const updated = await db.updateLeadFields(lead.id, updates, tenantId).catch(() => null);
+    if (updated && typeof db.logAuditAction === 'function') {
+      await db.logAuditAction({
+        tenantId,
+        userId: null,
+        action: 'AUTO_RULE_MATCH',
+        entityType: 'lead',
+        entityId: lead.id,
+        details: {
+          ruleId: matched.ruleId,
+          targetStage: updates.status || null,
+          extractedValue: updates.value ?? null,
+          whatsapp_id: meta && meta.whatsapp_id ? meta.whatsapp_id : null,
+          source: meta && meta.source ? meta.source : null,
+        }
+      }).catch(() => null);
+    }
+    return updated;
+  }
+
+  return null;
 }
 
 async function maybeApplyRoutingRulesToLead(tenantId, lead, message, meta) {
@@ -1951,7 +2106,8 @@ app.post('/api/internal/webhook', async (req, res) => requireInternalRequest(req
         }
         const updated = await maybeApplyRoutingRulesToLead(tenantId, lead, payload.message, payload);
         if (updated) {
-          io.to(tenantId).emit('lead_updated', updated);
+          leadForAutomation = updated;
+          await emitLeadUpdatedScoped(tenantId, updated);
         }
       }
     } catch (e) {
@@ -1989,6 +2145,7 @@ app.post('/api/internal/webhook', async (req, res) => requireInternalRequest(req
         if (enabled && okClosed && targetStage && okFromStages && okExclude && statusBefore !== targetStage) {
           const moved = await db.updateLeadStatus(leadForAutomation.id, targetStage, tenantId).catch(() => null);
           if (moved) {
+            leadForAutomation = moved;
             await logLeadAudit(tenantId, null, 'AUTO_STAGE_RETURN', leadForAutomation.id, {
               from_status: statusBefore,
               to_status: targetStage,
@@ -1998,8 +2155,19 @@ app.post('/api/internal/webhook', async (req, res) => requireInternalRequest(req
               source: payload.source || 'whatsapp',
               whatsapp_id: payload.whatsapp_id || null
             });
-            io.to(tenantId).emit('lead_updated', moved);
+            await emitLeadUpdatedScoped(tenantId, moved);
           }
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    try {
+      if (leadForAutomation) {
+        const automated = await maybeApplyAutoRulesToLead(tenantId, leadForAutomation, payload.message, payload);
+        if (automated) {
+          await emitLeadUpdatedScoped(tenantId, automated);
         }
       }
     } catch {
@@ -2190,7 +2358,7 @@ const requireTenantAuth = (req, res, next) => {
     req.tenantId = data.tenantId;
     req.userRole = data.role; // Extract role from token
     req.userId = data.id;     // Extract ID from token
-    req.userPermissions = data.permissions || {}; // Extract permissions
+    req.userPermissions = getEffectivePermissions(data.role, data.permissions || {});
     req.username = data.username || null;
     req.displayName = data.displayName || null;
     next();
@@ -2217,7 +2385,7 @@ const requireTenantAuthFlexible = (req, res, next) => {
     req.tenantId = data.tenantId;
     req.userRole = data.role;
     req.userId = data.id;
-    req.userPermissions = data.permissions || {};
+    req.userPermissions = getEffectivePermissions(data.role, data.permissions || {});
     req.username = data.username || null;
     req.displayName = data.displayName || null;
     next();
@@ -2232,6 +2400,106 @@ const requireAdmin = (req, res, next) => {
   }
   next();
 };
+
+const ROLE_PERMISSION_DEFAULTS = {
+  superadmin: {
+    view_all_leads: true,
+    create_lead: true,
+    delete_lead: true,
+    change_status: true,
+    view_budget: true,
+    edit_budget: true,
+    send_messages: true,
+    view_stats: true,
+    view_other_operator_stats: true,
+    manage_users: true,
+    factory_reset: true,
+  },
+  admin: {
+    view_all_leads: true,
+    create_lead: true,
+    delete_lead: true,
+    change_status: true,
+    view_budget: true,
+    edit_budget: true,
+    send_messages: true,
+    view_stats: true,
+    view_other_operator_stats: true,
+    manage_users: true,
+  },
+  manager: {
+    view_all_leads: true,
+    create_lead: true,
+    delete_lead: false,
+    change_status: true,
+    view_budget: true,
+    edit_budget: false,
+    send_messages: true,
+    view_stats: true,
+    view_other_operator_stats: true,
+    manage_users: false,
+  },
+  worker: {
+    view_all_leads: false,
+    create_lead: true,
+    delete_lead: false,
+    change_status: true,
+    view_budget: false,
+    edit_budget: false,
+    send_messages: true,
+    view_stats: false,
+    view_other_operator_stats: false,
+    manage_users: false,
+  },
+  viewer: {
+    view_all_leads: true,
+    create_lead: false,
+    delete_lead: false,
+    change_status: false,
+    view_budget: false,
+    edit_budget: false,
+    send_messages: false,
+    view_stats: false,
+    view_other_operator_stats: false,
+    manage_users: false,
+  }
+};
+
+function getEffectivePermissions(role, permissions) {
+  const base = ROLE_PERMISSION_DEFAULTS[role] || {};
+  const incoming = permissions && typeof permissions === 'object' ? permissions : {};
+  return { ...base, ...incoming };
+}
+
+function hasPermission(req, permission) {
+  if (req.userRole === 'superadmin') return true;
+  return req.userPermissions?.[permission] !== false;
+}
+
+function canViewAllLeads(req) {
+  return hasPermission(req, 'view_all_leads');
+}
+
+function requirePermission(permission, errorMessage) {
+  return (req, res, next) => {
+    if (!hasPermission(req, permission)) {
+      return res.status(403).json({ error: errorMessage || 'Forbidden' });
+    }
+    next();
+  };
+}
+
+async function loadAccessibleLead(req, leadId) {
+  if (!process.env.DATABASE_URL || !db || !db.pool) return null;
+  const values = [leadId, req.tenantId];
+  let query = 'SELECT * FROM leads WHERE id = $1 AND tenant_id = $2';
+  if (!canViewAllLeads(req)) {
+    query += ' AND assignee_id = $3';
+    values.push(req.userId);
+  }
+  const result = await db.pool.query(query, values);
+  return result.rows[0] || null;
+}
 
 // ═══════════════════════════════════════════════════════════════
 // 📎 MEDIA SERVING (WhatsApp attachments)
@@ -2551,18 +2819,41 @@ app.post('/api/whatsapp/start', requireTenantAuth, asyncHandler(async (req, res)
 app.get('/api/leads', requireTenantAuth, asyncHandler(async (req, res) => {
   if (typeof db.getLeads !== 'function') return res.status(503).json({ error: 'Lead storage not configured' });
   const { status, startDate, endDate, limit, offset } = req.query;
-  const leads = await db.getLeads({ status, startDate, endDate, limit: limit ? parseInt(limit) : undefined, offset: offset ? parseInt(offset) : undefined }, req.tenantId);
+  const leads = await db.getLeads({
+    status,
+    startDate,
+    endDate,
+    limit: limit ? parseInt(limit) : undefined,
+    offset: offset ? parseInt(offset) : undefined,
+    assigneeId: canViewAllLeads(req) ? undefined : req.userId,
+  }, req.tenantId);
   res.json(leads);
 }));
 
-app.post('/api/leads', requireTenantAuth, asyncHandler(async (req, res) => {
+app.post('/api/leads', requireTenantAuth, requirePermission('create_lead', 'Lead yaratmaq icazəniz yoxdur'), asyncHandler(async (req, res) => {
   if (typeof db.createLead !== 'function') return res.status(503).json({ error: 'Lead storage not configured' });
   const lead = await db.createLead(req.body, req.tenantId);
-  res.status(201).json(lead);
+  let finalLead = lead;
+
+  try {
+    const message = String(req.body?.last_message || '').trim();
+    if (message) {
+      const routed = await maybeApplyRoutingRulesToLead(req.tenantId, finalLead, message, { source: req.body?.source || 'manual' });
+      if (routed) finalLead = routed;
+      const automated = await maybeApplyAutoRulesToLead(req.tenantId, finalLead, message, { source: req.body?.source || 'manual' });
+      if (automated) finalLead = automated;
+    }
+  } catch {
+    // ignore
+  }
+
+  res.status(201).json(finalLead);
 }));
 
-app.put('/api/leads/:id/status', requireTenantAuth, asyncHandler(async (req, res) => {
+app.put('/api/leads/:id/status', requireTenantAuth, requirePermission('change_status', 'Status dəyişmək icazəniz yoxdur'), asyncHandler(async (req, res) => {
   if (typeof db.updateLeadStatus !== 'function') return res.status(503).json({ error: 'Lead storage not configured' });
+  const visibleLead = HAS_DATABASE ? await loadAccessibleLead(req, req.params.id) : { id: req.params.id };
+  if (!visibleLead) return res.status(404).json({ error: 'Lead not found' });
   let oldStatus = null;
   if (HAS_DATABASE && db.pool) {
     const beforeRes = await db.pool.query(
@@ -2573,7 +2864,7 @@ app.put('/api/leads/:id/status', requireTenantAuth, asyncHandler(async (req, res
   }
   const lead = await db.updateLeadStatus(req.params.id, req.body.status, req.tenantId);
   if (!lead) return res.status(404).json({ error: 'Lead not found' });
-  io.to(req.tenantId).emit('lead_updated', lead);
+  await emitLeadUpdatedScoped(req.tenantId, lead);
 
   // Audit Log
   if (typeof db.logAuditAction === 'function') {
@@ -2592,9 +2883,14 @@ app.put('/api/leads/:id/status', requireTenantAuth, asyncHandler(async (req, res
 
 app.put('/api/leads/:id', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  const visibleLead = await loadAccessibleLead(req, req.params.id);
+  if (!visibleLead) return res.status(404).json({ error: 'Lead not found' });
 
-  // Field-Level Security: Prevent budget edits if permission is missing (default true for backwards compatibility if not explicitly false)
-  if (req.body.value !== undefined && req.userPermissions.view_budget === false) {
+  if (req.body.status !== undefined && !hasPermission(req, 'change_status')) {
+    return res.status(403).json({ error: 'Status dəyişmək icazəniz yoxdur' });
+  }
+
+  if (req.body.value !== undefined && !hasPermission(req, 'edit_budget')) {
     return res.status(403).json({ error: 'Büdcəni dəyişmək üçün icazəniz yoxdur' });
   }
 
@@ -2606,7 +2902,7 @@ app.put('/api/leads/:id', requireTenantAuth, asyncHandler(async (req, res) => {
 
   const lead = await db.updateLeadFields(req.params.id, req.body, req.tenantId);
   if (!lead) return res.status(404).json({ error: 'Lead not found' });
-  io.to(req.tenantId).emit('lead_updated', lead);
+  await emitLeadUpdatedScoped(req.tenantId, lead);
 
   // Audit Log
   const changed = {};
@@ -2677,6 +2973,8 @@ app.put('/api/leads/:id', requireTenantAuth, asyncHandler(async (req, res) => {
 app.get('/api/leads/:id/story', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   const leadId = req.params.id;
+  const visibleLead = await loadAccessibleLead(req, leadId);
+  if (!visibleLead) return res.status(404).json({ error: 'Lead not found' });
 
   const includeMessages = String(req.query.includeMessages || '').trim() === '1';
 
@@ -2770,6 +3068,8 @@ app.get('/api/leads/:id/story', requireTenantAuth, asyncHandler(async (req, res)
 app.post('/api/leads/:id/notes', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   const leadId = req.params.id;
+  const visibleLead = await loadAccessibleLead(req, leadId);
+  if (!visibleLead) return res.status(404).json({ error: 'Lead not found' });
   const note = String(req.body?.note || '').trim();
   if (!note) return res.status(400).json({ error: 'Note is required' });
 
@@ -2828,11 +3128,14 @@ app.delete('/api/leads/all', requireTenantAuth, asyncHandler(async (req, res) =>
 
 app.delete('/api/leads/:id', requireTenantAuth, asyncHandler(async (req, res) => {
   if (typeof db.deleteLead !== 'function') return res.status(503).json({ error: 'Lead storage not configured' });
+  if (!hasPermission(req, 'delete_lead')) return res.status(403).json({ error: 'Lead silmək icazəniz yoxdur' });
+  const visibleLead = HAS_DATABASE ? await loadAccessibleLead(req, req.params.id) : { id: req.params.id };
+  if (!visibleLead) return res.status(404).json({ error: 'Lead not found' });
   const lead = await db.deleteLead(req.params.id, req.tenantId);
   if (!lead) return res.status(404).json({ error: 'Lead not found' });
 
   // Broadcast deletion to tenant clients
-  io.to(req.tenantId).emit('lead_deleted', lead.id);
+  await emitLeadDeletedScoped(req.tenantId, lead);
 
   // Audit Log
   if (typeof db.logAuditAction === 'function') {
@@ -2850,7 +3153,7 @@ app.delete('/api/leads/:id', requireTenantAuth, asyncHandler(async (req, res) =>
 }));
 
 // 🧹 CLEANUP: Merge duplicate leads with same last 9 phone digits (Global Script - Can be secured in phase 2)
-app.post('/api/leads/cleanup-duplicates', requireTenantAuth, asyncHandler(async (req, res) => {
+app.post('/api/leads/cleanup-duplicates', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
 
   const result = await db.pool.query('SELECT * FROM leads WHERE tenant_id = $1 ORDER BY created_at ASC', [req.tenantId]);
@@ -2893,13 +3196,15 @@ app.post('/api/leads/cleanup-duplicates', requireTenantAuth, asyncHandler(async 
 
   // Broadcast updated lead list to the tenant
   const updatedLeads = await db.getLeads({}, req.tenantId);
-  io.to(req.tenantId).emit('leads_updated', updatedLeads);
+  await emitScopedLeadList(req.tenantId);
 
   res.json({ merged, count: merged.length, message: `Merged ${merged.length} duplicate leads` });
 }));
 
 app.get('/api/leads/:id/messages', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  const visibleLead = await loadAccessibleLead(req, req.params.id);
+  if (!visibleLead) return res.status(404).json({ error: 'Lead not found' });
   const leadRes = await db.pool.query(
     'SELECT id, phone, last_message, source_message, created_at, updated_at FROM leads WHERE id = $1 AND tenant_id = $2',
     [req.params.id, req.tenantId]
@@ -2958,6 +3263,8 @@ app.get('/api/leads/:id/messages', requireTenantAuth, asyncHandler(async (req, r
 // Mark lead as read (shared across tenant)
 app.post('/api/leads/:id/read', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  const visibleLead = await loadAccessibleLead(req, req.params.id);
+  if (!visibleLead) return res.status(404).json({ error: 'Lead not found' });
   const lead = await db.markLeadRead(req.params.id, req.tenantId);
   if (!lead) return res.status(404).json({ error: 'Lead not found' });
   io.to(req.tenantId).emit('lead_read', { leadId: req.params.id, timestamp: new Date().toISOString() });
@@ -2967,9 +3274,11 @@ app.post('/api/leads/:id/read', requireTenantAuth, asyncHandler(async (req, res)
 // Close/reopen conversation (pauses delay/SLA until next inbound message)
 app.post('/api/leads/:id/close', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
-  if (req.userRole === 'viewer') return res.status(403).json({ error: 'Forbidden' });
+  if (!hasPermission(req, 'change_status')) return res.status(403).json({ error: 'Status dəyişmək icazəniz yoxdur' });
   const leadId = String(req.params.id || '').trim();
   if (!leadId) return res.status(400).json({ error: 'Lead id is required' });
+  const visibleLead = await loadAccessibleLead(req, leadId);
+  if (!visibleLead) return res.status(404).json({ error: 'Lead not found' });
 
   const upd = await db.pool.query(
     'UPDATE leads SET conversation_closed = true, conversation_closed_at = NOW(), updated_at = NOW() WHERE id = $1 AND tenant_id = $2 RETURNING id',
@@ -3032,15 +3341,17 @@ app.post('/api/leads/:id/close', requireTenantAuth, asyncHandler(async (req, res
   );
 
   const lead = decorated.rows?.[0] || null;
-  if (lead) io.to(req.tenantId).emit('lead_updated', lead);
+  if (lead) await emitLeadUpdatedScoped(req.tenantId, lead);
   res.json(lead || { success: true });
 }));
 
 app.post('/api/leads/:id/reopen', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
-  if (req.userRole === 'viewer') return res.status(403).json({ error: 'Forbidden' });
+  if (!hasPermission(req, 'change_status')) return res.status(403).json({ error: 'Status dəyişmək icazəniz yoxdur' });
   const leadId = String(req.params.id || '').trim();
   if (!leadId) return res.status(400).json({ error: 'Lead id is required' });
+  const visibleLead = await loadAccessibleLead(req, leadId);
+  if (!visibleLead) return res.status(404).json({ error: 'Lead not found' });
 
   const upd = await db.pool.query(
     'UPDATE leads SET conversation_closed = false, conversation_closed_at = NULL, updated_at = NOW() WHERE id = $1 AND tenant_id = $2 RETURNING id',
@@ -3072,7 +3383,7 @@ app.post('/api/leads/:id/reopen', requireTenantAuth, asyncHandler(async (req, re
   );
 
   const lead = decorated.rows?.[0] || null;
-  if (lead) io.to(req.tenantId).emit('lead_updated', lead);
+  if (lead) await emitLeadUpdatedScoped(req.tenantId, lead);
   res.json(lead || { success: true });
 }));
 
@@ -3091,6 +3402,8 @@ app.get('/api/leads/:id/follow-ups', requireTenantAuth, asyncHandler(async (req,
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   const leadId = String(req.params.id || '').trim();
   if (!leadId) return res.status(400).json({ error: 'Lead id is required' });
+  const visibleLead = await loadAccessibleLead(req, leadId);
+  if (!visibleLead) return res.status(404).json({ error: 'Lead not found' });
 
   const rows = await db.pool.query(
     `SELECT id, lead_id, assignee_id, created_by, status, due_at, note, notified_at, done_at, created_at, updated_at
@@ -3111,6 +3424,8 @@ app.post('/api/leads/:id/follow-ups', requireTenantAuth, asyncHandler(async (req
   const assigneeId = assigneeIdRaw ? String(assigneeIdRaw).trim() : null;
 
   if (!leadId) return res.status(400).json({ error: 'Lead id is required' });
+  const visibleLead = await loadAccessibleLead(req, leadId);
+  if (!visibleLead) return res.status(404).json({ error: 'Lead not found' });
   if (!due) return res.status(400).json({ error: 'due_at is required' });
   if (due.getTime() < Date.now() - 5 * 60 * 1000) {
     return res.status(400).json({ error: 'due_at cannot be in the past' });
@@ -3148,7 +3463,7 @@ app.post('/api/leads/:id/follow-ups', requireTenantAuth, asyncHandler(async (req
   // Broadcast lead updated (so UI can show next_followup_due_at)
   try {
     const updatedLeads = await db.getLeads({}, req.tenantId);
-    io.to(req.tenantId).emit('leads_updated', updatedLeads);
+    await emitScopedLeadList(req.tenantId);
   } catch { }
 
   res.status(201).json(ins.rows[0]);
@@ -3242,7 +3557,7 @@ app.patch('/api/follow-ups/:id', requireTenantAuth, asyncHandler(async (req, res
   // Broadcast lead list refresh (next due might change)
   try {
     const updatedLeads = await db.getLeads({}, req.tenantId);
-    io.to(req.tenantId).emit('leads_updated', updatedLeads);
+    await emitScopedLeadList(req.tenantId);
   } catch { }
 
   res.json(upd.rows[0]);
@@ -3314,11 +3629,13 @@ app.post('/api/notifications/read-all', requireTenantAuth, asyncHandler(async (r
 app.post('/api/leads/:id/messages', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
 
-  if (req.userPermissions.send_messages === false) {
+  if (!hasPermission(req, 'send_messages')) {
     return res.status(403).json({ error: 'Sizə mesaj göndərmək icazəsi verilməyib' });
   }
 
   const leadId = req.params.id;
+  const visibleLead = await loadAccessibleLead(req, leadId);
+  if (!visibleLead) return res.status(404).json({ error: 'Lead not found' });
   const { body } = req.body;
   if (!body) return res.status(400).json({ error: 'Message body is required' });
 
@@ -3371,7 +3688,7 @@ app.post('/api/leads/:id/messages', requireTenantAuth, asyncHandler(async (req, 
     timestamp: newMsg.created_at.toISOString(),
     is_fast_emit: true
   };
-  io.to(req.tenantId).emit('new_message', payload);
+  await emitNewMessageScoped(req.tenantId, lead, payload);
 
   // Update last_outbound_at immediately so "gecikme" dot doesn't stay on
   try {
@@ -3393,7 +3710,7 @@ app.post('/api/leads/:id/messages', requireTenantAuth, asyncHandler(async (req, 
       [leadId, req.tenantId]
     );
     const updatedLead = decorated.rows?.[0] || null;
-    if (updatedLead) io.to(req.tenantId).emit('lead_updated', updatedLead);
+    if (updatedLead) await emitLeadUpdatedScoped(req.tenantId, updatedLead);
   } catch {
     // ignore
   }
@@ -3402,7 +3719,7 @@ app.post('/api/leads/:id/messages', requireTenantAuth, asyncHandler(async (req, 
   try {
     const updated = await maybeApplyRoutingRulesToLead(req.tenantId, lead, body, payload);
     if (updated) {
-      io.to(req.tenantId).emit('lead_updated', updated);
+      await emitLeadUpdatedScoped(req.tenantId, updated);
     }
   } catch (e) {
     console.warn('⚠️ Routing apply failed (outgoing):', e.message);
@@ -3411,7 +3728,7 @@ app.post('/api/leads/:id/messages', requireTenantAuth, asyncHandler(async (req, 
   res.status(201).json(newMsg);
 }));
 
-app.get('/api/stats', requireTenantAuth, asyncHandler(async (req, res) => {
+app.get('/api/stats', requireTenantAuth, requirePermission('view_stats', 'Statistikanı görmək icazəniz yoxdur'), asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   const stats = await db.getLeadStats(req.tenantId);
   res.json(stats);
@@ -3439,7 +3756,7 @@ function toStageIdForConversion(settings) {
   return null;
 }
 
-app.get('/api/analytics/response-times', requireTenantAuth, asyncHandler(async (req, res) => {
+app.get('/api/analytics/response-times', requireTenantAuth, requirePermission('view_stats', 'Statistikanı görmək icazəniz yoxdur'), asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   if (!db || !db.pool) return res.status(503).json({ error: 'Database not ready' });
 
@@ -4860,7 +5177,7 @@ app.post('/api/meta/leads/:id/reply', requireTenantAuth, asyncHandler(async (req
   } catch { }
 
   // Instant UI feedback: show the outgoing message as "sending"
-  io.to(req.tenantId).emit('new_message', {
+  await emitNewMessageScoped(req.tenantId, lead, {
     phone: lead.phone,
     name: lead.name,
     message: bodyText,
@@ -4909,13 +5226,13 @@ app.delete('/api/meta/pages/:pageId', requireTenantAuth, requireAdmin, asyncHand
 // 📊 ANALYTICS LAYOUT API (per-user)
 // ═══════════════════════════════════════════════════════════════
 
-app.get('/api/analytics/layout', requireTenantAuth, asyncHandler(async (req, res) => {
+app.get('/api/analytics/layout', requireTenantAuth, requirePermission('view_stats', 'Statistikanı görmək icazəniz yoxdur'), asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   const layout = await db.getAnalyticsLayout(req.tenantId, req.userId);
   res.json({ layout });
 }));
 
-app.post('/api/analytics/layout', requireTenantAuth, asyncHandler(async (req, res) => {
+app.post('/api/analytics/layout', requireTenantAuth, requirePermission('view_stats', 'Statistikanı görmək icazəniz yoxdur'), asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   const { layout } = req.body;
   if (!layout || typeof layout !== 'object') return res.status(400).json({ error: 'Layout object is required' });

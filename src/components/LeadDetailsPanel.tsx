@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { Lead, LeadStatus } from '../types/crm';
 import {
@@ -757,7 +757,7 @@ interface LeadDetailsPanelProps {
 export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: LeadDetailsPanelProps) {
 
     // LOCAL STATE (mirrors lead props - updated on save)
-    const { teamMembers, currentUser, crmSettingsRev } = useAppStore();
+    const { teamMembers, currentUser } = useAppStore();
     const [localStatus, setLocalStatus] = useState<LeadStatus>(lead.status);
     const [formData, setFormData] = useState({
         name: lead.name || '',
@@ -942,7 +942,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
 
 
     // ─── Custom fields from CRM settings ─────────────────────────────────────
-    const crmSettings = useMemo(() => loadCRMSettings(), [crmSettingsRev, lead.id]);
+    const crmSettings = loadCRMSettings();
     const customFields = crmSettings.customFields;
     const pipelineStages = crmSettings.pipelineStages;
 
@@ -988,7 +988,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
         });
         const extra = (lead as any).extra_data;
         setCustomValues(extra ? (typeof extra === 'string' ? JSON.parse(extra) : extra) : {});
-    }, [lead.id]);
+    }, [lead]);
 
     // ESC to close
     useEffect(() => {
@@ -1030,7 +1030,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
     const [convClosed, setConvClosed] = useState<boolean>(Boolean((lead as any)?.conversation_closed));
     useEffect(() => {
         setConvClosed(Boolean((lead as any)?.conversation_closed));
-    }, [lead.id]);
+    }, [lead]);
 
     const toggleConversation = async () => {
         if (!serverUrl || !lead?.id || convBusy) return;

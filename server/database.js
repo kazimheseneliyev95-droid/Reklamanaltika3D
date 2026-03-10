@@ -1239,6 +1239,12 @@ async function getLeads(filters = {}, tenantId = 'admin') {
             paramCount++;
         }
 
+        if (filters.assigneeId) {
+            query += ` AND l.assignee_id = $${paramCount}`;
+            values.push(filters.assigneeId);
+            paramCount++;
+        }
+
         query += ' ORDER BY l.created_at DESC';
 
         if (filters.limit) {

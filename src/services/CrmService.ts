@@ -1,10 +1,19 @@
 import { Lead, LeadStatus, DateRange } from '../types/crm';
 import { io, Socket } from 'socket.io-client';
-import { faker } from '@faker-js/faker';
 import { toNumberSafe } from '../lib/utils';
 
 const getStorageKey = () => `dualite_crm_leads_v3_${localStorage.getItem('crm_tenant_id') || 'admin'}`;
 const SERVER_URL_KEY = 'dualite_server_url';
+const DEMO_NAMES = ['Aysel', 'Murad', 'Nigar', 'Kamran', 'Laman', 'Elvin'];
+const DEMO_MESSAGES = ['Salam, qiymet?', 'How much is this?', 'Catdirilma var?', 'Sifaris vermek isteyirem', 'Rengleri var?'];
+
+function randomDigits(length: number): string {
+  return Array.from({ length }, () => Math.floor(Math.random() * 10)).join('');
+}
+
+function randomItem<T>(items: T[]): T {
+  return items[Math.floor(Math.random() * items.length)];
+}
 
 class CrmServiceImpl {
   private socket: Socket | null = null;
@@ -20,6 +29,7 @@ class CrmServiceImpl {
   private settingsListeners: Map<string, (settings: any) => void> = new Map();
   private followupDueListeners: Map<string, (data: any) => void> = new Map();
   private notificationListeners: Map<string, (data: any) => void> = new Map();
+  private leadsUpdatedListeners: Map<string, (leads: Lead[]) => void> = new Map();
 
   // Demo Mode State
   private isDemoMode: boolean = false;
@@ -279,6 +289,7 @@ class CrmServiceImpl {
     this.socket.off('new_message');
     this.socket.off('lead_updated');
     this.socket.off('lead_deleted');
+    this.socket.off('leads_updated');
     this.socket.off('settings_updated');
     this.socket.off('leads_reset');
     this.socket.off('lead_read');
@@ -301,15 +312,9 @@ class CrmServiceImpl {
           if (!this.isDemoMode) return;
 
           const fakeLead: Omit<Lead, 'id' | 'created_at' | 'updated_at'> = {
-            phone: faker.phone.number(),
-            name: faker.person.fullName(),
-            last_message: faker.helpers.arrayElement([
-              "Salam, qiymət?",
-              "How much is this?",
-              "Çatdırılma var?",
-              "Sifariş vermək istəyirəm",
-              "Rəngləri var?"
-            ]),
+            phone: `994${randomDigits(9)}`,
+            name: randomItem(DEMO_NAMES),
+            last_message: randomItem(DEMO_MESSAGES),
             status: 'new',
             source: 'whatsapp',
             value: 0
@@ -488,6 +493,17 @@ class CrmServiceImpl {
       this.notifyLeadDeletedListeners(id);
     });
 
+    this.socket.on('leads_updated', (rows: Lead[]) => {
+      try {
+        const normalized = (Array.isArray(rows) ? rows : []).map((lead) => this.normalizeLead(lead as any));
+        this.leadsCache = normalized;
+        localStorage.setItem(getStorageKey(), JSON.stringify(normalized));
+        this.leadsUpdatedListeners.forEach((cb) => cb(normalized));
+      } catch {
+        // ignore
+      }
+    });
+
     this.socket.on('lead_read', (data: any) => {
       try {
         const leadId = data?.leadId;
@@ -663,6 +679,12 @@ class CrmServiceImpl {
     const id = `notif-${this.listenerIdCounter++}`;
     this.notificationListeners.set(id, cb);
     return () => this.notificationListeners.delete(id);
+  }
+
+  onLeadsUpdated(cb: (leads: Lead[]) => void): () => void {
+    const id = `leads-${this.listenerIdCounter++}`;
+    this.leadsUpdatedListeners.set(id, cb);
+    return () => this.leadsUpdatedListeners.delete(id);
   }
 
   async fetchNotifications(opts?: { unreadOnly?: boolean; limit?: number }): Promise<{ notifications: any[]; unread_count: number }> {

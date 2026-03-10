@@ -288,10 +288,9 @@ function TableList({ data, total, mode, isMoney }: { data: Datum[]; total: numbe
 }
 
 export default function AnalyticsPage() {
-  const { leads, currentUser, teamMembers, crmSettingsRev } = useAppStore();
+  const { leads, currentUser, teamMembers } = useAppStore();
 
-  const tenantId = currentUser?.tenant_id || localStorage.getItem('crm_tenant_id') || 'admin';
-  const crmSettings = useMemo(() => loadCRMSettings(), [tenantId, crmSettingsRev]);
+  const crmSettings = loadCRMSettings();
   const pipelineStages = crmSettings.pipelineStages;
   const customFields = crmSettings.customFields;
   const selectFields = useMemo(() => customFields.filter(f => f.type === 'select' && f.id !== 'product_name'), [customFields]);
@@ -340,7 +339,7 @@ export default function AnalyticsPage() {
       }
     })();
     return () => { mounted = false; };
-  }, [tenantId, currentUser?.id, defaultLayout]);
+  }, [currentUser?.id, defaultLayout]);
 
   const scopedLeads = useMemo(() => {
     if (layout.scope !== 'mine' || !currentUser?.id) return leads;

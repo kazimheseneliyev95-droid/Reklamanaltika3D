@@ -86,6 +86,7 @@ export default function ResponseTimesPage() {
 
   const [preset, setPreset] = useState<'today' | '7d' | '30d'>('7d');
   const [channels, setChannels] = useState<string[]>(['whatsapp', 'instagram', 'facebook', 'telegram']);
+  const channelKey = useMemo(() => channels.join(','), [channels]);
 
   const toggleChannel = (ch: string) => {
     setChannels((prev) => {
@@ -120,7 +121,7 @@ export default function ResponseTimesPage() {
         const qs = new URLSearchParams({
           start: range.start.toISOString(),
           end: range.end.toISOString(),
-          channels: channels.join(','),
+          channels: channelKey,
         });
         const res = await fetch(`${url}/api/analytics/response-times?${qs.toString()}`, {
           headers: { 'Authorization': `Bearer ${token}` },
@@ -136,7 +137,7 @@ export default function ResponseTimesPage() {
       }
     };
     run();
-  }, [range.start, range.end, refreshKey, channels.join(',')]);
+  }, [channelKey, channels, range.end, range.start, refreshKey]);
 
   const slaPct = stats?.sla?.within_pct === null || stats?.sla?.within_pct === undefined
     ? null

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   BarChart3,
   Calendar,
@@ -258,7 +258,7 @@ export default function FacebookImportPage() {
     return `${formatDateLabel(dateRange.start)} - ${formatDateLabel(dateRange.end)}`;
   }, [dateRange]);
 
-  const loadConfig = async () => {
+  const loadConfig = useCallback(async () => {
     const res = await fetch(`${CrmService.getServerUrl()}/api/facebook-import/config`, {
       headers: { Authorization: `Bearer ${token}` }
     });
@@ -271,7 +271,7 @@ export default function FacebookImportPage() {
     setSelectedAccountIds(cfg.selectedAccountIds || []);
     setSelectedCampaignIds(cfg.selectedCampaignIds || []);
     return cfg;
-  };
+  }, [token]);
 
   const loadInsights = async (range = dateRange, metricType = metric) => {
     setBusyInsights(true);
@@ -303,7 +303,7 @@ export default function FacebookImportPage() {
         setMessage(e?.message || 'Facebook config oxunmadi');
       }
     })();
-  }, []);
+  }, [loadConfig]);
 
   const toggleAccount = (accountId: string) => {
     setSelectedAccountIds((prev) => {

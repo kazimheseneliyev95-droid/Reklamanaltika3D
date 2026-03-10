@@ -61,7 +61,7 @@ export default function CRMPage() {
         ? prev
         : { ...prev, stageIds: nextStageIds };
     });
-  }, [pipelineSig]);
+  }, [activeMobileTab, pipelineSig, pipelineStages]);
 
   const activeFilterCount = useMemo(() => countActiveFilters(filters, pipelineStages), [filters, pipelineStages]);
 
@@ -175,7 +175,7 @@ export default function CRMPage() {
     if (!selectedLead) return;
     const fresh = leads.find(l => l.id === selectedLead.id);
     if (fresh) setSelectedLead(fresh);
-  }, [leads]);
+  }, [leads, selectedLead]);
 
   // --- METRICS CALCULATION ---
   const metrics = useMemo(() => {

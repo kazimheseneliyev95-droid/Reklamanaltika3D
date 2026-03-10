@@ -179,9 +179,20 @@ const DEFAULT_AUTOMATION = (firstStageId: string): CRMSettings['automation'] => 
     }
 });
 
+const SERVER_URL_KEY = 'dualite_server_url';
+const LEGACY_SERVER_URL_KEY = 'crm_server_url';
+
 function getApiBase(): string {
-    const fromStorage = localStorage.getItem('crm_server_url') || '';
-    if (fromStorage) return fromStorage;
+    const primary = localStorage.getItem(SERVER_URL_KEY) || '';
+    if (primary) return primary;
+
+    const legacy = localStorage.getItem(LEGACY_SERVER_URL_KEY) || '';
+    if (legacy) {
+        localStorage.setItem(SERVER_URL_KEY, legacy);
+        localStorage.removeItem(LEGACY_SERVER_URL_KEY);
+        return legacy;
+    }
+
     // In production the API is served from the same origin
     if (import.meta.env.PROD) return window.location.origin;
     return 'http://localhost:4000';

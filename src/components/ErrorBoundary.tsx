@@ -49,7 +49,6 @@ export class ErrorBoundary extends React.Component<Props, State> {
               onClick={() => {
                 try {
                   localStorage.removeItem('dualite_server_url');
-                  localStorage.removeItem('crm_server_url');
                 } catch { }
                 window.location.reload();
               }}

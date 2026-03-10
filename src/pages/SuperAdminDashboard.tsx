@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAppStore } from '../context/Store';
 import { CrmService } from '../services/CrmService';
 import {
@@ -104,7 +104,7 @@ export default function SuperAdminDashboard() {
 
   const [busyTenantId, setBusyTenantId] = useState<string | null>(null);
 
-  const loadTenants = async () => {
+  const loadTenants = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
@@ -119,11 +119,11 @@ export default function SuperAdminDashboard() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [token]);
 
   useEffect(() => {
     loadTenants();
-  }, []);
+  }, [loadTenants]);
 
   const visibleTenants = useMemo(() => {
     const q = search.trim().toLowerCase();
