@@ -3823,6 +3823,28 @@ app.post('/api/notifications/read-all', requireTenantAuth, asyncHandler(async (r
   res.json({ success: true });
 }));
 
+// Mark all notifications for a specific lead as read.
+// UX: when the user opens a lead from a notification, the badge should clear.
+app.post('/api/notifications/lead/:leadId/read', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  if (!req.userId) return res.status(401).json({ error: 'Unauthorized' });
+  const leadId = String(req.params.leadId || '').trim();
+  if (!leadId) return res.status(400).json({ error: 'leadId is required' });
+
+  await db.pool.query(
+    'UPDATE notifications SET read_at = NOW() WHERE tenant_id = $1 AND user_id = $2 AND lead_id = $3 AND read_at IS NULL',
+    [req.tenantId, req.userId, leadId]
+  );
+
+  const unreadCountRes = await db.pool.query(
+    'SELECT COUNT(*)::int AS c FROM notifications WHERE tenant_id = $1 AND user_id = $2 AND read_at IS NULL',
+    [req.tenantId, req.userId]
+  );
+  const unread_count = unreadCountRes.rows?.[0]?.c || 0;
+
+  res.json({ success: true, lead_id: leadId, unread_count });
+}));
+
 // ADDED IN PHASE 6: Sending Messages directly to DB Queue
 app.post('/api/leads/:id/messages', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });

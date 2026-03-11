@@ -47,9 +47,30 @@ export function NotificationBell({ className }: { className?: string }) {
     const cleanupReconnect = CrmService.onReconnect(() => {
       refresh().catch(() => { });
     });
+    const cleanupMeta = CrmService.onNotificationsMeta((meta: any) => {
+      try {
+        if (meta?.action === 'lead_notifications_read') {
+          const leadId = String(meta?.lead_id || '').trim();
+          const readAt = meta?.read_at ? String(meta.read_at) : new Date().toISOString();
+          if (leadId) {
+            setItems((prev) => prev.map((x) => {
+              if (!x?.lead_id) return x;
+              return String(x.lead_id) === leadId && !x.read_at ? { ...x, read_at: readAt } : x;
+            }));
+          }
+        }
+        if (meta?.unread_count !== undefined && meta?.unread_count !== null) {
+          const next = Number(meta.unread_count);
+          if (Number.isFinite(next)) setUnreadCount(Math.max(0, next));
+        }
+      } catch {
+        // ignore
+      }
+    });
     return () => {
       cleanupNew();
       cleanupReconnect();
+      cleanupMeta();
     };
   }, []);
 

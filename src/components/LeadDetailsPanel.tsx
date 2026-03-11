@@ -858,7 +858,10 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
         if (!lead?.id) return;
         if (markReadLockRef.current) return;
         markReadLockRef.current = true;
-        CrmService.markLeadRead(lead.id)
+        Promise.allSettled([
+            CrmService.markLeadRead(lead.id),
+            CrmService.markNotificationsForLeadRead(lead.id),
+        ])
             .catch(() => { })
             .finally(() => {
                 setTimeout(() => { markReadLockRef.current = false; }, 800);

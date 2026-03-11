@@ -35,6 +35,7 @@ class CrmServiceImpl {
   private settingsListeners: Map<string, (settings: any) => void> = new Map();
   private followupDueListeners: Map<string, (data: any) => void> = new Map();
   private notificationListeners: Map<string, (data: any) => void> = new Map();
+  private notificationsMetaListeners: Map<string, (data: any) => void> = new Map();
   private leadsUpdatedListeners: Map<string, (leads: Lead[]) => void> = new Map();
 
   // Demo Mode State
@@ -685,6 +686,12 @@ class CrmServiceImpl {
     return () => this.notificationListeners.delete(id);
   }
 
+  onNotificationsMeta(cb: (data: any) => void): () => void {
+    const id = `notifmeta-${this.listenerIdCounter++}`;
+    this.notificationsMetaListeners.set(id, cb);
+    return () => this.notificationsMetaListeners.delete(id);
+  }
+
   onLeadsUpdated(cb: (leads: Lead[]) => void): () => void {
     const id = `leads-${this.listenerIdCounter++}`;
     this.leadsUpdatedListeners.set(id, cb);
@@ -724,6 +731,12 @@ class CrmServiceImpl {
         method: 'POST',
         headers: this.getAuthHeaders()
       });
+      if (res.ok) {
+        try {
+          const data = await res.json().catch(() => ({}));
+          this.notifyNotificationsMeta({ action: 'notification_read', id: nid, read_at: data?.read_at || new Date().toISOString() });
+        } catch { }
+      }
       return res.ok;
     } catch {
       return false;
@@ -738,14 +751,48 @@ class CrmServiceImpl {
         method: 'POST',
         headers: this.getAuthHeaders()
       });
+      if (res.ok) {
+        this.notifyNotificationsMeta({ action: 'notifications_read_all', unread_count: 0, read_at: new Date().toISOString() });
+      }
       return res.ok;
     } catch {
       return false;
     }
   }
 
+  async markNotificationsForLeadRead(leadId: string): Promise<{ success: boolean; lead_id: string; unread_count?: number }> {
+    const url = this.getServerUrl();
+    const lid = String(leadId || '').trim();
+    if (!url || !lid) return { success: false, lead_id: lid };
+    try {
+      const res = await this.authFetch(`${url}/api/notifications/lead/${encodeURIComponent(lid)}/read`, {
+        method: 'POST'
+      });
+      if (!res.ok) return { success: false, lead_id: lid };
+      const data = await res.json().catch(() => ({}));
+      const unread_count = Number.isFinite(Number(data?.unread_count)) ? Number(data.unread_count) : undefined;
+      this.notifyNotificationsMeta({
+        action: 'lead_notifications_read',
+        lead_id: lid,
+        unread_count,
+        read_at: new Date().toISOString(),
+      });
+      return { success: true, lead_id: lid, unread_count };
+    } catch {
+      return { success: false, lead_id: lid };
+    }
+  }
+
   private notifyReconnectListeners() {
     this.reconnectListeners.forEach(cb => cb());
+  }
+
+  private notifyNotificationsMeta(meta: any) {
+    try {
+      this.notificationsMetaListeners.forEach((cb) => cb(meta));
+    } catch {
+      // ignore
+    }
   }
 
   private getAuthHeaders(): { [key: string]: string } {

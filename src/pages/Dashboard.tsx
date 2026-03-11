@@ -476,6 +476,14 @@ export default function DashboardPage() {
     return rows;
   }, [fbInsights.campaigns, campSearch, fbSortBy]);
   const fbRangeLabel = useMemo(() => !fbDateRange.start && !fbDateRange.end ? 'Tüm zamanlar' : `${fbDateLabel(fbDateRange.start)} - ${fbDateLabel(fbDateRange.end)}`, [fbDateRange]);
+  const fbConfigRangeLabel = useMemo(() => {
+    const start = String(fbAutoSync.startDate || '').trim();
+    const end = String(fbAutoSync.endDate || '').trim();
+    if (!start && !end) return 'Tüm zamanlar';
+    if (start && !end) return `${fbDateLabel(start)} - ${fbAutoSync.mode === 'automatic' ? 'Bugün' : '...'}`;
+    if (!start && end) return `... - ${fbDateLabel(end)}`;
+    return `${fbDateLabel(start)} - ${fbDateLabel(end)}`;
+  }, [fbAutoSync.endDate, fbAutoSync.mode, fbAutoSync.startDate]);
 
   const fbToken = localStorage.getItem('crm_auth_token') || '';
 
@@ -672,6 +680,30 @@ export default function DashboardPage() {
               <span>Data mənbəyi: <span className="text-slate-200 font-semibold">Facebook cache + CRM</span></span>
             </div>
           )}
+        </div>
+
+        <div className="px-4 sm:px-5 py-4 border-b border-slate-800/60">
+          <div className="rounded-[26px] border border-slate-800 bg-slate-950/25 px-4 py-4 sm:px-5 sm:py-5">
+            <div className="flex flex-col 2xl:flex-row 2xl:items-center 2xl:justify-between gap-4">
+              <div>
+                <div className="inline-flex items-center gap-2 rounded-full border border-blue-500/20 bg-blue-500/10 px-3 py-1 text-[11px] font-bold uppercase tracking-wide text-blue-200">
+                  <BarChart3 className="w-3.5 h-3.5" /> Facebook Ads
+                </div>
+                <div className="mt-3 text-lg sm:text-xl font-bold text-slate-100">Facebook ayarları və sync idarəsi</div>
+                <div className="mt-1 text-sm text-slate-500">Kampaniya performansı bloku gizlədildi, amma ayarlar və manual sync burada qaldı.</div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <HeaderBadge label="Range" value={fbConfigRangeLabel} />
+                <HeaderBadge label="Campaigns" value={String(fbSelCampIds.length)} />
+                <HeaderBadge label="Sync Mode" value={fbAutoSync.mode === 'automatic' ? `Auto · hər ${fbAutoSync.everyHours}s` : 'Manual'} />
+                <HeaderBadge label="Cache" value={fbSaved.autoSync.lastInsightSyncAt ? fbDateLabel(String(fbSaved.autoSync.lastInsightSyncAt).slice(0, 10)) : 'Boş'} />
+                <FbActionButton variant="secondary" onClick={() => setShowFbSettings(true)} icon={<Settings2 className="w-4 h-4" />}>Ayarlar</FbActionButton>
+                <FbActionButton variant="secondary" onClick={handleFbRefresh} busy={busyFbRefresh} icon={<RefreshCcw className="w-4 h-4" />} disabled={!fbSaved.hasToken}>Yenilə</FbActionButton>
+                <FbActionButton variant="secondary" onClick={handleFbSyncNow} busy={busyFbSync} icon={<FolderSync className="w-4 h-4" />} disabled={!fbSaved.hasToken || fbSelCampIds.length === 0}>İndi Sync</FbActionButton>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div className="p-4 sm:p-5">
@@ -930,132 +962,6 @@ export default function DashboardPage() {
         ) : null
       }
 
-      {/* ─── Facebook Ads Bölməsi ─────────────────────────────────────────── */}
-      <section className="rounded-3xl border border-slate-800 bg-slate-900/60 shadow-2xl shadow-black/20 overflow-hidden mt-6">
-        <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/35 flex flex-col xl:flex-row xl:items-center justify-between gap-4">
-          <div>
-            <div className="inline-flex items-center gap-2 rounded-full border border-blue-500/20 bg-blue-500/10 px-3 py-1 text-[11px] font-bold uppercase tracking-wide text-blue-200">
-              <BarChart3 className="w-3.5 h-3.5" /> Facebook Ads
-            </div>
-            <h2 className="mt-3 text-2xl font-bold text-slate-100">Kampaniya performansı</h2>
-            <p className="mt-1 text-sm text-slate-500">Seçilmiş Facebook kampaniyaları üzrə yekun performans və kampaniya sətirləri.</p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <HeaderBadge label="Range" value={fbRangeLabel} />
-            <HeaderBadge label="Campaigns" value={String(fbSelCampIds.length)} />
-            <HeaderBadge label="Sync Mode" value={fbAutoSync.mode === 'automatic' ? `Auto · hər ${fbAutoSync.everyHours}s` : 'Manual'} />
-            <HeaderBadge label="Cache" value={fbSaved.autoSync.lastInsightSyncAt ? fbDateLabel(String(fbSaved.autoSync.lastInsightSyncAt).slice(0, 10)) : 'Boş'} />
-            <FbActionButton variant="secondary" onClick={() => setShowFbSettings(true)} icon={<Settings2 className="w-4 h-4" />}>Ayarlar</FbActionButton>
-            <FbActionButton variant="secondary" onClick={handleFbRefresh} busy={busyFbRefresh} icon={<RefreshCcw className="w-4 h-4" />} disabled={!fbSaved.hasToken}>Yenilə</FbActionButton>
-            <FbActionButton variant="secondary" onClick={handleFbSyncNow} busy={busyFbSync} icon={<FolderSync className="w-4 h-4" />} disabled={!fbSaved.hasToken || fbSelCampIds.length === 0}>İndi Sync</FbActionButton>
-          </div>
-        </div>
-
-        <div className="px-5 py-4 border-b border-slate-800 bg-slate-900/30 flex flex-col xl:flex-row xl:items-center justify-between gap-4">
-          <div className="flex flex-wrap items-center gap-2 text-sm text-slate-400">
-            <span>Metric:</span>
-            <span className="rounded-xl border border-slate-700 bg-slate-900/50 px-3 py-2 font-semibold text-slate-200">{metricLabel(fbMetric)}</span>
-            <span className="text-xs text-slate-500">Bu panel Facebook API-ni hər baxışda çağırmır; DB cache-dən oxuyur.</span>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            {([['today', 'Bugün'], ['yesterday', 'Dün'], ['7d', 'Son 7 gün'], ['30d', 'Son 30 gün'], ['all', 'Tüm zamanlar']] as Array<[Exclude<PresetType, 'custom'>, string]>).map(([p, label]) => (
-              <button key={p} type="button" onClick={() => applyFbPreset(p)} className={cn('rounded-xl border px-3 py-2 text-sm font-semibold transition-colors', fbPreset === p ? 'border-slate-200 bg-slate-100 text-slate-950' : 'border-slate-700 bg-slate-900/50 text-slate-300 hover:bg-slate-800')}>
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/20 flex flex-wrap items-center gap-2">
-          <FbDateField value={fbDateRange.start} onChange={(v) => { setFbDateRange((p) => ({ ...p, start: v })); setFbPreset('custom' as any); }} />
-          <span className="text-slate-500 text-sm">-</span>
-          <FbDateField value={fbDateRange.end} onChange={(v) => { setFbDateRange((p) => ({ ...p, end: v })); setFbPreset('custom' as any); }} />
-          <select value={fbSortBy} onChange={(e) => setFbSortBy(e.target.value as FbSortType)} className="rounded-xl border border-slate-800 bg-slate-950/35 px-3 py-2 text-sm text-slate-200 outline-none" title="Sort by">
-            <option value="spend_desc">Sort: Spend high-low</option>
-            <option value="results_desc">Sort: Results high-low</option>
-            <option value="cost_per_result_asc">Sort: Cost/result low-high</option>
-            <option value="ctr_desc">Sort: CTR high-low</option>
-            <option value="name_asc">Sort: Name A-Z</option>
-          </select>
-          <FbActionButton onClick={() => loadFbInsights(fbDateRange, fbMetric)} busy={busyFbInsights} icon={<Filter className="w-4 h-4" />} disabled={fbSelCampIds.length === 0}>Cache-ni göstər</FbActionButton>
-        </div>
-
-        <div className="p-5 grid grid-cols-2 xl:grid-cols-5 gap-4">
-          <FbMetricCard label="Harcanan Tutar" value={formatMon(fbInsights.summary.spend)} />
-          <FbMetricCard label="Sonuclar" value={formatNum(fbInsights.summary.results)} />
-          <FbMetricCard label="Sonuç başına ücret" value={formatMon(fbInsights.summary.cost_per_result)} />
-          <FbMetricCard label="CPM" value={formatMon(fbInsights.summary.cpm)} />
-          <FbMetricCard label="CTR" value={formatPct(fbInsights.summary.ctr)} />
-        </div>
-      </section>
-
-      <section className="rounded-3xl border border-slate-800 bg-slate-900/60 shadow-2xl shadow-black/20 overflow-hidden mt-6">
-        <div className="px-4 sm:px-5 py-4 border-b border-slate-800 bg-slate-950/35 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <div>
-            <div className="text-lg font-semibold text-slate-100">Kampaniya cədvəli</div>
-            <div className="text-sm text-slate-500">Facebook Ads Manager üslubunda yekun sətirlər</div>
-          </div>
-          <div className="flex items-center gap-2 rounded-2xl border border-slate-800 bg-slate-950/40 px-3 py-2 w-full sm:w-auto sm:min-w-[220px]">
-            <Search className="w-4 h-4 text-slate-500" />
-            <input value={campSearch} onChange={(e) => setCampSearch(e.target.value)} placeholder="Kampaniya axtar..." className="bg-transparent outline-none text-sm text-slate-100 placeholder:text-slate-600 w-full" />
-          </div>
-        </div>
-
-        <div className="hidden md:block overflow-auto">
-          <table className="min-w-[1080px] w-full text-sm">
-            <thead className="bg-slate-950/60 text-slate-400 text-xs uppercase tracking-wide">
-              <tr>
-                <th className="px-4 py-3 text-left">Kampaniya</th>
-                <th className="px-4 py-3 text-left">Yayın durumu</th>
-                <th className="px-4 py-3 text-right">{metricLabel(fbMetric)}</th>
-                <th className="px-4 py-3 text-right">Sonuç başına ücret</th>
-                <th className="px-4 py-3 text-right">Harcanan Tutar</th>
-                <th className="px-4 py-3 text-right">CPM</th>
-                <th className="px-4 py-3 text-right">CTR</th>
-                <th className="px-4 py-3 text-left">Hesab</th>
-              </tr>
-            </thead>
-            <tbody>
-              {fbSortedCampaigns.length === 0 ? (
-                <tr><td colSpan={8} className="px-4 py-16 text-center text-slate-500">Seçilmiş kampaniyalar üçün data görünmür. Ayarlardan kampaniya seçib sonra tarix filtrini tətbiq et.</td></tr>
-              ) : fbSortedCampaigns.map((c, idx) => (
-                <tr key={c.id} className={cn('border-t border-slate-800/60', idx % 2 === 0 ? 'bg-slate-900/20' : 'bg-slate-950/10')}>
-                  <td className="px-4 py-4 align-top min-w-[320px]">
-                    <div className="font-semibold text-slate-100">{c.name}</div>
-                    <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-500">
-                      {c.objective ? <FbTag>{c.objective}</FbTag> : null}
-                      {c.effective_status?.[0] ? <FbTag>{c.effective_status[0]}</FbTag> : null}
-                    </div>
-                  </td>
-                  <td className="px-4 py-4 align-top"><FbStatusCell status={c.status || c.effective_status?.[0] || 'Unknown'} /></td>
-                  <td className="px-4 py-4 align-top text-right font-semibold text-slate-100">{formatNum(c.metrics.results)}</td>
-                  <td className="px-4 py-4 align-top text-right text-slate-200">{formatMon(c.metrics.cost_per_result)}</td>
-                  <td className="px-4 py-4 align-top text-right text-slate-200">{formatMon(c.metrics.spend)}</td>
-                  <td className="px-4 py-4 align-top text-right text-slate-200">{formatMon(c.metrics.cpm)}</td>
-                  <td className="px-4 py-4 align-top text-right text-slate-200">{formatPct(c.metrics.ctr)}</td>
-                  <td className="px-4 py-4 align-top text-slate-300">{c.account_name || '-'}</td>
-                </tr>
-              ))}
-            </tbody>
-            {fbSortedCampaigns.length > 0 ? (
-              <tfoot className="border-t border-slate-800 bg-slate-950/50">
-                <tr className="text-sm font-semibold text-slate-100">
-                  <td className="px-4 py-4">{fbSortedCampaigns.length} kampaniyadan nəticə</td>
-                  <td className="px-4 py-4 text-slate-400">Toplam</td>
-                  <td className="px-4 py-4 text-right">{formatNum(fbInsights.summary.results)}</td>
-                  <td className="px-4 py-4 text-right">{formatMon(fbInsights.summary.cost_per_result)}</td>
-                  <td className="px-4 py-4 text-right">{formatMon(fbInsights.summary.spend)}</td>
-                  <td className="px-4 py-4 text-right">{formatMon(fbInsights.summary.cpm)}</td>
-                  <td className="px-4 py-4 text-right">{formatPct(fbInsights.summary.ctr)}</td>
-                  <td className="px-4 py-4" />
-                </tr>
-              </tfoot>
-            ) : null}
-          </table>
-        </div>
-      </section>
     </div >
   );
 }
