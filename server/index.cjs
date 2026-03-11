@@ -50,19 +50,21 @@ const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
 
 const telegramDedup = new Map();
-function shouldSendTelegramDedup(key, ttlMs = 60000) {
+const TELEGRAM_DEDUP_TTL_MS = 60000;
+function shouldSendTelegramDedup(key, ttlMs = TELEGRAM_DEDUP_TTL_MS) {
   const now = Date.now();
   const prev = telegramDedup.get(key);
   if (prev && (now - prev) < ttlMs) return false;
   telegramDedup.set(key, now);
-  // opportunistic cleanup
-  if (telegramDedup.size > 2000) {
-    for (const [k, t] of telegramDedup.entries()) {
-      if ((now - t) > ttlMs) telegramDedup.delete(k);
-    }
-  }
   return true;
 }
+// Periodic cleanup every 5 minutes — prevents unbounded Map growth (BUG-04 fix)
+setInterval(() => {
+  const cutoff = Date.now() - TELEGRAM_DEDUP_TTL_MS * 10;
+  for (const [k, t] of telegramDedup.entries()) {
+    if (t < cutoff) telegramDedup.delete(k);
+  }
+}, 5 * 60 * 1000).unref();
 
 const telegramConfigCache = new Map();
 const TELEGRAM_CONFIG_TTL_MS = 15000;
@@ -281,11 +283,19 @@ function requireInternalRequest(req, res, next) {
 }
 
 // Middleware
+// SEC-01 fix: explicit allowlist instead of wildcard *.onrender.com
+// Set EXTRA_CORS_ORIGINS=https://your-app.onrender.com in Render env vars
+const extraOrigins = (process.env.EXTRA_CORS_ORIGINS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
 const allowedOrigins = [
   FRONTEND_URL,
   'http://localhost:5173',
   'http://localhost:3000',
-  'http://localhost:5174'
+  'http://localhost:5174',
+  ...extraOrigins
 ].filter(Boolean);
 
 function normalizeOrigin(value) {
@@ -297,8 +307,8 @@ function isOriginAllowed(origin) {
   const normalizedOrigin = normalizeOrigin(origin);
   const normalizedAllowed = allowedOrigins.map(normalizeOrigin);
   if (normalizedAllowed.includes(normalizedOrigin)) return true;
-  // Allow all Render-hosted origins regardless of NODE_ENV to avoid production misconfig lockouts
-  if (normalizedOrigin.includes('.onrender.com')) return true;
+  // Fallback: allow *.onrender.com only if ALLOW_RENDER_CORS is explicitly set
+  if (process.env.ALLOW_RENDER_CORS === 'true' && normalizedOrigin.includes('.onrender.com')) return true;
   return false;
 }
 
@@ -372,6 +382,23 @@ const tenantAutomationCache = new Map(); // tenantId -> { atMs, settings }
 const dashboardCombinedCache = new Map(); // cacheKey -> { atMs, payload }
 const SETTINGS_CACHE_TTL_MS = 60 * 1000;
 const DASHBOARD_CACHE_TTL_MS = 15000;
+
+// BUG-08 fix: Periodic cleanup for in-memory caches — prevents unbounded Map growth
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of dashboardCombinedCache.entries()) {
+    if ((now - v.atMs) > DASHBOARD_CACHE_TTL_MS * 20) dashboardCombinedCache.delete(k);
+  }
+  for (const [k, v] of tenantSettingsCache.entries()) {
+    if ((now - v.atMs) > SETTINGS_CACHE_TTL_MS * 20) tenantSettingsCache.delete(k);
+  }
+  for (const [k, v] of tenantAdminIdsCache.entries()) {
+    if ((now - v.atMs) > SETTINGS_CACHE_TTL_MS * 20) tenantAdminIdsCache.delete(k);
+  }
+  for (const [k, v] of tenantAutomationCache.entries()) {
+    if ((now - v.atMs) > SETTINGS_CACHE_TTL_MS * 20) tenantAutomationCache.delete(k);
+  }
+}, 10 * 60 * 1000).unref();
 
 function pickAutomationSettingsFromCrmSettings(settings) {
   const s = settings && typeof settings === 'object' ? settings : {};
@@ -870,7 +897,8 @@ function businessMinutesBetween(startMs, endMs, cfg) {
 
   let total = 0;
   let cursor = startMs;
-  for (let i = 0; i < 370; i++) {
+  // ALG-03 fix: 370→730 gün (2 il) — uzun açıq qalan lead-lər üçün kifayət edir
+  for (let i = 0; i < 730; i++) {
     if (cursor >= endMs) break;
     const p = getZonedParts(cursor, tz);
     const y = p.year;

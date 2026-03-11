@@ -158,27 +158,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
           body: JSON.stringify({ token })
         });
         const data = await res.json();
-          if (data.valid) {
-            localStorage.setItem('crm_tenant_id', data.tenantId);
-            setCurrentUser({
-              id: data.id,
-              username: data.username,
-              role: data.role,
-              permissions: data.permissions || {},
-              tenant_id: data.tenantId,
-              display_name: data.displayName || null
-            });
-            setIsAuthenticated(true);
+        if (data.valid) {
+          localStorage.setItem('crm_tenant_id', data.tenantId);
+          setCurrentUser({
+            id: data.id,
+            username: data.username,
+            role: data.role,
+            permissions: data.permissions || {},
+            tenant_id: data.tenantId,
+            display_name: data.displayName || null
+          });
+          setIsAuthenticated(true);
           // 🆕 Automatically restore WhatsApp Socket if there is a saved server URL
           CrmService.autoConnect();
 
-           // Sync settings from server (then bump rev so pages rerender with latest pipeline stages)
-           try {
-             await syncCRMSettingsFromServer();
-             setCrmSettingsRev((v) => v + 1);
-           } catch (e) {
-             console.error('Failed to sync settings on load', e);
-           }
+          // Sync settings from server (then bump rev so pages rerender with latest pipeline stages)
+          try {
+            await syncCRMSettingsFromServer();
+            setCrmSettingsRev((v) => v + 1);
+          } catch (e) {
+            console.error('Failed to sync settings on load', e);
+          }
 
           // If token didn't include display name (older tokens), fetch tenant profile
           try {
@@ -519,7 +519,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // --- METRICS ---
   const getMetrics = () => {
     const messages = leads.length;
-    const potential = leads.filter(l => l.status === 'potential').length;
     const settings = loadCRMSettings();
     const normalizeLabel = (v: any) => String(v || '')
       .toLowerCase()
@@ -528,11 +527,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
       .replace(/[\u0300-\u036f]/g, '')
       .replace(/\s+/g, ' ')
       .trim();
+
+    // ALG-04 fix: dynamically find stage IDs from pipeline settings instead of hard-coding 'potential'
+    const stages = Array.isArray(settings.pipelineStages) ? settings.pipelineStages : [];
+    const potentialStageId =
+      stages.find((s) => s.id === 'potential')?.id ||
+      stages.find((s) => {
+        const lbl = normalizeLabel(s.label);
+        return lbl === 'potential' || lbl === 'potensial' || lbl === 'kvalifikasiya';
+      })?.id ||
+      'potential'; // fallback keeps existing behaviour for fresh installs
+
     const revenueStageId =
-      (settings.pipelineStages || []).find((s) => s.id === 'won')?.id ||
-      (settings.pipelineStages || []).find((s) => normalizeLabel(s.label) === 'satis')?.id ||
+      stages.find((s) => s.id === 'won')?.id ||
+      stages.find((s) => normalizeLabel(s.label) === 'satis')?.id ||
       'won';
 
+    const potential = leads.filter(l => String(l.status) === String(potentialStageId)).length;
     const sales = leads.filter(l => String(l.status) === String(revenueStageId)).length;
     const revenue = leads
       .filter(l => String(l.status) === String(revenueStageId))

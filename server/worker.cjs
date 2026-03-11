@@ -49,8 +49,15 @@ workerApp.use('/api/internal', (req, res, next) => {
     if (!INTERNAL_WEBHOOK_SECRET) {
         return res.status(503).json({ error: 'Internal secret is not configured' });
     }
-    const incoming = req.headers['x-internal-secret'];
-    if (incoming === INTERNAL_WEBHOOK_SECRET) return next();
+    const incoming = String(req.headers['x-internal-secret'] || '');
+    // SEC-05 fix: use timing-safe comparison to prevent timing-based secret inference
+    try {
+        const a = Buffer.from(incoming, 'utf8');
+        const b = Buffer.from(INTERNAL_WEBHOOK_SECRET, 'utf8');
+        if (a.length === b.length && crypto.timingSafeEqual(a, b)) return next();
+    } catch {
+        // buffer mismatch handled below
+    }
     return res.status(401).json({ error: 'Unauthorized internal request' });
 });
 
@@ -315,6 +322,17 @@ function scheduleSessionRestart(tenantId, session, delayMs) {
 const REPAIR_SCAN_COOLDOWN_MS = 30000;
 const lastRepairScanAt = new Map(); // tenantId -> ms
 const repairedOldPhones = new Map(); // tenantId:oldPhone -> ms
+const REPAIRED_PHONE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+// BUG-07 fix: Periodic cleanup for repairedOldPhones — was never cleaned before
+setInterval(() => {
+    const cutoff = Date.now() - REPAIRED_PHONE_TTL_MS;
+    for (const [k, t] of repairedOldPhones.entries()) {
+        if (t < cutoff) repairedOldPhones.delete(k);
+    }
+    for (const [k, t] of lastRepairScanAt.entries()) {
+        if (t < cutoff) lastRepairScanAt.delete(k);
+    }
+}, REPAIRED_PHONE_TTL_MS).unref();
 
 async function getPNForLidUser(tenantId, lidUser) {
     try {
