@@ -515,11 +515,10 @@ export default function CRMPage() {
       </div>
 
       {/* KANBAN BOARD — desktop: fit-to-screen grid | mobile: single column */}
-      <div className="flex-1 overflow-x-hidden pb-4">
+      <div className="flex-1 overflow-x-auto pb-4">
         {/* Desktop */}
         <div
-          className="hidden sm:grid gap-3 lg:gap-4 h-full w-full min-w-0"
-          style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(0, 1fr))` }}
+          className="hidden sm:grid grid-flow-col auto-cols-[minmax(272px,1fr)] gap-3 lg:gap-4 h-full min-w-max"
         >
           {columns.map((col) => (
             (() => {
@@ -843,7 +842,7 @@ function LeadCard({
   return (
     <div
       className={cn(
-        "group relative rounded-2xl border bg-slate-950/40 p-3 shadow-sm transition-all duration-200",
+        "group relative rounded-2xl border bg-slate-950/40 px-2.5 py-2 shadow-sm transition-all duration-200",
         unread > 0
           ? "border-rose-500/35 hover:border-rose-400/60 shadow-rose-900/10"
           : "border-slate-800/80 hover:border-slate-700"
@@ -860,7 +859,7 @@ function LeadCard({
         style={{ background: leadAccent || '#94a3b8', opacity: unread > 0 ? 0.9 : 0.55 }}
       />
 
-       <div className="flex items-start justify-between gap-2">
+       <div className="flex items-start justify-between gap-1.5">
          <div className="min-w-0 flex-1">
            <div className="flex items-start gap-2 min-w-0">
              <div
@@ -871,11 +870,11 @@ function LeadCard({
                    e.dataTransfer.effectAllowed = 'move';
                  } catch { }
                }}
-               className="shrink-0 w-7 h-7 rounded-xl border border-slate-800 bg-slate-950/50 flex items-center justify-center cursor-grab active:cursor-grabbing"
-               title="Drag"
-             >
-               <GripVertical className="w-4 h-4 text-slate-600" />
-             </div>
+                className="shrink-0 w-6 h-6 rounded-lg border border-slate-800 bg-slate-950/50 flex items-center justify-center cursor-grab active:cursor-grabbing"
+                title="Drag"
+              >
+                <GripVertical className="w-3.5 h-3.5 text-slate-600" />
+              </div>
 
              <div className="min-w-0 flex-1">
                {/* Title + indicators (never share row with value) */}
@@ -914,27 +913,24 @@ function LeadCard({
                </div>
 
                {/* Channel + company (stacked) */}
-               {(cfg.showSource !== false || cfg.showAssignee !== false) ? (
-                 <div className="mt-2">
-                   {cfg.showSource !== false ? (
-                     <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-950/50 text-slate-300 border border-slate-800 whitespace-nowrap">
-                       {sourceLabel}
-                     </span>
-                   ) : null}
-                   {cfg.showAssignee !== false ? (
-                     <div className={cn(
-                       'mt-1 text-[11px] font-semibold text-slate-300 truncate',
-                       cfg.showSource === false && 'mt-0'
-                     )} title={assigneeLabel}>
-                       {assigneeLabel}
-                     </div>
-                   ) : null}
-                 </div>
-               ) : null}
+                {(cfg.showSource !== false || cfg.showAssignee !== false) ? (
+                  <div className="mt-1.5 flex items-center justify-between gap-2 min-w-0">
+                    {cfg.showSource !== false ? (
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-950/50 text-slate-300 border border-slate-800 whitespace-nowrap">
+                        {sourceLabel}
+                      </span>
+                    ) : null}
+                    {cfg.showAssignee !== false ? (
+                      <div className="min-w-0 text-[11px] font-semibold text-slate-300 truncate" title={assigneeLabel}>
+                        {assigneeLabel}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
 
-               {/* Date + value (separate row to avoid overlaps) */}
-               <div className="mt-1 flex items-center justify-between gap-2 min-w-0">
-                 <div className="text-[10px] text-slate-500 tabular-nums truncate">{dateStr}</div>
+                {/* Date + value (separate row to avoid overlaps) */}
+                <div className="mt-1 flex items-center justify-between gap-2 min-w-0">
+                  <div className="text-[10px] text-slate-500 tabular-nums truncate">{dateStr}</div>
                  {hasValue ? (
                    <span className="shrink-0 inline-flex items-center gap-1 rounded-full border border-emerald-900/30 bg-emerald-950/15 px-2 py-0.5 text-[10px] font-extrabold text-emerald-200 tabular-nums whitespace-nowrap">
                      <DollarSign className="w-3 h-3" />
@@ -971,8 +967,8 @@ function LeadCard({
 
       {/* Product Name Badge */}
       {cfg.showProductBadge !== false && lead.product_name && (
-        <div className="mt-3">
-          <span className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full text-[11px] font-bold bg-slate-950/40 text-slate-200 border border-slate-800">
+        <div className="mt-2">
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-slate-950/40 text-slate-200 border border-slate-800">
             <ShoppingBag className="w-3.5 h-3.5 text-slate-400" />
             <span className="truncate max-w-[260px]" title={lead.product_name}>{lead.product_name}</span>
           </span>
@@ -980,7 +976,7 @@ function LeadCard({
       )}
 
       {cfg.showCustomFieldBadges !== false && selectBadges.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1.5">
+        <div className="mt-1.5 flex flex-wrap gap-1">
           {selectBadges.map(b => {
             const hue = hashHue(`${b.id}:${b.value}`);
             const dot: React.CSSProperties = { backgroundColor: `hsl(${hue}, 85%, 70%)` };
@@ -988,8 +984,8 @@ function LeadCard({
               <span
                 key={`${b.id}:${b.value}`}
                 title={`${b.label}: ${b.value}`}
-                className="inline-flex items-center gap-2 px-2 py-1 rounded-full text-[10px] font-bold border border-slate-800 bg-slate-950/35 text-slate-200 max-w-full"
-              >
+                 className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold border border-slate-800 bg-slate-950/35 text-slate-200 max-w-full"
+               >
                 <span className="w-2 h-2 rounded-full shrink-0" style={dot} />
                 <span className="max-w-[220px] truncate">
                   {(cfg.customFieldBadgeMode || 'value') === 'label_value' ? `${b.label}: ${b.value}` : b.value}
@@ -1005,14 +1001,14 @@ function LeadCard({
           type="button"
           onClick={onViewMessage}
           className={cn(
-            'mt-3 w-full text-left rounded-xl border px-3 py-2 transition-colors',
+            'mt-2 w-full text-left rounded-xl border px-3 py-1.5 transition-colors',
             'border-slate-800/80 bg-slate-950/35 hover:bg-slate-950/55 hover:border-slate-700',
             unread > 0 && 'border-rose-500/20'
           )}
           title="Mesaji ac"
         >
           <div className="text-[10px] uppercase tracking-wide font-bold text-slate-500">Son mesaj</div>
-          <p className="mt-1 text-[12px] text-slate-200 line-clamp-2 leading-snug">
+          <p className="mt-1 text-[12px] text-slate-200 line-clamp-2 sm:line-clamp-1 leading-snug">
             {lead.last_message}
           </p>
         </button>
