@@ -2,8 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Check, Filter, Link2, Loader2, Search, Target, Unlink2 } from 'lucide-react';
 import { CRMSettings } from '../../../lib/crmSettings';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/Card';
-import { HelpCallout } from '../HelpCallout';
-import { SettingsAside, SettingsGrid, SettingsMain } from '../SettingsLayout';
+import { SettingsGrid, SettingsMain } from '../SettingsLayout';
 import { SettingsSectionHeader } from '../SettingsSectionHeader';
 import { cn } from '../../../lib/utils';
 
@@ -46,8 +45,10 @@ export function DashboardTab({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [activeValue, setActiveValue] = useState('');
+  const [valueQuery, setValueQuery] = useState('');
   const [campaignQuery, setCampaignQuery] = useState('');
   const [showSelectedOnly, setShowSelectedOnly] = useState(false);
+  const [showUnmappedOnly, setShowUnmappedOnly] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -129,6 +130,22 @@ export function DashboardTab({
     }
   }, [activeValue, mappings]);
 
+  const filteredMappings = useMemo(() => {
+    const query = valueQuery.trim().toLowerCase();
+    return mappings.filter((row) => {
+      if (showUnmappedOnly && row.campaignIds.length > 0) return false;
+      if (!query) return true;
+      return row.value.toLowerCase().includes(query);
+    });
+  }, [mappings, showUnmappedOnly, valueQuery]);
+
+  useEffect(() => {
+    if (!filteredMappings.length) return;
+    if (!filteredMappings.some((row) => row.value === activeValue)) {
+      setActiveValue(filteredMappings[0].value);
+    }
+  }, [activeValue, filteredMappings]);
+
   const activeMapping = useMemo(
     () => mappings.find((row) => row.value === activeValue) || null,
     [activeValue, mappings]
@@ -193,49 +210,53 @@ export function DashboardTab({
   };
 
   const connectedCount = mappings.filter((row) => row.campaignIds.length > 0).length;
+  const unmappedCount = Math.max(0, mappings.length - connectedCount);
+  const activeSelectedCount = activeMapping?.campaignIds.length || 0;
 
   return (
     <SettingsGrid>
-      <SettingsMain>
+      <SettingsMain className="lg:col-span-12">
         <SettingsSectionHeader
           title="Dashboard"
-          description="CRM-dəki seçim sahəsini Facebook kampaniyaları ilə birləşdirin. Daha kompakt şəkildə əvvəl dəyəri seçin, sonra sağ paneldə kampaniyaları bağlayın."
+          description="Əvvəl CRM dəyərini seçin, sonra həmin dəyərə kampaniyaları bağlayın. Ekran yalnız bu iş axını üçün sadələşdirildi."
         />
 
         <Card className="border-slate-800 bg-slate-950/30">
-          <CardHeader className="p-4">
+          <CardHeader className="p-4 pb-3">
             <CardTitle className="text-sm text-slate-100 flex items-center gap-2">
               <Target className="w-4 h-4 text-blue-400" />
               Birləşdirmə bazası
             </CardTitle>
           </CardHeader>
           <CardContent className="p-4 pt-0 space-y-4">
-            <div>
-              <label className="block text-[11px] font-semibold text-slate-400 mb-2">CRM select sahəsi</label>
-              <select
-                value={selectedFieldId}
-                onChange={(e) => updateFieldId(e.target.value)}
-                className="w-full rounded-xl border border-slate-800 bg-slate-900 px-3 py-2.5 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
-              >
-                <option value="">Sahə seçin...</option>
-                {selectFields.map((field) => (
-                  <option key={field.id} value={field.id}>{field.label}</option>
-                ))}
-              </select>
-            </div>
+            <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,360px)_1fr] gap-4 items-end">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-400 mb-2">CRM select sahəsi</label>
+                <select
+                  value={selectedFieldId}
+                  onChange={(e) => updateFieldId(e.target.value)}
+                  className="w-full rounded-xl border border-slate-800 bg-slate-900 px-3 py-2.5 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                  <option value="">Sahə seçin...</option>
+                  {selectFields.map((field) => (
+                    <option key={field.id} value={field.id}>{field.label}</option>
+                  ))}
+                </select>
+              </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div className="rounded-2xl border border-slate-800 bg-slate-950/25 px-4 py-3">
-                <div className="text-[10px] uppercase tracking-wide font-bold text-slate-500">Sahə</div>
-                <div className="mt-1 text-sm font-bold text-slate-100">{selectedField?.label || 'Seçilməyib'}</div>
-              </div>
-              <div className="rounded-2xl border border-slate-800 bg-slate-950/25 px-4 py-3">
-                <div className="text-[10px] uppercase tracking-wide font-bold text-slate-500">Map olunan dəyər</div>
-                <div className="mt-1 text-sm font-bold text-slate-100">{connectedCount}</div>
-              </div>
-              <div className="rounded-2xl border border-slate-800 bg-slate-950/25 px-4 py-3">
-                <div className="text-[10px] uppercase tracking-wide font-bold text-slate-500">Kampaniya hovuzu</div>
-                <div className="mt-1 text-sm font-bold text-slate-100">{campaigns.length}</div>
+              <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
+                <span className="rounded-full border border-slate-800 bg-slate-950/30 px-3 py-1.5">
+                  Sahə: <span className="font-semibold text-slate-100">{selectedField?.label || 'Seçilməyib'}</span>
+                </span>
+                <span className="rounded-full border border-slate-800 bg-slate-950/30 px-3 py-1.5">
+                  {connectedCount} dəyər bağlanıb
+                </span>
+                <span className="rounded-full border border-slate-800 bg-slate-950/30 px-3 py-1.5">
+                  {unmappedCount} dəyər boşdur
+                </span>
+                <span className="rounded-full border border-slate-800 bg-slate-950/30 px-3 py-1.5">
+                  {campaigns.length} kampaniya hovuzu
+                </span>
               </div>
             </div>
           </CardContent>
@@ -245,7 +266,7 @@ export function DashboardTab({
           <CardHeader className="p-4 border-b border-slate-800/80">
             <CardTitle className="text-sm text-slate-100 flex items-center gap-2">
               <Link2 className="w-4 h-4 text-emerald-400" />
-              Kompakt map idarəsi
+              Map idarəsi
             </CardTitle>
           </CardHeader>
           <CardContent className="p-0">
@@ -268,14 +289,40 @@ export function DashboardTab({
                 Bu sahənin seçim variantı yoxdur. Əvvəlcə həmin sahəyə variant əlavə edin.
               </div>
             ) : (
-              <div className="grid grid-cols-1 xl:grid-cols-[320px_minmax(0,1fr)]">
+              <div className="grid grid-cols-1 xl:grid-cols-[320px_minmax(0,1fr)] min-h-[640px]">
                 <div className="border-b xl:border-b-0 xl:border-r border-slate-800/80 bg-slate-950/35">
-                  <div className="px-4 py-3 border-b border-slate-800/70">
-                    <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">CRM dəyərləri</div>
-                    <div className="mt-1 text-xs text-slate-400">Soldan dəyəri seç, sağdan kampaniyaları bağla.</div>
+                  <div className="px-4 py-4 border-b border-slate-800/70 space-y-3">
+                    <div>
+                      <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">CRM dəyərləri</div>
+                      <div className="mt-1 text-xs text-slate-400">Soldan dəyəri seçin, sağda kampaniyaları bağlayın.</div>
+                    </div>
+
+                    <div className="relative">
+                      <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+                      <input
+                        value={valueQuery}
+                        onChange={(e) => setValueQuery(e.target.value)}
+                        placeholder="Dəyər axtar..."
+                        className="w-full rounded-xl border border-slate-800 bg-slate-900 pl-10 pr-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      />
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setShowUnmappedOnly((prev) => !prev)}
+                      className={cn(
+                        'w-full rounded-xl border px-3 py-2 text-xs font-bold transition-colors',
+                        showUnmappedOnly
+                          ? 'border-blue-500/40 bg-blue-500/10 text-blue-100'
+                          : 'border-slate-800 bg-slate-900 text-slate-400 hover:text-slate-200'
+                      )}
+                    >
+                      <Filter className="w-3.5 h-3.5 inline mr-1.5" /> Yalnız eşləşməmişlər
+                    </button>
                   </div>
+
                   <div className="max-h-[640px] overflow-auto p-2 space-y-2">
-                    {mappings.map((row) => {
+                    {filteredMappings.map((row) => {
                       const active = row.value === activeValue;
                       return (
                         <button
@@ -291,7 +338,7 @@ export function DashboardTab({
                         >
                           <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0">
-                              <div className="text-sm font-bold text-slate-100 truncate">{row.value}</div>
+                              <div className="text-sm font-bold text-slate-100 break-words">{row.value}</div>
                               <div className="mt-1 text-[11px] text-slate-500">
                                 {row.campaignIds.length > 0 ? `${row.campaignIds.length} kampaniya bağlıdır` : 'Hələ kampaniya bağlanmayıb'}
                               </div>
@@ -306,6 +353,12 @@ export function DashboardTab({
                         </button>
                       );
                     })}
+
+                    {filteredMappings.length === 0 ? (
+                      <div className="rounded-2xl border border-slate-800 bg-slate-950/20 px-4 py-5 text-sm text-slate-500">
+                        Filterə uyğun CRM dəyəri tapılmadı.
+                      </div>
+                    ) : null}
                   </div>
                 </div>
 
@@ -315,8 +368,11 @@ export function DashboardTab({
                       <div className="px-4 py-4 border-b border-slate-800/70 bg-slate-950/15 space-y-3">
                         <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-3">
                           <div className="min-w-0">
-                            <div className="text-lg font-bold text-slate-100 truncate">{activeMapping.value}</div>
-                            <div className="mt-1 text-[12px] text-slate-500">Bu dəyər üçün bir və ya bir neçə Facebook kampaniyası seçin.</div>
+                            <div className="text-lg font-bold text-slate-100 break-words">{activeMapping.value}</div>
+                            <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+                              <span className="rounded-full border border-slate-800 bg-slate-900/70 px-2.5 py-1">{activeSelectedCount} kampaniya bağlıdır</span>
+                              <span className="rounded-full border border-slate-800 bg-slate-900/70 px-2.5 py-1">Kampaniya adları tam görünür</span>
+                            </div>
                           </div>
                           <div className="flex items-center gap-2">
                             <button
@@ -353,18 +409,21 @@ export function DashboardTab({
                         </div>
 
                         {selectedCampaigns.length > 0 ? (
-                          <div className="flex flex-wrap gap-2">
-                            {selectedCampaigns.map((campaign) => (
-                              <button
-                                key={campaign.id}
-                                type="button"
-                                onClick={() => toggleCampaign(activeMapping.value, campaign.id)}
-                                className="inline-flex items-center gap-2 rounded-full border border-blue-500/30 bg-blue-500/10 px-3 py-1.5 text-[11px] font-semibold text-blue-100"
-                              >
-                                <Check className="w-3 h-3" />
-                                <span className="truncate max-w-[220px]">{campaign.name}</span>
-                              </button>
-                            ))}
+                          <div className="rounded-2xl border border-slate-800 bg-slate-950/20 p-3">
+                            <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500 mb-2">Seçilmiş kampaniyalar</div>
+                            <div className="flex flex-wrap gap-2">
+                              {selectedCampaigns.map((campaign) => (
+                                <button
+                                  key={campaign.id}
+                                  type="button"
+                                  onClick={() => toggleCampaign(activeMapping.value, campaign.id)}
+                                  className="inline-flex max-w-full items-start gap-2 rounded-2xl border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-left text-[11px] font-semibold text-blue-100"
+                                >
+                                  <Check className="w-3 h-3 mt-0.5 shrink-0" />
+                                  <span className="whitespace-normal break-words">{campaign.name}</span>
+                                </button>
+                              ))}
+                            </div>
                           </div>
                         ) : (
                           <div className="text-[12px] text-slate-500">Hələ heç bir kampaniya seçilməyib.</div>
@@ -372,7 +431,8 @@ export function DashboardTab({
                       </div>
 
                       <div className="p-4">
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-[520px] overflow-auto pr-1">
+                        <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500 mb-3">Bütün kampaniyalar</div>
+                        <div className="grid grid-cols-1 gap-2 max-h-[520px] overflow-auto pr-1">
                           {filteredCampaigns.map((campaign) => {
                             const active = activeMapping.campaignIds.includes(campaign.id);
                             return (
@@ -381,7 +441,7 @@ export function DashboardTab({
                                 type="button"
                                 onClick={() => toggleCampaign(activeMapping.value, campaign.id)}
                                 className={cn(
-                                  'group rounded-2xl border px-3 py-3 text-left transition-all',
+                                  'group rounded-2xl border px-4 py-3 text-left transition-all',
                                   active
                                     ? 'border-blue-500/40 bg-blue-500/10 text-slate-100'
                                     : 'border-slate-800 bg-slate-950/20 text-slate-300 hover:border-slate-700 hover:bg-slate-950/35'
@@ -389,8 +449,8 @@ export function DashboardTab({
                               >
                                 <div className="flex items-start justify-between gap-3">
                                   <div className="min-w-0">
-                                    <div className="text-sm font-semibold truncate">{campaign.name}</div>
-                                    <div className="mt-1 text-[11px] text-slate-500 truncate">
+                                    <div className="text-sm font-semibold whitespace-normal break-words">{campaign.name}</div>
+                                    <div className="mt-1 text-[11px] text-slate-500 whitespace-normal break-words">
                                       {campaign.account_name || 'Facebook Campaign'}{campaign.objective ? ` · ${campaign.objective}` : ''}
                                     </div>
                                   </div>
@@ -415,32 +475,15 @@ export function DashboardTab({
                         ) : null}
                       </div>
                     </>
-                  ) : null}
+                  ) : (
+                    <div className="px-5 py-6 text-sm text-slate-500">Sol tərəfdən bir CRM dəyəri seçin.</div>
+                  )}
                 </div>
               </div>
             )}
           </CardContent>
         </Card>
       </SettingsMain>
-
-      <SettingsAside>
-        <HelpCallout title="Necə daha kompakt işləyir?">
-          <p>Soldakı siyahıda yalnız CRM dəyərləri görünür.</p>
-          <p>Sağ panel isə yalnız seçilmiş dəyərin kampaniya seçimlərini göstərir. Beləliklə eyni kampaniya listi yüz dəfə təkrarlanmır.</p>
-        </HelpCallout>
-
-        <HelpCallout title="Hazırkı vəziyyət">
-          <p>Seçilən sahə: <strong>{selectedField?.label || 'yoxdur'}</strong></p>
-          <p>Aktiv dəyər: <strong>{activeMapping?.value || 'yoxdur'}</strong></p>
-          <p>Map olunan dəyər sayı: <strong>{connectedCount}</strong></p>
-          <p>Kampaniya mənbəyi: <strong>{campaigns.length}</strong> kampaniya</p>
-        </HelpCallout>
-
-        <HelpCallout title="Tövsiyə">
-          <p>Ən çox istifadə etdiyiniz kursları əvvəl bağlayın.</p>
-          <p>Sağ paneldə axtarışdan istifadə edin; kampaniya sayı çox olduqda bu, işi xeyli sürətləndirir.</p>
-        </HelpCallout>
-      </SettingsAside>
     </SettingsGrid>
   );
 }
