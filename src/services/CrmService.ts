@@ -49,6 +49,7 @@ class CrmServiceImpl {
   private readonly PROCESSED_MESSAGES_TTL = 30000; // 30 seconds
   private processedMessageIds = new Map<string, number>();
   private recentLeadReads = new Map<string, number>();
+  private pendingLeadReadRequests = new Map<string, Promise<boolean>>();
 
   private listenerIdCounter = 0;
 
@@ -840,6 +841,32 @@ class CrmServiceImpl {
     } catch {
       return { success: false, lead_id: lid };
     }
+  }
+
+  async markLeadFullyRead(leadId: string): Promise<boolean> {
+    const lid = String(leadId || '').trim();
+    if (!lid) return false;
+
+    this.applyLeadReadLocally(lid);
+
+    const pending = this.pendingLeadReadRequests.get(lid);
+    if (pending) return pending;
+
+    const request = Promise.allSettled([
+      this.markLeadRead(lid),
+      this.markNotificationsForLeadRead(lid),
+    ])
+      .then((results) => {
+        const leadOk = results[0].status === 'fulfilled' ? Boolean(results[0].value) : false;
+        const notifOk = results[1].status === 'fulfilled' ? Boolean(results[1].value?.success) : false;
+        return leadOk || notifOk;
+      })
+      .finally(() => {
+        this.pendingLeadReadRequests.delete(lid);
+      });
+
+    this.pendingLeadReadRequests.set(lid, request);
+    return request;
   }
 
   private notifyReconnectListeners() {
