@@ -41,7 +41,6 @@ const DashboardPage = lazyRetry(() => import('./pages/Dashboard'));
 const AnalyticsPage = lazyRetry(() => import('./pages/Analytics'));
 const ResponseTimesPage = lazyRetry(() => import('./pages/ResponseTimes'));
 const SettingsPage = lazyRetry(() => import('./pages/Settings'));
-const FacebookImportPage = lazyRetry(() => import('./pages/FacebookImport'));
 const Login = lazyRetry(() => import('./pages/Login'));
 const SuperAdminDashboard = lazyRetry(() => import('./pages/SuperAdminDashboard'));
 
@@ -101,7 +100,7 @@ function RoleBasedRouter() {
         <Route path="/crm" element={<CRMPage />} />
         <Route path="/dashboard" element={canViewStats ? <DashboardPage /> : <Navigate to="/crm" replace />} />
         <Route path="/analytics" element={canViewStats ? <AnalyticsPage /> : <Navigate to="/crm" replace />} />
-        <Route path="/facebook-import" element={<FacebookImportPage />} />
+        <Route path="/facebook-import" element={<Navigate to="/dashboard" replace />} />
         <Route path="/analytics/response-times" element={canViewStats ? <ResponseTimesPage /> : <Navigate to="/crm" replace />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/analytics/settings" element={<Navigate to="/settings" replace />} />
