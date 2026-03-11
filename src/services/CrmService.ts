@@ -48,6 +48,7 @@ class CrmServiceImpl {
   // 🆕 De-duplication cache
   private readonly PROCESSED_MESSAGES_TTL = 30000; // 30 seconds
   private processedMessageIds = new Map<string, number>();
+  private recentLeadReads = new Map<string, number>();
 
   private listenerIdCounter = 0;
 
@@ -56,7 +57,56 @@ class CrmServiceImpl {
     // PG numeric -> string; normalize for consistent client-side math
     lead.value = toNumberSafe(lead.value, 0);
     if (lead.unread_count !== undefined) lead.unread_count = toNumberSafe(lead.unread_count, 0);
-    return lead as Lead;
+    return this.applyRecentReadGuard(lead) as Lead;
+  }
+
+  private applyRecentReadGuard(raw: any): any {
+    const lead: any = (raw && typeof raw === 'object') ? { ...raw } : raw;
+    const leadId = String(lead?.id || '').trim();
+    if (!leadId) return lead;
+    const readAtMs = this.recentLeadReads.get(leadId);
+    if (!readAtMs) return lead;
+
+    const updatedAtMs = Date.parse(String(lead?.updated_at || lead?.last_message_at || lead?.created_at || ''));
+    if (Number.isFinite(updatedAtMs) && updatedAtMs > readAtMs) return lead;
+
+    lead.unread_count = 0;
+    if (!lead.last_read_at || Date.parse(String(lead.last_read_at)) < readAtMs) {
+      lead.last_read_at = new Date(readAtMs).toISOString();
+    }
+    return lead;
+  }
+
+  private cleanupRecentLeadReads() {
+    const now = Date.now();
+    for (const [leadId, ts] of this.recentLeadReads.entries()) {
+      if ((now - ts) > 10 * 60 * 1000) {
+        this.recentLeadReads.delete(leadId);
+      }
+    }
+  }
+
+  applyLeadReadLocally(leadId: string, timestamp?: string) {
+    const lid = String(leadId || '').trim();
+    if (!lid) return;
+    const ts = timestamp && Number.isFinite(Date.parse(timestamp)) ? Date.parse(timestamp) : Date.now();
+    this.recentLeadReads.set(lid, ts);
+    this.cleanupRecentLeadReads();
+
+    const idx = this.leadsCache.findIndex(l => l.id === lid);
+    if (idx !== -1) {
+      const updated = { ...this.leadsCache[idx], unread_count: 0, last_read_at: new Date(ts).toISOString() } as any;
+      this.leadsCache[idx] = updated;
+      this.notifyLeadUpdateListeners(updated as any);
+    }
+
+    const raw = localStorage.getItem(getStorageKey());
+    const allLeads: Lead[] = raw ? JSON.parse(raw) : [];
+    const index = allLeads.findIndex(l => l.id === lid);
+    if (index !== -1) {
+      allLeads[index] = { ...(allLeads[index] as any), unread_count: 0, last_read_at: new Date(ts).toISOString() } as any;
+      localStorage.setItem(getStorageKey(), JSON.stringify(allLeads));
+    }
   }
 
   // --- SERVER CONNECTION ---
@@ -295,6 +345,7 @@ class CrmServiceImpl {
     this.socket.off('lead_read');
     this.socket.off('followup_due');
     this.socket.off('notification:new');
+    this.socket.off('notification:meta');
 
     debugLog('🧹 Socket listeners cleaned up');
   }
@@ -552,6 +603,14 @@ class CrmServiceImpl {
     this.socket.on('notification:new', (data: any) => {
       try {
         this.notificationListeners.forEach((cb) => cb(data));
+      } catch {
+        // ignore
+      }
+    });
+
+    this.socket.on('notification:meta', (data: any) => {
+      try {
+        this.notifyNotificationsMeta(data);
       } catch {
         // ignore
       }

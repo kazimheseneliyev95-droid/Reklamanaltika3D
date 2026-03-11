@@ -49,6 +49,17 @@ export function NotificationBell({ className }: { className?: string }) {
     });
     const cleanupMeta = CrmService.onNotificationsMeta((meta: any) => {
       try {
+        if (meta?.action === 'notification_read') {
+          const id = String(meta?.id || '').trim();
+          const readAt = meta?.read_at ? String(meta.read_at) : new Date().toISOString();
+          if (id) {
+            setItems((prev) => prev.map((x) => String(x?.id || '') === id && !x.read_at ? { ...x, read_at: readAt } : x));
+          }
+        }
+        if (meta?.action === 'notifications_read_all') {
+          const readAt = meta?.read_at ? String(meta.read_at) : new Date().toISOString();
+          setItems((prev) => prev.map((x) => ({ ...x, read_at: x.read_at || readAt })));
+        }
         if (meta?.action === 'lead_notifications_read') {
           const leadId = String(meta?.lead_id || '').trim();
           const readAt = meta?.read_at ? String(meta.read_at) : new Date().toISOString();

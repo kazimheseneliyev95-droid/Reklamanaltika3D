@@ -605,6 +605,17 @@ function emitNotification(tenantId, userId, notif) {
   }
 }
 
+function emitNotificationMeta(tenantId, userId, payload) {
+  try {
+    const t = String(tenantId || '').trim() || 'admin';
+    const uid = String(userId || '').trim();
+    if (!uid) return;
+    io.to(`${t}:user:${uid}`).emit('notification:meta', payload && typeof payload === 'object' ? payload : {});
+  } catch {
+    // ignore
+  }
+}
+
 async function followUpTick() {
   if (followUpTickBusy) return;
   if (!process.env.DATABASE_URL || !db || !db.pool) return;
@@ -3468,6 +3479,7 @@ app.post('/api/leads/:id/read', requireTenantAuth, asyncHandler(async (req, res)
     timestamp: lead.last_read_at || new Date().toISOString(),
     unread_count: lead.unread_count ?? 0,
   });
+  await emitLeadUpdatedScoped(req.tenantId, lead);
   res.json({ success: true, lead });
 }));
 
@@ -3810,7 +3822,22 @@ app.post('/api/notifications/:id/read', requireTenantAuth, asyncHandler(async (r
     [req.tenantId, req.userId, id]
   );
   if (upd.rowCount === 0) return res.status(404).json({ error: 'Notification not found' });
-  res.json({ success: true, id, read_at: upd.rows[0].read_at ? new Date(upd.rows[0].read_at).toISOString() : null });
+
+  const read_at = upd.rows[0].read_at ? new Date(upd.rows[0].read_at).toISOString() : null;
+  const unreadCountRes = await db.pool.query(
+    'SELECT COUNT(*)::int AS c FROM notifications WHERE tenant_id = $1 AND user_id = $2 AND read_at IS NULL',
+    [req.tenantId, req.userId]
+  );
+  const unread_count = unreadCountRes.rows?.[0]?.c || 0;
+
+  emitNotificationMeta(req.tenantId, req.userId, {
+    action: 'notification_read',
+    id,
+    read_at,
+    unread_count,
+  });
+
+  res.json({ success: true, id, read_at, unread_count });
 }));
 
 app.post('/api/notifications/read-all', requireTenantAuth, asyncHandler(async (req, res) => {
@@ -3820,6 +3847,11 @@ app.post('/api/notifications/read-all', requireTenantAuth, asyncHandler(async (r
     'UPDATE notifications SET read_at = NOW() WHERE tenant_id = $1 AND user_id = $2 AND read_at IS NULL',
     [req.tenantId, req.userId]
   );
+  emitNotificationMeta(req.tenantId, req.userId, {
+    action: 'notifications_read_all',
+    unread_count: 0,
+    read_at: new Date().toISOString(),
+  });
   res.json({ success: true });
 }));
 
@@ -3841,6 +3873,13 @@ app.post('/api/notifications/lead/:leadId/read', requireTenantAuth, asyncHandler
     [req.tenantId, req.userId]
   );
   const unread_count = unreadCountRes.rows?.[0]?.c || 0;
+
+  emitNotificationMeta(req.tenantId, req.userId, {
+    action: 'lead_notifications_read',
+    lead_id: leadId,
+    unread_count,
+    read_at: new Date().toISOString(),
+  });
 
   res.json({ success: true, lead_id: leadId, unread_count });
 }));

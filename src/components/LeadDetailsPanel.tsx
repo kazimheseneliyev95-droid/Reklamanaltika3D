@@ -854,17 +854,29 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
     };
 
     const markReadLockRef = useRef(false);
+    const markReadPendingRef = useRef(false);
     const markRead = useCallback(() => {
         if (!lead?.id) return;
-        if (markReadLockRef.current) return;
+        if (markReadLockRef.current) {
+            markReadPendingRef.current = true;
+            return;
+        }
         markReadLockRef.current = true;
+        markReadPendingRef.current = false;
+        CrmService.applyLeadReadLocally(lead.id);
         Promise.allSettled([
             CrmService.markLeadRead(lead.id),
             CrmService.markNotificationsForLeadRead(lead.id),
         ])
             .catch(() => { })
             .finally(() => {
-                setTimeout(() => { markReadLockRef.current = false; }, 800);
+                setTimeout(() => {
+                    markReadLockRef.current = false;
+                    if (markReadPendingRef.current) {
+                        markReadPendingRef.current = false;
+                        markRead();
+                    }
+                }, 250);
             });
     }, [lead?.id]);
 
