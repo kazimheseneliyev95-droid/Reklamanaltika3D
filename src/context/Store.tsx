@@ -154,6 +154,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       try {
         const res = await fetch(`${CrmService.getServerUrl()}/api/auth/verify`, {
           method: 'POST',
+          credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ token })
         });
@@ -184,6 +185,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           try {
             if (!data.displayName) {
               const profileRes = await fetch(`${CrmService.getServerUrl()}/api/tenant/profile`, {
+                credentials: 'include',
                 headers: { 'Authorization': `Bearer ${token}` }
               });
               if (profileRes.ok) {
@@ -559,6 +561,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     try {
       const res = await fetch(`${CrmService.getServerUrl()}/api/auth/login`, {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: u, password: p })
       });
@@ -598,6 +601,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     try {
       const res = await fetch(`${CrmService.getServerUrl()}/api/admin/impersonate/${tenantId}`, {
         method: 'POST',
+        credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${localStorage.getItem('crm_auth_token')}`
@@ -633,7 +637,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const logout = useCallback(() => {
+  const logout = useCallback(async () => {
+    try {
+      await fetch(`${CrmService.getServerUrl()}/api/auth/logout`, {
+        method: 'POST',
+        credentials: 'include'
+      });
+    } catch { /* ignore */ }
     localStorage.removeItem('crm_auth_token');
     localStorage.removeItem('crm_tenant_id');
     setIsAuthenticated(false);

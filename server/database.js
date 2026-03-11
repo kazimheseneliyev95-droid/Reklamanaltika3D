@@ -1,4 +1,5 @@
 const { Pool } = require('pg');
+const { encrypt: encryptToken, decrypt: decryptToken } = require('./utils/cryptoUtils');
 
 function normalizeDatabaseUrl(rawUrl) {
     if (!rawUrl) return rawUrl;
@@ -1751,6 +1752,8 @@ async function upsertFacebookAdImport(tenantId, { access_token, selected_account
     const safeCache = Array.isArray(account_cache) ? account_cache : [];
     const safeCampaignCache = Array.isArray(campaign_cache) ? campaign_cache : [];
     const token = access_token ? String(access_token).trim() : null;
+    // SEC-06: encrypt token before storing
+    const encryptedToken = token ? encryptToken(token) : null;
     const tokenHint = token ? `${token.slice(0, 6)}...${token.slice(-4)}` : null;
     const everyHours = Math.max(1, parseInt(String(auto_sync_every_hours || '1'), 10) || 1);
     const minute = Math.min(59, Math.max(0, parseInt(String(auto_sync_minute || '0'), 10) || 0));
@@ -1788,7 +1791,7 @@ async function upsertFacebookAdImport(tenantId, { access_token, selected_account
                    last_insight_sync_at, last_insight_sync_error, last_sync_at, last_error, updated_at`,
         [
             String(tenantId),
-            token,
+            encryptedToken,
             tokenHint,
             JSON.stringify(safeSelected),
             JSON.stringify(safeCampaigns),
@@ -1806,7 +1809,12 @@ async function upsertFacebookAdImport(tenantId, { access_token, selected_account
             last_error ? String(last_error) : null,
         ]
     );
-    return res.rows[0] || null;
+    const row = res.rows[0] || null;
+    // SEC-06: decrypt token for caller
+    if (row && row.access_token) {
+      row.access_token = decryptToken(row.access_token);
+    }
+    return row;
 }
 
 async function getFacebookAdImport(tenantId) {
@@ -1820,7 +1828,12 @@ async function getFacebookAdImport(tenantId) {
          LIMIT 1`,
         [String(tenantId)]
     );
-    return res.rows[0] || null;
+    const row = res.rows[0] || null;
+    // SEC-06: decrypt token for caller
+    if (row && row.access_token) {
+      row.access_token = decryptToken(row.access_token);
+    }
+    return row;
 }
 
 async function upsertFacebookInsightRows(tenantId, metric, rows = []) {
@@ -1950,6 +1963,10 @@ async function claimDueFacebookAutoSyncConfigs(owner, limit = 5) {
         RETURNING cfg.*`,
         [safeOwner, Math.max(1, parseInt(String(limit || '5'), 10) || 5)]
     );
+    // SEC-06: decrypt tokens for the sync worker
+    for (const row of res.rows) {
+      if (row.access_token) row.access_token = decryptToken(row.access_token);
+    }
     return res.rows;
 }
 

@@ -197,15 +197,13 @@ class CrmServiceImpl {
     try {
       if (this.isDemoMode) return true;
       const url = this.getServerUrl();
-      const token = localStorage.getItem('crm_auth_token');
-      if (!url || !token) return false;
+      if (!url) return false;
 
       debugLog('🚀 Triggering manual WhatsApp start...');
-      const response = await fetch(`${url}/api/whatsapp/start`, {
+      const response = await this.authFetch(`${url}/api/whatsapp/start`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
           'x-tenant-id': localStorage.getItem('crm_tenant_id') || 'admin'
         }
       });
@@ -241,13 +239,8 @@ class CrmServiceImpl {
       }
 
       const url = this.getServerUrl();
-      const token = localStorage.getItem('crm_auth_token');
-      if (!url || !token) return null;
-      const res = await fetch(`${url}/health`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
+      if (!url) return null;
+      const res = await this.authFetch(`${url}/health`);
       if (!res.ok) return null;
       return await res.json();
     } catch {
@@ -760,12 +753,28 @@ class CrmServiceImpl {
     return token ? { 'Authorization': `Bearer ${token}` } : {};
   }
 
+  /**
+   * SEC-02: Wrapper around fetch that always sends credentials: 'include'
+   * so that the httpOnly auth cookie is automatically sent with every request.
+   * The Bearer header is kept as a fallback for environments where cookies aren't available.
+   */
+  private authFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+    const merged: RequestInit = {
+      ...init,
+      credentials: 'include',
+      headers: {
+        ...this.getAuthHeaders(),
+        ...(init?.headers || {})
+      }
+    };
+    return fetch(input, merged);
+  }
+
   async fetchRecentMessages(limit: number = 30): Promise<any[]> {
     const url = this.getServerUrl();
     if (!url) return [];
     try {
-      const response = await fetch(`${url}/chats/recent?limit=${limit}`, {
-        headers: this.getAuthHeaders()
+      const response = await this.authFetch(`${url}/chats/recent?limit=${limit}`, {
       });
       const data = await response.json();
       return Array.isArray(data) ? data : [];
@@ -779,8 +788,7 @@ class CrmServiceImpl {
     const url = this.getServerUrl();
     if (!url) return null;
     try {
-      const res = await fetch(`${url}/api/analytics/layout`, {
-        headers: this.getAuthHeaders()
+      const res = await this.authFetch(`${url}/api/analytics/layout`, {
       });
       if (!res.ok) return null;
       const data = await res.json();
@@ -795,9 +803,9 @@ class CrmServiceImpl {
     const url = this.getServerUrl();
     if (!url) return false;
     try {
-      const res = await fetch(`${url}/api/analytics/layout`, {
+      const res = await this.authFetch(`${url}/api/analytics/layout`, {
         method: 'POST',
-        headers: { ...this.getAuthHeaders(), 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ layout })
       });
       if (!res.ok) {
@@ -815,9 +823,8 @@ class CrmServiceImpl {
     const url = this.getServerUrl();
     if (!url) return false;
     try {
-      const res = await fetch(`${url}/api/leads/${leadId}/read`, {
-        method: 'POST',
-        headers: this.getAuthHeaders()
+      const res = await this.authFetch(`${url}/api/leads/${leadId}/read`, {
+        method: 'POST'
       });
 
       if (res.ok) {
@@ -869,8 +876,7 @@ class CrmServiceImpl {
         if (dateRange?.end) params.append('endDate', dateRange.end);
         params.append('tzOffsetMinutes', String(new Date().getTimezoneOffset()));
 
-        const response = await fetch(`${url}/api/leads?${params}`, {
-          headers: this.getAuthHeaders()
+        const response = await this.authFetch(`${url}/api/leads?${params}`, {
         });
         if (response.ok) {
           const leadsRaw = await response.json();
@@ -919,9 +925,9 @@ class CrmServiceImpl {
     // Try database API first
     if (url) {
       try {
-        const response = await fetch(`${url}/api/leads`, {
+        const response = await this.authFetch(`${url}/api/leads`, {
           method: 'POST',
-          headers: { ...this.getAuthHeaders(), 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(lead)
         });
 
@@ -1011,9 +1017,9 @@ class CrmServiceImpl {
           ? `${url}/api/leads/${id}/status`
           : `${url}/api/leads/${id}`;
 
-        const response = await fetch(endpoint, {
+        const response = await this.authFetch(endpoint, {
           method: 'PUT',
-          headers: { ...this.getAuthHeaders(), 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(isStatusOnly ? { status: updates.status } : updates)
         });
 
@@ -1050,9 +1056,8 @@ class CrmServiceImpl {
     const url = this.getServerUrl();
     if (url) {
       try {
-        const response = await fetch(`${url}/api/leads/${id}`, {
-          method: 'DELETE',
-          headers: this.getAuthHeaders()
+        const response = await this.authFetch(`${url}/api/leads/${id}`, {
+          method: 'DELETE'
         });
         if (response.ok) {
           debugLog(`✅ Lead ${id} deleted from database`);
@@ -1084,9 +1089,8 @@ class CrmServiceImpl {
       try {
         const leads = await this.getLeads();
         for (const lead of leads) {
-          await fetch(`${url}/api/leads/${lead.id}`, {
-            method: 'DELETE',
-            headers: this.getAuthHeaders()
+          await this.authFetch(`${url}/api/leads/${lead.id}`, {
+            method: 'DELETE'
           });
         }
         debugLog('✅ All leads cleared from database');

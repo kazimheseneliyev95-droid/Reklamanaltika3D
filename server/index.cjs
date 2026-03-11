@@ -3,6 +3,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
+const cookieParser = require('cookie-parser');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -322,6 +323,8 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   credentials: true
 }));
+
+app.use(cookieParser());
 
 // JSON parser with optional raw-body capture for Meta webhook signature checks.
 app.use(express.json({
@@ -2392,6 +2395,13 @@ app.post('/api/auth/login', asyncHandler(async (req, res) => {
   };
   const token = signAuthToken(tokenPayload);
 
+  res.cookie('crm_auth_token', token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax', // Compatible with different domains/subdomains if needed
+    maxAge: 12 * 60 * 60 * 1000 // 12h
+  });
+
   res.json({
     success: true,
     token,
@@ -2404,8 +2414,17 @@ app.post('/api/auth/login', asyncHandler(async (req, res) => {
   });
 }));
 
+app.post('/api/auth/logout', (req, res) => {
+  res.clearCookie('crm_auth_token', {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax'
+  });
+  res.json({ success: true });
+});
+
 app.post('/api/auth/verify', (req, res) => {
-  const { token } = req.body;
+  const token = req.cookies?.crm_auth_token || req.body.token;
   try {
     const data = verifyAnyToken(token);
     if (data.tenantId) {
@@ -2429,7 +2448,7 @@ app.post('/api/auth/verify', (req, res) => {
 
 // Middleware for API routes
 const requireTenantAuth = (req, res, next) => {
-  const token = req.headers['authorization']?.replace('Bearer ', '');
+  const token = req.cookies?.crm_auth_token || req.headers['authorization']?.replace('Bearer ', '');
   if (!token) return res.status(401).json({ error: 'Unauthorized: No token provided' });
 
   try {
@@ -2454,9 +2473,10 @@ function toSafeTenantId(tenantId) {
 // Media embeds (img/audio/video) cannot reliably send Authorization headers.
 // For media routes we also accept `?token=...` as a compatibility path.
 const requireTenantAuthFlexible = (req, res, next) => {
+  const cookieToken = req.cookies?.crm_auth_token || '';
   const headerToken = req.headers['authorization']?.replace('Bearer ', '') || '';
   const queryToken = (req.query && req.query.token) ? String(req.query.token) : '';
-  const token = headerToken || queryToken;
+  const token = cookieToken || headerToken || queryToken;
   if (!token) return res.status(401).send('Unauthorized');
 
   try {
@@ -2885,6 +2905,13 @@ app.post('/api/admin/impersonate/:tenantId', requireTenantAuth, requireAdmin, as
     displayName: adminUser.display_name || null
   };
   const token = signAuthToken(tokenPayload);
+
+  res.cookie('crm_auth_token', token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: 12 * 60 * 60 * 1000
+  });
 
   res.json({
     success: true,
