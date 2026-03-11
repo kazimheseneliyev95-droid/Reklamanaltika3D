@@ -518,7 +518,8 @@ export default function CRMPage() {
       <div className="flex-1 overflow-x-auto pb-4">
         {/* Desktop */}
         <div
-          className="hidden sm:grid grid-flow-col auto-cols-[minmax(272px,1fr)] gap-3 lg:gap-4 h-full min-w-max"
+          className="hidden sm:grid gap-3 lg:gap-4 h-full min-w-full w-max"
+          style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(264px, 264px))` }}
         >
           {columns.map((col) => (
             (() => {
@@ -842,7 +843,7 @@ function LeadCard({
   return (
     <div
       className={cn(
-        "group relative rounded-2xl border bg-slate-950/40 px-2.5 py-2 shadow-sm transition-all duration-200",
+        "group relative rounded-2xl border bg-slate-950/40 px-3 py-2.5 shadow-sm transition-all duration-200",
         unread > 0
           ? "border-rose-500/35 hover:border-rose-400/60 shadow-rose-900/10"
           : "border-slate-800/80 hover:border-slate-700"
@@ -859,7 +860,7 @@ function LeadCard({
         style={{ background: leadAccent || '#94a3b8', opacity: unread > 0 ? 0.9 : 0.55 }}
       />
 
-       <div className="flex items-start justify-between gap-1.5">
+       <div className="flex items-start justify-between gap-2">
          <div className="min-w-0 flex-1">
            <div className="flex items-start gap-2 min-w-0">
              <div
@@ -1008,7 +1009,7 @@ function LeadCard({
           title="Mesaji ac"
         >
           <div className="text-[10px] uppercase tracking-wide font-bold text-slate-500">Son mesaj</div>
-          <p className="mt-1 text-[12px] text-slate-200 line-clamp-2 sm:line-clamp-1 leading-snug">
+          <p className="mt-1 text-[12px] text-slate-200 line-clamp-2 leading-snug">
             {lead.last_message}
           </p>
         </button>
