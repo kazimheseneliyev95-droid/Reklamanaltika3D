@@ -111,16 +111,19 @@ function RoleBasedRouter() {
   );
 }
 
+// BUG 3 FIX: BrowserRouter en dışa taşındı. Önceki yapıda Login bileşeni
+// BrowserRouter'ın dışında render ediliyordu; useNavigate/Link gibi hook'lar
+// kullanıldığında çökme kaçınılmazdı.
 function App() {
   return (
     <AppProvider>
-      <AuthGuard>
-        <BrowserRouter>
+      <BrowserRouter>
+        <AuthGuard>
           <Layout>
             <RoleBasedRouter />
           </Layout>
-        </BrowserRouter>
-      </AuthGuard>
+        </AuthGuard>
+      </BrowserRouter>
     </AppProvider>
   );
 }

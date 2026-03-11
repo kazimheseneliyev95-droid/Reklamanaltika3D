@@ -2745,5 +2745,8 @@ module.exports = {
     getFacebookInsightRows,
     claimDueFacebookAutoSyncConfigs,
     finishFacebookAutoSync,
-    closePool
+    closePool,
+    // BUG 6 FIX: index.cjs'deki duplikasyonu kaldırmak için export ediliyor
+    toUtcBoundaryFromLocalDate,
+    parseTzOffsetMinutes
 };

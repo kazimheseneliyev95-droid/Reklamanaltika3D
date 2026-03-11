@@ -135,7 +135,10 @@ module.exports = {
         return null;
     },
 
-    updateLeadStatus: async (id, status) => {
+    // BUG 7 FIX: tenantId parametresi eklendi. simple_db yalnızca 'admin'
+    // tenant'ını destekler; farklı tenant gönderilirse null döndürülür.
+    updateLeadStatus: async (id, status, tenantId) => {
+        if (tenantId && String(tenantId) !== 'admin') return null;
         const db = readDb();
         const lead = db.leads.find(l => l.id === id);
         if (lead) {
@@ -147,7 +150,9 @@ module.exports = {
         return null;
     },
 
-    deleteLead: async (id) => {
+    // BUG 7 FIX: tenantId parametresi eklendi.
+    deleteLead: async (id, tenantId) => {
+        if (tenantId && String(tenantId) !== 'admin') return null;
         const db = readDb();
         const index = db.leads.findIndex(l => l.id === id);
         if (index === -1) return null;

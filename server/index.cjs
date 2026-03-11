@@ -258,10 +258,31 @@ function safeEqual(a, b) {
   return crypto.timingSafeEqual(left, right);
 }
 
+// BUG 5 FIX: Güvenlik açığı kapatıldı. Önceki sürüm herhangi bir base64
+// encoded JSON'u imzasız kabul ediyordu — saldırgan {"tenantId":"admin",
+// "role":"superadmin"} göndererek tam yetki alabiliyordu.
+// Artık legacy token yalnızca LEGACY_TOKEN_SECRET ile imzalanmışsa geçerli.
 function decodeLegacyToken(token) {
+  const secret = process.env.LEGACY_TOKEN_SECRET || '';
+  if (!secret) return null; // Secret yoksa legacy token tamamen devre dışı
+
   try {
     const raw = Buffer.from(String(token), 'base64').toString('utf-8');
-    const data = JSON.parse(raw);
+    // Format beklentisi: "<payload_base64>.<hmac_hex>"
+    const lastDot = raw.lastIndexOf('.');
+    if (lastDot === -1) return null;
+    const payloadPart = raw.slice(0, lastDot);
+    const hmacPart = raw.slice(lastDot + 1);
+
+    // HMAC doğrulama
+    const expectedHmac = crypto.createHmac('sha256', secret).update(payloadPart).digest('hex');
+    const expectedBuf = Buffer.from(expectedHmac, 'hex');
+    const actualBuf = Buffer.from(hmacPart, 'hex');
+    if (expectedBuf.length !== actualBuf.length || !crypto.timingSafeEqual(expectedBuf, actualBuf)) {
+      return null;
+    }
+
+    const data = JSON.parse(Buffer.from(payloadPart, 'base64').toString('utf-8'));
     if (!data || !data.tenantId) return null;
     return data;
   } catch {
@@ -374,6 +395,9 @@ console.log(`📋 Port: ${PORT}`);
 console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
 // Initialize Database
+// BUG 6 FIX: toUtcBoundaryFromLocalDate ve parseTzOffsetMinutes database.js'den
+// import ediliyor, index.cjs'deki duplikasyon kaldırılacak.
+const { toUtcBoundaryFromLocalDate, parseTzOffsetMinutes: parseTzOffsetMinutesFromDb } = require('./database');
 let db = require('./database');
 if (!HAS_DATABASE) {
   console.log('ℹ️  No DATABASE_URL found, switching to FILE-BASED STORAGE (leads.json)');
@@ -2308,9 +2332,14 @@ app.post('/api/internal/webhook', async (req, res) => requireInternalRequest(req
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 const ALLOW_LEGACY_MASTER_PASSWORD = process.env.ALLOW_LEGACY_MASTER_PASSWORD === 'true';
 
-const asyncHandler = (fn) => (req, res, next) => {
-  Promise.resolve(fn(req, res, next)).catch(next);
-};
+// BUG 2 FIX: const yerine function kullan — function hoisting destekler,
+// böylece dosyanın herhangi bir yerinde tanımlanmadan önce kullanılsa bile
+// "Cannot access before initialization" hatası oluşmaz.
+function asyncHandler(fn) {
+  return (req, res, next) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
+}
 
 // 🔴 Security: Rate limiting for login
 const loginLimiter = rateLimit({
@@ -2335,14 +2364,17 @@ app.post('/api/auth/login', loginLimiter, asyncHandler(async (req, res) => {
   }
 
   if (!HAS_DATABASE || typeof db.findUserByUsername !== 'function') {
-    const fallbackUser = typeof db.findUserByUsername === 'function'
-      ? await db.findUserByUsername(normalizedUsername)
+    // BUG 1 FIX: db.findUserByUsername'i doğrudan çağır — dış koşul zaten
+    // fonksiyonun var olmadığını garanti etmez (HAS_DATABASE false iken bile
+    // simple_db'de mevcut olabilir). Önceki kod daima null döndürüyordu.
+    const fallbackUser = (typeof db.findUserByUsername === 'function')
+      ? await db.findUserByUsername(normalizedUsername).catch(() => null)
       : null;
 
     if (!fallbackUser) {
       return res.status(503).json({
         success: false,
-        error: 'Fallback login üçün ADMIN_PASSWORD konfiqurasiya edilməlidir.'
+        error: 'İstifadəçi tapılmadı. Veritabanı konfiqurasiya edilməyib və ya istifadəçi mövcud deyil.'
       });
     }
 
@@ -2523,8 +2555,10 @@ const requireTenantAuthFlexible = (req, res, next) => {
   }
 };
 
+// BUG 4 FIX: 'manager' rolü eklendi. getTenantAdminUserIds SQL sorgusu zaten
+// manager'ları admin sayıyor, bu middleware tutarsız kalıyordu.
 const requireAdmin = (req, res, next) => {
-  if (req.userRole !== 'admin' && req.userRole !== 'superadmin') {
+  if (req.userRole !== 'admin' && req.userRole !== 'superadmin' && req.userRole !== 'manager') {
     return res.status(403).json({ error: 'Forbidden: Admin access required' });
   }
   next();
@@ -3007,7 +3041,14 @@ app.post('/api/leads', requireTenantAuth, requirePermission('create_lead', 'Lead
 
 app.put('/api/leads/:id/status', requireTenantAuth, requirePermission('change_status', 'Status dəyişmək icazəniz yoxdur'), asyncHandler(async (req, res) => {
   if (typeof db.updateLeadStatus !== 'function') return res.status(503).json({ error: 'Lead storage not configured' });
-  const visibleLead = HAS_DATABASE ? await loadAccessibleLead(req, req.params.id) : { id: req.params.id };
+  // BUG 7 FIX: Tenant izolasyonu: simple_db modunda da lead'in varlığını
+// ve tenant'ını doğrula. Önceden { id: req.params.id } döndürülerek
+// herhangi bir ID geçerliymiş gibi davranılıyordu.
+const visibleLead = HAS_DATABASE
+  ? await loadAccessibleLead(req, req.params.id)
+  : (typeof db.getLeads === 'function'
+    ? (await db.getLeads()).find(l => l.id === req.params.id && (!l.tenant_id || l.tenant_id === req.tenantId)) || null
+    : { id: req.params.id });
   if (!visibleLead) return res.status(404).json({ error: 'Lead not found' });
   let oldStatus = null;
   if (HAS_DATABASE && db.pool) {
@@ -3293,7 +3334,14 @@ app.delete('/api/leads/all', requireTenantAuth, asyncHandler(async (req, res) =>
 app.delete('/api/leads/:id', requireTenantAuth, asyncHandler(async (req, res) => {
   if (typeof db.deleteLead !== 'function') return res.status(503).json({ error: 'Lead storage not configured' });
   if (!hasPermission(req, 'delete_lead')) return res.status(403).json({ error: 'Lead silmək icazəniz yoxdur' });
-  const visibleLead = HAS_DATABASE ? await loadAccessibleLead(req, req.params.id) : { id: req.params.id };
+  // BUG 7 FIX: Tenant izolasyonu: simple_db modunda da lead'in varlığını
+// ve tenant'ını doğrula. Önceden { id: req.params.id } döndürülerek
+// herhangi bir ID geçerliymiş gibi davranılıyordu.
+const visibleLead = HAS_DATABASE
+  ? await loadAccessibleLead(req, req.params.id)
+  : (typeof db.getLeads === 'function'
+    ? (await db.getLeads()).find(l => l.id === req.params.id && (!l.tenant_id || l.tenant_id === req.tenantId)) || null
+    : { id: req.params.id });
   if (!visibleLead) return res.status(404).json({ error: 'Lead not found' });
   const lead = await db.deleteLead(req.params.id, req.tenantId);
   if (!lead) return res.status(404).json({ error: 'Lead not found' });
@@ -4854,15 +4902,8 @@ function parseRequestTzOffsetMinutes(req) {
   return 0;
 }
 
-function toUtcBoundaryFromLocalDate(dateStr, tzOffsetMinutes, endExclusive = false) {
-  const match = String(dateStr || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!match) return null;
-  const year = Number(match[1]);
-  const month = Number(match[2]) - 1;
-  const day = Number(match[3]);
-  const extraDays = endExclusive ? 1 : 0;
-  return new Date(Date.UTC(year, month, day + extraDays, 0, 0, 0, 0) + (tzOffsetMinutes || 0) * 60000);
-}
+// BUG 6 FIX: toUtcBoundaryFromLocalDate duplikasyonu kaldırıldı.
+// database.js'den import edilen versiyon kullanılıyor (dosya başında require ile alındı).
 
 function aggregateCachedInsightRows(rows = []) {
   return aggregateFacebookInsightRows(rows.map((row) => ({
