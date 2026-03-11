@@ -20,6 +20,24 @@ export class ErrorBoundary extends React.Component<Props, State> {
   componentDidCatch(err: any) {
     try {
       console.error('UI crashed:', err);
+
+      // Auto-reload on stale-deployment chunk errors (e.g. after a new Render deploy)
+      const msg = String(err?.message || '');
+      const isChunkError =
+        msg.includes('dynamically imported module') ||
+        msg.includes('Loading chunk') ||
+        msg.includes('Failed to fetch');
+
+      if (isChunkError) {
+        const key = 'chunk_reload_attempted';
+        const already = sessionStorage.getItem(key);
+        if (!already) {
+          sessionStorage.setItem(key, '1');
+          window.location.reload();
+          return;
+        }
+        sessionStorage.removeItem(key);
+      }
     } catch {
       // ignore
     }

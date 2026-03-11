@@ -1,16 +1,49 @@
-import { Suspense, lazy } from 'react';
+import { Suspense, lazy, type ComponentType } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './components/Layout';
 import { AppProvider, useAppStore } from './context/Store';
 
-const CRMPage = lazy(() => import('./pages/CRM'));
-const DashboardPage = lazy(() => import('./pages/Dashboard'));
-const AnalyticsPage = lazy(() => import('./pages/Analytics'));
-const ResponseTimesPage = lazy(() => import('./pages/ResponseTimes'));
-const SettingsPage = lazy(() => import('./pages/Settings'));
-const FacebookImportPage = lazy(() => import('./pages/FacebookImport'));
-const Login = lazy(() => import('./pages/Login'));
-const SuperAdminDashboard = lazy(() => import('./pages/SuperAdminDashboard'));
+/**
+ * Wrapper around React.lazy that handles stale-deployment chunk errors.
+ * When a new deploy replaces JS chunks, users with cached HTML get 404s
+ * on dynamic imports. This detects the error and reloads the page ONCE.
+ */
+function lazyRetry<T extends ComponentType<any>>(
+  factory: () => Promise<{ default: T }>,
+): React.LazyExoticComponent<T> {
+  return lazy(() =>
+    factory().catch((err: any) => {
+      const msg = String(err?.message || '');
+      const isChunkError =
+        msg.includes('dynamically imported module') ||
+        msg.includes('Loading chunk') ||
+        msg.includes('Failed to fetch');
+
+      if (isChunkError) {
+        const key = 'chunk_reload_attempted';
+        const already = sessionStorage.getItem(key);
+        if (!already) {
+          sessionStorage.setItem(key, '1');
+          window.location.reload();
+          // Return a never-resolving promise so React doesn't render the error
+          return new Promise<{ default: T }>(() => { });
+        }
+        // Already retried once — clear flag so next deploy can retry again
+        sessionStorage.removeItem(key);
+      }
+      throw err;
+    })
+  );
+}
+
+const CRMPage = lazyRetry(() => import('./pages/CRM'));
+const DashboardPage = lazyRetry(() => import('./pages/Dashboard'));
+const AnalyticsPage = lazyRetry(() => import('./pages/Analytics'));
+const ResponseTimesPage = lazyRetry(() => import('./pages/ResponseTimes'));
+const SettingsPage = lazyRetry(() => import('./pages/Settings'));
+const FacebookImportPage = lazyRetry(() => import('./pages/FacebookImport'));
+const Login = lazyRetry(() => import('./pages/Login'));
+const SuperAdminDashboard = lazyRetry(() => import('./pages/SuperAdminDashboard'));
 
 function PageLoader() {
   return (
