@@ -3,6 +3,8 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const cookieParser = require('cookie-parser');
 const path = require('path');
 const fs = require('fs');
@@ -16,6 +18,13 @@ const {
 } = require('./auth.cjs');
 
 const app = express();
+
+// 🔴 Security: Add Helmet for HTTP headers
+app.use(helmet({
+  contentSecurityPolicy: false, // Don't break frontend script execution if not fully tuned
+  crossOriginEmbedderPolicy: false
+}));
+
 const server = http.createServer(app);
 
 // Environment & Config
@@ -2292,7 +2301,16 @@ const asyncHandler = (fn) => (req, res, next) => {
   Promise.resolve(fn(req, res, next)).catch(next);
 };
 
-app.post('/api/auth/login', asyncHandler(async (req, res) => {
+// 🔴 Security: Rate limiting for login
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // Limit each IP to 10 login requests per window
+  message: { success: false, error: 'Çox cəhd etdiniz. 15 dəqiqə gözləyin.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+app.post('/api/auth/login', loginLimiter, asyncHandler(async (req, res) => {
   const { username, password } = req.body;
 
   if (!username || username.trim() === '') {
