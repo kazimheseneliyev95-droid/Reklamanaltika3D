@@ -913,35 +913,33 @@ function LeadCard({
                  </div>
                </div>
 
-               {/* Channel + company (stacked) */}
-                {(cfg.showSource !== false || cfg.showAssignee !== false) ? (
+                {/* Source + value */}
+                {(cfg.showSource !== false || hasValue) ? (
                   <div className="mt-1.5 flex items-center justify-between gap-2 min-w-0">
                     {cfg.showSource !== false ? (
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-950/50 text-slate-300 border border-slate-800 whitespace-nowrap">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-950/50 text-slate-300 border border-slate-800 whitespace-nowrap shrink-0">
                         {sourceLabel}
                       </span>
-                    ) : null}
-                    {cfg.showAssignee !== false ? (
-                      <div className="min-w-0 text-[11px] font-semibold text-slate-300 truncate" title={assigneeLabel}>
-                        {assigneeLabel}
-                      </div>
+                    ) : <span />}
+                    {hasValue ? (
+                      <span className="shrink-0 inline-flex items-center gap-1 rounded-full border border-emerald-900/30 bg-emerald-950/15 px-2 py-0.5 text-[10px] font-extrabold text-emerald-200 tabular-nums whitespace-nowrap">
+                        <DollarSign className="w-3 h-3" />
+                        {formatCurrency(Number(lead.value || 0), 'AZN')}
+                      </span>
                     ) : null}
                   </div>
                 ) : null}
 
-                {/* Date + value (separate row to avoid overlaps) */}
-                <div className="mt-1 flex items-center justify-between gap-2 min-w-0">
-                  <div className="text-[10px] text-slate-500 tabular-nums truncate">{dateStr}</div>
-                 {hasValue ? (
-                   <span className="shrink-0 inline-flex items-center gap-1 rounded-full border border-emerald-900/30 bg-emerald-950/15 px-2 py-0.5 text-[10px] font-extrabold text-emerald-200 tabular-nums whitespace-nowrap">
-                     <DollarSign className="w-3 h-3" />
-                     {formatCurrency(Number(lead.value || 0), 'AZN')}
-                   </span>
-                 ) : null}
-               </div>
-             </div>
-           </div>
-         </div>
+                <div className="mt-1 text-[10px] text-slate-500 tabular-nums truncate text-left">{dateStr}</div>
+
+                {cfg.showAssignee !== false ? (
+                  <div className="mt-1.5 min-w-0 text-[11px] font-semibold text-slate-300 truncate text-left" title={assigneeLabel}>
+                    {assigneeLabel}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          </div>
 
         <div className={cn(
           'flex gap-1 transition-opacity',
