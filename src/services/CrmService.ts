@@ -853,6 +853,11 @@ class CrmServiceImpl {
     if (!lid) return false;
 
     this.applyLeadReadLocally(lid);
+    this.notifyNotificationsMeta({
+      action: 'lead_notifications_read',
+      lead_id: lid,
+      read_at: new Date().toISOString(),
+    });
 
     const pending = this.pendingLeadReadRequests.get(lid);
     if (pending) return pending;
