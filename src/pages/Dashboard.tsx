@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   BarChart3, Calendar, ChevronRight, RefreshCcw,
@@ -366,41 +366,46 @@ export default function DashboardPage() {
   const [customRange, setCustomRange] = useState<{ start: string; end: string }>(() => buildPresetRange('30d'));
   const metric: MetricType = 'message';
   const tzOffsetMinutes = useMemo(() => new Date().getTimezoneOffset(), []);
+  const dashboardRefreshTimeoutRef = useRef<number | null>(null);
 
   const range = useMemo(() => {
     if (preset === 'custom') return customRange;
     return buildPresetRange(preset);
   }, [customRange, preset]);
 
-  useEffect(() => {
-    const run = async () => {
-      setLoading(true);
-      setError('');
-      try {
-        const url = CrmService.getServerUrl();
-        const token = localStorage.getItem('crm_auth_token');
-        if (!url || !token) throw new Error('Not authenticated');
+  const loadDashboardData = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoading(true);
+    if (!opts?.silent) setError('');
+    try {
+      const url = CrmService.getServerUrl();
+      const token = localStorage.getItem('crm_auth_token');
+      if (!url || !token) throw new Error('Not authenticated');
 
-        const qs = new URLSearchParams({ metric });
-        if (range.start) qs.set('start', range.start);
-        if (range.end) qs.set('end', range.end);
-        qs.set('tzOffsetMinutes', String(tzOffsetMinutes));
+      const qs = new URLSearchParams({ metric });
+      if (range.start) qs.set('start', range.start);
+      if (range.end) qs.set('end', range.end);
+      qs.set('tzOffsetMinutes', String(tzOffsetMinutes));
 
-        const res = await fetch(`${url}/api/dashboard/combined?${qs.toString()}`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        const json = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(json?.error || 'Dashboard yüklənmədi');
-        setData(json);
-      } catch (e: any) {
+      const res = await fetch(`${url}/api/dashboard/combined?${qs.toString()}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json?.error || 'Dashboard yüklənmədi');
+      setData(json);
+      if (!opts?.silent) setError('');
+    } catch (e: any) {
+      if (!opts?.silent) {
         setError(e?.message || 'Dashboard yüklənmədi');
         setData(EMPTY_DATA);
-      } finally {
-        setLoading(false);
       }
-    };
-    run();
-  }, [metric, range.end, range.start, refreshKey, tzOffsetMinutes]);
+    } finally {
+      if (!opts?.silent) setLoading(false);
+    }
+  }, [metric, range.end, range.start, tzOffsetMinutes]);
+
+  useEffect(() => {
+    loadDashboardData();
+  }, [loadDashboardData, refreshKey]);
 
   const visibleSummaryCards = useMemo(
     () => data.summaryCards.filter((card) => ['total_leads', 'potential', 'won', 'unanswered', 'lost'].includes(card.key)),
@@ -514,6 +519,54 @@ export default function DashboardPage() {
     } catch (e: any) { setFbInsights(EMPTY_FB_INSIGHTS); setFbMsg(e?.message || 'Insights xətası'); }
     finally { setBusyFbInsights(false); }
   }, [fbToken, fbTz, fbDateRange, fbMetric]);
+
+  useEffect(() => {
+    const scheduleRefresh = () => {
+      if (document.visibilityState === 'hidden') return;
+      if (dashboardRefreshTimeoutRef.current != null) {
+        window.clearTimeout(dashboardRefreshTimeoutRef.current);
+      }
+      dashboardRefreshTimeoutRef.current = window.setTimeout(() => {
+        dashboardRefreshTimeoutRef.current = null;
+        loadDashboardData({ silent: true });
+        loadFbConfig();
+      }, 350);
+    };
+
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') scheduleRefresh();
+    };
+
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === 'visible') scheduleRefresh();
+    }, 5000);
+
+    const cleanupNewMessage = CrmService.onNewMessage(() => scheduleRefresh());
+    const cleanupLeadUpdated = CrmService.onLeadUpdated(() => scheduleRefresh());
+    const cleanupLeadsUpdated = CrmService.onLeadsUpdated(() => scheduleRefresh());
+    const cleanupReconnect = CrmService.onReconnect(() => scheduleRefresh());
+    const cleanupSettings = CrmService.onSettingsUpdated(() => scheduleRefresh());
+
+    window.addEventListener('focus', scheduleRefresh);
+    window.addEventListener('online', scheduleRefresh);
+    document.addEventListener('visibilitychange', onVisible);
+
+    return () => {
+      if (dashboardRefreshTimeoutRef.current != null) {
+        window.clearTimeout(dashboardRefreshTimeoutRef.current);
+        dashboardRefreshTimeoutRef.current = null;
+      }
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', scheduleRefresh);
+      window.removeEventListener('online', scheduleRefresh);
+      document.removeEventListener('visibilitychange', onVisible);
+      cleanupNewMessage();
+      cleanupLeadUpdated();
+      cleanupLeadsUpdated();
+      cleanupReconnect();
+      cleanupSettings();
+    };
+  }, [loadDashboardData, loadFbConfig]);
 
   const applyFbPreset = async (p: Exclude<PresetType, 'custom'>) => {
     const next = buildPresetRange(p); setFbPreset(p); setFbDateRange(next); await loadFbInsights(next, fbMetric);

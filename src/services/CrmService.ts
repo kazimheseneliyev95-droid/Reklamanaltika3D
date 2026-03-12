@@ -138,7 +138,12 @@ class CrmServiceImpl {
       ? window.location.origin
       : localStorage.getItem(SERVER_URL_KEY);
 
-    if (urlToUse && !this.socket) {
+    if (urlToUse && (!this.socket || !this.socket.connected)) {
+      if (this.socket && !this.socket.connected) {
+        this.cleanupSocketListeners();
+        this.socket.disconnect();
+        this.socket = null;
+      }
       debugLog('🔄 Auto-connecting to CRM backend:', urlToUse);
       this.connectToServer(urlToUse).catch(err => {
         console.warn('⚠️ Auto-connect failed:', err);

@@ -226,6 +226,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [dateRange]);
 
+  const refreshLeadsSilently = useCallback(async () => {
+    try {
+      const data = await CrmService.getLeads(dateRange);
+      setLeads(data);
+      leadsRef.current = data;
+    } catch (error) {
+      console.error('❌ Silent leads refresh failed:', error);
+    }
+  }, [dateRange]);
+
   const loadTeamMembers = useCallback(async () => {
     try {
       const res = await fetch(`${CrmService.getServerUrl()}/api/users`, {
@@ -389,6 +399,38 @@ export function AppProvider({ children }: { children: ReactNode }) {
       loadTeamMembers();
     }
   }, [dateRange, isAuthenticated, loadLeads, loadTeamMembers]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    const syncRealtime = () => {
+      if (document.visibilityState === 'hidden') return;
+      CrmService.autoConnect();
+      refreshLeadsSilently();
+    };
+
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') syncRealtime();
+    };
+
+    const onFocus = () => syncRealtime();
+    const onOnline = () => syncRealtime();
+
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === 'visible') syncRealtime();
+    }, 5000);
+
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('online', onOnline);
+    document.addEventListener('visibilitychange', onVisible);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('online', onOnline);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [isAuthenticated, refreshLeadsSilently]);
 
   // --- ACTIONS ---
 

@@ -74,6 +74,7 @@ export function NotificationBell({ className }: { className?: string }) {
           const next = Number(meta.unread_count);
           if (Number.isFinite(next)) setUnreadCount(Math.max(0, next));
         }
+        refresh().catch(() => { });
       } catch {
         // ignore
       }
@@ -82,6 +83,29 @@ export function NotificationBell({ className }: { className?: string }) {
       cleanupNew();
       cleanupReconnect();
       cleanupMeta();
+    };
+  }, []);
+
+  useEffect(() => {
+    const sync = () => {
+      if (document.visibilityState === 'hidden') return;
+      refresh().catch(() => { });
+    };
+
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') sync();
+    };
+
+    const intervalId = window.setInterval(sync, 5000);
+    window.addEventListener('focus', sync);
+    window.addEventListener('online', sync);
+    document.addEventListener('visibilitychange', onVisible);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', sync);
+      window.removeEventListener('online', sync);
+      document.removeEventListener('visibilitychange', onVisible);
     };
   }, []);
 
