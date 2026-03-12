@@ -433,6 +433,7 @@ export default function DashboardPage() {
   const [fbSortBy, setFbSortBy] = useState<FbSortType>('spend_desc');
   const [fbAutoSync, setFbAutoSync] = useState<FbAutoSync>(EMPTY_FB_CONFIG.autoSync);
   const [showFbSettings, setShowFbSettings] = useState(false);
+  const [fbDraftDirty, setFbDraftDirty] = useState(false);
   const [busyFbAccounts, setBusyFbAccounts] = useState(false);
   const [busyFbCampaigns, setBusyFbCampaigns] = useState(false);
   const [busyFbSave, setBusyFbSave] = useState(false);
@@ -501,6 +502,7 @@ export default function DashboardPage() {
       setFbSaved(cfg); setFbAccounts(cfg.accountCache || []); setFbCampaigns(cfg.campaignCache || []);
       setFbSelAccIds(cfg.selectedAccountIds || []); setFbSelCampIds(cfg.selectedCampaignIds || []);
       setFbAutoSync({ ...EMPTY_FB_CONFIG.autoSync, ...(cfg.autoSync || {}), tzOffsetMinutes: fbTz });
+      setFbDraftDirty(false);
     } catch (e: any) { setFbMsg(e?.message || 'FB config xətası'); }
   }, [fbToken, fbTz]);
 
@@ -529,7 +531,9 @@ export default function DashboardPage() {
       dashboardRefreshTimeoutRef.current = window.setTimeout(() => {
         dashboardRefreshTimeoutRef.current = null;
         loadDashboardData({ silent: true });
-        loadFbConfig();
+        if (!showFbSettings && !fbDraftDirty && !busyFbAccounts && !busyFbCampaigns && !busyFbSave) {
+          loadFbConfig();
+        }
       }, 350);
     };
 
@@ -566,7 +570,7 @@ export default function DashboardPage() {
       cleanupReconnect();
       cleanupSettings();
     };
-  }, [loadDashboardData, loadFbConfig]);
+  }, [busyFbAccounts, busyFbCampaigns, busyFbSave, fbDraftDirty, loadDashboardData, loadFbConfig, showFbSettings]);
 
   const applyFbPreset = async (p: Exclude<PresetType, 'custom'>) => {
     const next = buildPresetRange(p); setFbPreset(p); setFbDateRange(next); await loadFbInsights(next, fbMetric);
@@ -580,6 +584,7 @@ export default function DashboardPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Hesablar alınmadı');
       setFbAccounts(Array.isArray(data.accounts) ? data.accounts : []); setFbCampaigns([]); setFbSelCampIds([]);
+      setFbDraftDirty(true);
       setFbMsg(`${Array.isArray(data.accounts) ? data.accounts.length : 0} hesab tapıldı.`);
     } catch (e: any) { setFbMsg(e?.message || 'Hesab xətası'); } finally { setBusyFbAccounts(false); }
   };
@@ -593,6 +598,7 @@ export default function DashboardPage() {
       if (!res.ok) throw new Error(data.error || 'Kampaniyalar alınmadı');
       const next = Array.isArray(data.campaigns) ? data.campaigns : [];
       setFbCampaigns(next); setFbSelCampIds((prev) => prev.filter((id) => next.some((c: Campaign) => c.id === id)));
+      setFbDraftDirty(true);
       setFbMsg(`${next.length} kampaniya tapıldı.`);
     } catch (e: any) { setFbMsg(e?.message || 'Kampaniya xətası'); } finally { setBusyFbCampaigns(false); }
   };
@@ -608,9 +614,21 @@ export default function DashboardPage() {
       setFbSaved(cfg); setFbAccounts(cfg.accountCache); setFbCampaigns(cfg.campaignCache);
       setFbSelAccIds(cfg.selectedAccountIds); setFbSelCampIds(cfg.selectedCampaignIds);
       setFbAutoSync({ ...EMPTY_FB_CONFIG.autoSync, ...(cfg.autoSync || {}), tzOffsetMinutes: fbTz });
+      setFbDraftDirty(false);
       setTokenInput(''); setFbMsg('Facebook ayarları saxlandı.'); setShowFbSettings(false);
     } catch (e: any) { setFbMsg(e?.message || 'Saxlama xətası'); } finally { setBusyFbSave(false); }
   };
+
+  const closeFbSettings = useCallback(() => {
+    setShowFbSettings(false);
+    setTokenInput('');
+    setAccSearch('');
+    setCampSearch('');
+    if (fbDraftDirty) {
+      setFbMsg('Saxlanmayan Facebook dəyişiklikləri ləğv edildi.');
+      loadFbConfig();
+    }
+  }, [fbDraftDirty, loadFbConfig]);
 
   const handleFbRefresh = async () => {
     setBusyFbRefresh(true); setFbMsg('');
@@ -642,10 +660,14 @@ export default function DashboardPage() {
     setFbSelAccIds((prev) => {
       const next = prev.includes(accountId) ? prev.filter((x) => x !== accountId) : [...prev, accountId];
       setFbSelCampIds((cur) => cur.filter((id) => { const c = fbCampaigns.find((c) => c.id === id); return c ? next.includes(c.account_id) : true; }));
+      setFbDraftDirty(true);
       return next;
     });
   };
-  const toggleFbCampaign = (id: string) => setFbSelCampIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
+  const toggleFbCampaign = (id: string) => {
+    setFbDraftDirty(true);
+    setFbSelCampIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
+  };
 
   useEffect(() => { loadFbConfig(); }, [loadFbConfig]);
 
@@ -931,7 +953,7 @@ export default function DashboardPage() {
             <div className="h-full w-full max-w-[720px] border-l border-slate-800 bg-slate-900 shadow-2xl flex flex-col">
               <div className="px-5 py-4 border-b border-slate-800 flex items-center justify-between gap-3">
                 <div><div className="text-xl font-semibold text-slate-100">Facebook ayarları</div><div className="text-sm text-slate-500">Token, hesab və kampaniya seçimi</div></div>
-                <button onClick={() => setShowFbSettings(false)} className="p-2 rounded-xl hover:bg-slate-800 text-slate-400 hover:text-white"><X className="w-5 h-5" /></button>
+                <button onClick={closeFbSettings} className="p-2 rounded-xl hover:bg-slate-800 text-slate-400 hover:text-white"><X className="w-5 h-5" /></button>
               </div>
               <div className="flex-1 overflow-auto p-5 space-y-5">
                 <DrawerSection title="1. Token">
