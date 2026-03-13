@@ -5385,6 +5385,67 @@ app.post('/api/meta/connect', requireTenantAuth, requireAdmin, asyncHandler(asyn
   res.status(201).json({ success: true, savedCount: saved.length, pages: saved, subscribe, exchanged: Boolean(ex.exchanged), expires_in: ex.expires_in || null });
 }));
 
+// Auto-connect: token ver → bütün sayfaları avtomatik tap, bağla, subscribe et
+app.post('/api/meta/auto-connect', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  if (!db || typeof db.upsertMetaPage !== 'function') return res.status(501).json({ error: 'Meta integration is unavailable' });
+
+  const token = String(req.body?.token || '').trim();
+  if (!token) return res.status(400).json({ error: 'token is required' });
+
+  // 1. Long-lived token al
+  const ex = await exchangeForLongLivedUserToken(token).catch((e) => ({ access_token: token, expires_in: null, exchanged: false, error: e?.message }));
+  const effectiveToken = ex && ex.access_token ? ex.access_token : token;
+
+  // User token'ı kaydet
+  try {
+    if (typeof db.upsertMetaUserToken === 'function') {
+      const expiresAt = (ex && ex.expires_in && Number.isFinite(ex.expires_in))
+        ? new Date(Date.now() + (Number(ex.expires_in) * 1000))
+        : null;
+      await db.upsertMetaUserToken(req.tenantId, {
+        user_access_token: effectiveToken,
+        expires_at: expiresAt,
+        debug_info: { exchanged: Boolean(ex.exchanged), source: 'auto-connect' },
+        status: 'active',
+        last_error: ex?.error || null
+      });
+    }
+  } catch { /* non-fatal */ }
+
+  // 2. Tüm sayfaları keşfet
+  const discovered = await fetchMetaPagesForToken(effectiveToken);
+  if (discovered.length === 0) {
+    return res.status(200).json({ success: true, savedCount: 0, pages: [], subscribe: [], message: 'Bu token ile erişilebilir sayfa bulunamadı.' });
+  }
+
+  // 3. Hepsini bağla ve subscribe et
+  const saved = [];
+  const subscribe = [];
+  for (const p of discovered) {
+    if (!p.pageId || !p.pageAccessToken) continue;
+    try {
+      const row = await db.upsertMetaPage(req.tenantId, {
+        page_id: p.pageId,
+        page_name: p.pageName || null,
+        page_access_token: p.pageAccessToken,
+        ig_business_id: p.igBusinessId || null
+      });
+      if (row) saved.push(row);
+      const sub = await subscribeMetaWebhooks({
+        pageId: p.pageId,
+        pageAccessToken: p.pageAccessToken,
+        igBusinessId: p.igBusinessId || null,
+      });
+      subscribe.push({ pageId: p.pageId, pageName: p.pageName || null, igBusinessId: p.igBusinessId || null, result: sub });
+    } catch (e) {
+      subscribe.push({ pageId: p.pageId, pageName: p.pageName || null, error: e?.message || 'failed' });
+    }
+  }
+
+  res.status(201).json({ success: true, savedCount: saved.length, pages: saved, subscribe, exchanged: Boolean(ex.exchanged), expires_in: ex.expires_in || null });
+}));
+
 app.post('/api/meta/pages/:pageId/subscribe', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   const pageId = String(req.params.pageId || '').trim();

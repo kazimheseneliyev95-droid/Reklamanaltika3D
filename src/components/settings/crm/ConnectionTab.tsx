@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import QRCode from 'react-qr-code';
-import { RefreshCcw, Smartphone, Wifi, WifiOff, Link2, CheckSquare, Square, Trash2, BellRing, Send, Bot, ShieldCheck, ScanSearch, AlertCircle, Info, ClipboardCopy, CheckCircle2 } from 'lucide-react';
+import { RefreshCcw, Smartphone, Wifi, WifiOff, Link2, Trash2, BellRing, Send, Bot, ShieldCheck, ScanSearch, AlertCircle, Info, ClipboardCopy, CheckCircle2 } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import { useAppStore } from '../../../context/Store';
 import { CrmService } from '../../../services/CrmService';
@@ -17,13 +17,6 @@ type MetaPage = {
   updated_at?: string;
 };
 
-type DiscoveredPage = {
-  pageId: string;
-  pageName: string | null;
-  pageAccessToken: string | null;
-  igBusinessId: string | null;
-  igUsername: string | null;
-};
 
 export function ConnectionTab() {
   const { isWhatsAppConnected } = useAppStore();
@@ -49,9 +42,6 @@ export function ConnectionTab() {
   const [metaError, setMetaError] = useState('');
 
   const [userToken, setUserToken] = useState('');
-  const [discovered, setDiscovered] = useState<DiscoveredPage[]>([]);
-  const [selectedPageIds, setSelectedPageIds] = useState<string[]>([]);
-
   const [webhookStats, setWebhookStats] = useState<any | null>(null);
   const [lastConnectReport, setLastConnectReport] = useState<any | null>(null);
   const [metaConfig, setMetaConfig] = useState<any | null>(null);
@@ -272,63 +262,26 @@ export function ConnectionTab() {
     return '';
   };
 
-  const discoverPages = async () => {
+  const autoConnect = async () => {
     setMetaBusy(true);
     setMetaError('');
+    setLastConnectReport(null);
     try {
       const url = CrmService.getServerUrl();
-      const token = localStorage.getItem('crm_auth_token');
-      if (!url || !token) return;
-      const res = await fetch(`${url}/api/meta/discover`, {
+      const authToken = localStorage.getItem('crm_auth_token');
+      if (!url || !authToken) return;
+      const res = await fetch(`${url}/api/meta/auto-connect`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
+          'Authorization': `Bearer ${authToken}`
         },
         body: JSON.stringify({ token: userToken })
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.error || 'Discover failed');
-
-      const pages: DiscoveredPage[] = Array.isArray(data?.pages) ? data.pages : [];
-      setDiscovered(pages);
-
-      const connected = new Set((metaPages || []).map(p => String(p.page_id)));
-      const defaults = pages
-        .map(p => p.pageId)
-        .filter(pid => pid && !connected.has(pid));
-      setSelectedPageIds(defaults);
-    } catch (e: any) {
-      setMetaError(e?.message || 'Səhifələr alınmadı');
-    } finally {
-      setMetaBusy(false);
-    }
-  };
-
-  const connectSelected = async () => {
-    setMetaBusy(true);
-    setMetaError('');
-    try {
-      const url = CrmService.getServerUrl();
-      const token = localStorage.getItem('crm_auth_token');
-      if (!url || !token) return;
-
-      const res = await fetch(`${url}/api/meta/connect`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ token: userToken, pageIds: selectedPageIds })
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.error || 'Connect failed');
-
+      if (!res.ok) throw new Error(data?.error || 'Qoşulma uğursuz oldu');
       setLastConnectReport(data?.subscribe || null);
-
       setUserToken('');
-      setDiscovered([]);
-      setSelectedPageIds([]);
       await refreshMeta();
       await refreshWebhookStats();
       await refreshMetaConfig();
@@ -944,91 +897,22 @@ export function ConnectionTab() {
                 type="password"
                 value={userToken}
                 onChange={(e) => setUserToken(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter' && userToken.trim() && !metaBusy) autoConnect(); }}
                 className="w-full h-9 rounded-lg bg-slate-950 border border-slate-800 px-3 text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-600/50"
                 placeholder="EAAG..."
               />
               <div className="mt-1 text-[10px] text-slate-600">
-                Token yaz → hesaba aid Page/IG siyahisi gelecek → secib qos.
+                Facebook User Access Token yaz → bütün səhifələr avtomatik tapılıb qoşulacaq.
               </div>
             </div>
 
-            <div className="flex gap-2">
-              <button
-                onClick={discoverPages}
-                disabled={metaBusy || !userToken.trim()}
-                className="flex-1 py-2 rounded-lg text-xs font-semibold bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-200 transition-colors disabled:opacity-50"
-              >
-                {metaBusy ? '...' : 'Səhifələri gətir'}
-              </button>
-              <button
-                onClick={() => {
-                  setDiscovered([]);
-                  setSelectedPageIds([]);
-                }}
-                disabled={metaBusy || discovered.length === 0}
-                className="px-3 py-2 rounded-lg text-xs font-semibold bg-transparent hover:bg-slate-900 border border-slate-800 text-slate-300 transition-colors disabled:opacity-50"
-              >
-                Təmizlə
-              </button>
-            </div>
-
-            {discovered.length > 0 ? (
-              <div className="rounded-lg border border-slate-800 bg-slate-950/30 p-3">
-                <div className="flex items-center justify-between gap-2 mb-2">
-                  <div className="text-[10px] uppercase font-bold text-slate-500">Tapılan səhifələr</div>
-                  <button
-                    onClick={() => {
-                      const all = discovered.map(d => d.pageId).filter(Boolean);
-                      const allSelected = selectedPageIds.length === all.length;
-                      setSelectedPageIds(allSelected ? [] : all);
-                    }}
-                    className="px-2 py-1 rounded-md text-[10px] font-bold border border-slate-800 text-slate-300 hover:bg-slate-900"
-                  >
-                    hamısı
-                  </button>
-                </div>
-
-                <div className="space-y-2 max-h-48 overflow-auto pr-1 custom-scrollbar">
-                  {discovered.map((p) => {
-                    const checked = selectedPageIds.includes(p.pageId);
-                    const already = (metaPages || []).some(mp => String(mp.page_id) === String(p.pageId));
-                    return (
-                      <button
-                        key={p.pageId}
-                        onClick={() => {
-                          if (checked) setSelectedPageIds(prev => prev.filter(x => x !== p.pageId));
-                          else setSelectedPageIds(prev => [...prev, p.pageId]);
-                        }}
-                        className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-xl border border-slate-800 hover:bg-slate-900/40 text-left"
-                      >
-                        <span className="flex items-center gap-2 min-w-0">
-                          {checked ? <CheckSquare className="w-4 h-4 text-blue-400" /> : <Square className="w-4 h-4 text-slate-600" />}
-                          <span className="min-w-0">
-                            <span className="block text-[12px] font-semibold text-slate-200 truncate">
-                              {p.pageName || p.pageId}
-                            </span>
-                            <span className="block text-[10px] text-slate-600 truncate">
-                              page: {p.pageId}{p.igBusinessId ? ` · ig: ${p.igBusinessId}${p.igUsername ? ` (@${p.igUsername})` : ''}` : ''}
-                            </span>
-                          </span>
-                        </span>
-                        <span className={already ? 'text-[10px] font-bold text-green-300' : 'text-[10px] font-bold text-slate-500'}>
-                          {already ? 'connected' : 'new'}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-
-                <button
-                  onClick={connectSelected}
-                  disabled={metaBusy || !userToken.trim() || selectedPageIds.length === 0}
-                  className="mt-3 w-full py-2 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white transition-colors disabled:opacity-50"
-                >
-                  {metaBusy ? 'Qoşulur...' : `Seçilənləri qoş (${selectedPageIds.length})`}
-                </button>
-              </div>
-            ) : null}
+            <button
+              onClick={autoConnect}
+              disabled={metaBusy || !userToken.trim()}
+              className="w-full py-2 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white transition-colors disabled:opacity-50"
+            >
+              {metaBusy ? 'Qoşulur...' : 'Bağla'}
+            </button>
 
             {Array.isArray(lastConnectReport) && lastConnectReport.length > 0 ? (
               <div className="rounded-lg border border-slate-800 bg-slate-950/30 p-3">
