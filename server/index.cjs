@@ -6005,10 +6005,15 @@ app.get('/api/meta/webhook/status', requireTenantAuth, requireAdmin, asyncHandle
 
 
 app.get('/api/meta/webhook/check', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
-  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
-  if (!db || typeof db.getMetaPages !== 'function') return res.status(501).json({ error: 'Meta integration unavailable' });
-  const pages = await db.getMetaPages(req.tenantId);
-  if (!pages || pages.length === 0) return res.json({ results: [] });
+  if (!process.env.DATABASE_URL || !db || !db.pool) return res.status(503).json({ error: 'Database not configured' });
+
+  // getMetaPages omits page_access_token for security, so query directly
+  const r = await db.pool.query(
+    'SELECT page_id, page_name, page_access_token, ig_business_id FROM meta_pages WHERE tenant_id = $1 ORDER BY updated_at DESC',
+    [req.tenantId]
+  );
+  const pages = r.rows || [];
+  if (pages.length === 0) return res.json({ results: [] });
 
   const results = await Promise.all(pages.map(async (page) => {
     const base = { pageId: page.page_id, pageName: page.page_name || page.page_id };
