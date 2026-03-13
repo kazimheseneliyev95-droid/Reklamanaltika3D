@@ -47,6 +47,8 @@ export function ConnectionTab() {
   const [webhookStats, setWebhookStats] = useState<any | null>(null);
   const [lastConnectReport, setLastConnectReport] = useState<any | null>(null);
   const [metaConfig, setMetaConfig] = useState<any | null>(null);
+  const [webhookCheck, setWebhookCheck] = useState<any[] | null>(null);
+  const [webhookCheckBusy, setWebhookCheckBusy] = useState(false);
 
   const refreshHealth = async () => {
     const h = await CrmService.fetchHealth();
@@ -252,6 +254,26 @@ export function ConnectionTab() {
       setMetaError(e?.message || 'Meta config oxunmadi');
     } finally {
       setMetaBusy(false);
+    }
+  };
+
+  const checkWebhook = async () => {
+    setWebhookCheckBusy(true);
+    setWebhookCheck(null);
+    try {
+      const url = CrmService.getServerUrl();
+      const token = localStorage.getItem('crm_auth_token');
+      if (!url || !token) return;
+      const res = await fetch(`${url}/api/meta/webhook/check`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Check failed');
+      setWebhookCheck(Array.isArray(data?.results) ? data.results : []);
+    } catch (e: any) {
+      setMetaError(e?.message || 'Webhook check failed');
+    } finally {
+      setWebhookCheckBusy(false);
     }
   };
 
@@ -844,19 +866,57 @@ export function ConnectionTab() {
                 {webhookStats?.last_at ? <span className="text-slate-600"> · last: {new Date(webhookStats.last_at).toLocaleString()}</span> : null}
                 {webhookStats?.last_error ? <span className="text-red-300"> · err: {String(webhookStats.last_error)}</span> : null}
               </div>
-              <button
-                onClick={refreshWebhookStats}
-                disabled={metaBusy}
-                className="px-2 py-1 rounded-md text-[10px] font-bold border border-slate-800 text-slate-300 hover:bg-slate-900 disabled:opacity-50"
-              >
-                {metaBusy ? '...' : 'Yoxla'}
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={refreshWebhookStats}
+                  disabled={metaBusy}
+                  className="px-2 py-1 rounded-md text-[10px] font-bold border border-slate-800 text-slate-300 hover:bg-slate-900 disabled:opacity-50"
+                >
+                  {metaBusy ? '...' : 'Yoxla'}
+                </button>
+                <button
+                  onClick={checkWebhook}
+                  disabled={webhookCheckBusy || metaBusy}
+                  className="px-2 py-1 rounded-md text-[10px] font-bold border border-blue-900/40 bg-blue-950/10 text-blue-300 hover:bg-blue-950/20 disabled:opacity-50"
+                  title="Hər səhifənin webhook abunəliyini Meta-dan yoxla"
+                >
+                  {webhookCheckBusy ? '...' : 'Test'}
+                </button>
+              </div>
             </div>
 
             {webhookStats?.last_error ? (
               <div className="rounded-lg border border-slate-800 bg-slate-950/20 px-3 py-2 text-[11px] text-slate-400">
                 <span className="text-slate-200 font-semibold">Diaqnoz:</span>{' '}
                 {webhookHelp(webhookStats.last_error) || 'Meta Developer → Webhooks → Delivery log-a baxın (status code görsənəcək).'}
+              </div>
+            ) : null}
+
+            {Array.isArray(webhookCheck) ? (
+              <div className="rounded-lg border border-slate-800 bg-slate-950/20 px-3 py-2 text-[11px] text-slate-400">
+                <div className="text-slate-200 font-semibold mb-2">Webhook abunəlik nəticəsi</div>
+                {webhookCheck.length === 0 ? (
+                  <div className="text-slate-500">Həç bir səhifə tapilmadi.</div>
+                ) : (
+                  <div className="space-y-1">
+                    {webhookCheck.map((r: any) => (
+                      <div key={String(r.pageId)} className="flex items-start gap-2">
+                        <span className={r.subscribed ? 'text-green-400' : 'text-red-400'}>{r.subscribed ? '✓' : '✗'}</span>
+                        <div className="min-w-0">
+                          <span className="font-semibold text-slate-200">{r.pageName || r.pageId}</span>
+                          {r.subscribed ? (
+                            <span className="ml-2 text-slate-500">fields: {(r.fields || []).join(', ') || '-'}</span>
+                          ) : (
+                            <span className="ml-2 text-red-400">{r.error || 'abunəlik yoxdur'}</span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="mt-2 text-[10px] text-slate-600">
+                  {'✓ = webhook abunəliyi var (messages gəlir); ✗ = yoxdur (BellRing düyməsini sıx).'}
+                </div>
               </div>
             ) : null}
 
@@ -883,7 +943,16 @@ export function ConnectionTab() {
                 {' → Verify Token = META_VERIFY_TOKEN → Verify and Save.'}
               </div>
               <div className="mt-1">
-                {'3) Token yaz → Sayfaları Gətir → istədiklərini seç → Seçilənləri Bağla.'}
+                {'3) Meta Developers → Webhooks → Add Subscriptions: '}
+                <span className="text-slate-200 font-semibold">messages</span>
+                {', '}
+                <span className="text-slate-200 font-semibold">messaging_postbacks</span>
+                {' (Page); '}
+                <span className="text-slate-200 font-semibold">messages</span>
+                {' (Instagram).'}
+              </div>
+              <div className="mt-1">
+                {'4) Token yaz → Sayfaları Gətir → istədiklərini seç → Seçilənləri Bağla.'}
               </div>
               <div className="mt-1 text-slate-500">
                 Qayda: Webhook <span className="text-slate-200 font-semibold">ok</span> artmadan trigger işləməyəcək.

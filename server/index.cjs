@@ -6003,6 +6003,30 @@ app.get('/api/meta/webhook/status', requireTenantAuth, requireAdmin, asyncHandle
   res.json({ stats: { ...metaWebhookStats, backlog, outbox_pending: outboxPending } });
 }));
 
+
+app.get('/api/meta/webhook/check', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  if (!db || typeof db.getMetaPages !== 'function') return res.status(501).json({ error: 'Meta integration unavailable' });
+  const pages = await db.getMetaPages(req.tenantId);
+  if (!pages || pages.length === 0) return res.json({ results: [] });
+
+  const results = await Promise.all(pages.map(async (page) => {
+    const base = { pageId: page.page_id, pageName: page.page_name || page.page_id };
+    if (!page.page_access_token) return { ...base, subscribed: false, fields: [], error: 'no_token' };
+    try {
+      const url = 'https://graph.facebook.com/v19.0/' + encodeURIComponent(page.page_id) + '/subscribed_apps?access_token=' + encodeURIComponent(page.page_access_token);
+      const data = await fetchJsonWithRetry(url, {}, { retries: 0, timeoutMs: 6000 });
+      const fields = Array.isArray(data && data.data) ? data.data.flatMap(function(a) { return Array.isArray(a.subscribed_fields) ? a.subscribed_fields : []; }) : [];
+      const subscribed = fields.length > 0;
+      return { ...base, subscribed, fields, error: (data && data.error && data.error.message) || null };
+    } catch (e) {
+      return { ...base, subscribed: false, fields: [], error: String((e && e.message) || e) };
+    }
+  }));
+
+  res.json({ results });
+}));
+
 async function postGraphForm(path, form, timeoutMs = 7000) {
   const url = `https://graph.facebook.com/v19.0/${String(path).replace(/^\//, '')}`;
   const body = form instanceof URLSearchParams ? form : new URLSearchParams(form || {});
