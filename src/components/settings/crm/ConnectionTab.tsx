@@ -42,6 +42,8 @@ export function ConnectionTab() {
   const [metaError, setMetaError] = useState('');
 
   const [userToken, setUserToken] = useState('');
+  const [discovered, setDiscovered] = useState<{ pageId: string; pageName: string | null; igBusinessId: string | null; igUsername: string | null }[]>([]);
+  const [selectedPageIds, setSelectedPageIds] = useState<string[]>([]);
   const [webhookStats, setWebhookStats] = useState<any | null>(null);
   const [lastConnectReport, setLastConnectReport] = useState<any | null>(null);
   const [metaConfig, setMetaConfig] = useState<any | null>(null);
@@ -262,7 +264,37 @@ export function ConnectionTab() {
     return '';
   };
 
-  const autoConnect = async () => {
+  const discoverPages = async () => {
+    setMetaBusy(true);
+    setMetaError('');
+    setDiscovered([]);
+    setSelectedPageIds([]);
+    setLastConnectReport(null);
+    try {
+      const url = CrmService.getServerUrl();
+      const authToken = localStorage.getItem('crm_auth_token');
+      if (!url || !authToken) return;
+      const res = await fetch(`${url}/api/meta/discover`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
+        body: JSON.stringify({ token: userToken })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Səhifələr alınmadı');
+      const pages = Array.isArray(data?.pages) ? data.pages : [];
+      setDiscovered(pages);
+      // Yeni (bağlı olmayan) sayfalar varsayılan seçili gelsin
+      const connected = new Set((metaPages || []).map(p => String(p.page_id)));
+      setSelectedPageIds(pages.filter((p: any) => !connected.has(p.pageId)).map((p: any) => p.pageId));
+    } catch (e: any) {
+      setMetaError(e?.message || 'Səhifələr alınmadı');
+    } finally {
+      setMetaBusy(false);
+    }
+  };
+
+  const connectSelected = async () => {
+    if (selectedPageIds.length === 0) return;
     setMetaBusy(true);
     setMetaError('');
     setLastConnectReport(null);
@@ -270,18 +302,17 @@ export function ConnectionTab() {
       const url = CrmService.getServerUrl();
       const authToken = localStorage.getItem('crm_auth_token');
       if (!url || !authToken) return;
-      const res = await fetch(`${url}/api/meta/auto-connect`, {
+      const res = await fetch(`${url}/api/meta/connect`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${authToken}`
-        },
-        body: JSON.stringify({ token: userToken })
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
+        body: JSON.stringify({ token: userToken, pageIds: selectedPageIds })
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || 'Qoşulma uğursuz oldu');
       setLastConnectReport(data?.subscribe || null);
       setUserToken('');
+      setDiscovered([]);
+      setSelectedPageIds([]);
       await refreshMeta();
       await refreshWebhookStats();
       await refreshMetaConfig();
@@ -838,13 +869,21 @@ export function ConnectionTab() {
             <div className="rounded-lg border border-slate-800 bg-slate-950/20 px-3 py-2 text-[11px] text-slate-400">
               <div className="text-slate-200 font-semibold">Sıfırdan quraşdırma (qısa)</div>
               <div className="mt-1">
-                1) Render → Environment: <span className="text-slate-200 font-semibold">META_APP_SECRET</span>, <span className="text-slate-200 font-semibold">META_VERIFY_TOKEN</span>, (opsional) <span className="text-slate-200 font-semibold">META_APP_ID</span> əlavə et → deploy/restart.
+                {'1) Render → Environment: '}
+                <span className="text-slate-200 font-semibold">META_APP_SECRET</span>
+                {', '}
+                <span className="text-slate-200 font-semibold">META_VERIFY_TOKEN</span>
+                {', (opsional) '}
+                <span className="text-slate-200 font-semibold">META_APP_ID</span>
+                {' → deploy/restart.'}
               </div>
               <div className="mt-1">
-                2) Meta Developers → Webhooks: Callback URL = <span className="text-slate-200 font-semibold break-all">{callbackUrl}</span> → Verify Token = META_VERIFY_TOKEN → “Verify and Save”.
+                {'2) Meta Developers → Webhooks → Callback URL = '}
+                <span className="text-slate-200 font-semibold break-all">{callbackUrl}</span>
+                {' → Verify Token = META_VERIFY_TOKEN → Verify and Save.'}
               </div>
               <div className="mt-1">
-                3) Burada token yaz → “Səhifələri gətir” → seç → “Qoş” → “zil” (subscribe) bas.
+                {'3) Token yaz → Sayfaları Gətir → istədiklərini seç → Seçilənləri Bağla.'}
               </div>
               <div className="mt-1 text-slate-500">
                 Qayda: Webhook <span className="text-slate-200 font-semibold">ok</span> artmadan trigger işləməyəcək.
@@ -859,9 +898,9 @@ export function ConnectionTab() {
 
             {metaPages.length > 0 ? (
               <div className="rounded-lg border border-slate-800 bg-slate-950/30 p-3">
-                <div className="text-[10px] uppercase font-bold text-slate-500 mb-2">Saved Pages</div>
-                <div className="space-y-2">
-                  {metaPages.slice(0, 5).map((p) => (
+                <div className="text-[10px] uppercase font-bold text-slate-500 mb-2">Saved Pages ({metaPages.length})</div>
+                <div className="space-y-2 max-h-64 overflow-auto pr-1">
+                  {metaPages.map((p) => (
                     <div key={p.page_id} className="flex items-center justify-between gap-2">
                       <div className="min-w-0">
                         <div className="text-[12px] text-slate-200 font-semibold truncate">{p.page_name || p.page_id}</div>
@@ -893,26 +932,75 @@ export function ConnectionTab() {
 
             <div>
               <label className="text-[10px] uppercase font-bold text-slate-500 mb-1 block">User Access Token</label>
-              <input
-                type="password"
-                value={userToken}
-                onChange={(e) => setUserToken(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter' && userToken.trim() && !metaBusy) autoConnect(); }}
-                className="w-full h-9 rounded-lg bg-slate-950 border border-slate-800 px-3 text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-600/50"
-                placeholder="EAAG..."
-              />
+              <div className="flex gap-2">
+                <input
+                  type="password"
+                  value={userToken}
+                  onChange={(e) => { setUserToken(e.target.value); setDiscovered([]); setSelectedPageIds([]); }}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && userToken.trim() && !metaBusy) discoverPages(); }}
+                  className="flex-1 h-9 rounded-lg bg-slate-950 border border-slate-800 px-3 text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-600/50"
+                  placeholder="EAAG..."
+                />
+                <button
+                  onClick={discoverPages}
+                  disabled={metaBusy || !userToken.trim()}
+                  className="px-3 h-9 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 transition-colors disabled:opacity-50 whitespace-nowrap"
+                >
+                  {metaBusy && discovered.length === 0 ? '...' : 'Sayfaları Gətir'}
+                </button>
+              </div>
               <div className="mt-1 text-[10px] text-slate-600">
-                Facebook User Access Token yaz → bütün səhifələr avtomatik tapılıb qoşulacaq.
+                {'Facebook User Access Token yaz → sayfaları gətir → seç → Bağla.'}
               </div>
             </div>
 
-            <button
-              onClick={autoConnect}
-              disabled={metaBusy || !userToken.trim()}
-              className="w-full py-2 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white transition-colors disabled:opacity-50"
-            >
-              {metaBusy ? 'Qoşulur...' : 'Bağla'}
-            </button>
+            {discovered.length > 0 ? (
+              <div className="rounded-lg border border-slate-800 bg-slate-950/30 p-3">
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <div className="text-[10px] uppercase font-bold text-slate-500">Tapılan səhifələr ({discovered.length})</div>
+                  <button
+                    onClick={() => {
+                      const all = discovered.map(d => d.pageId);
+                      setSelectedPageIds(selectedPageIds.length === all.length ? [] : all);
+                    }}
+                    className="px-2 py-1 rounded text-[10px] font-bold border border-slate-700 text-slate-400 hover:bg-slate-800"
+                  >
+                    {selectedPageIds.length === discovered.length ? 'Heçbirini seçmə' : 'Hamısını seç'}
+                  </button>
+                </div>
+                <div className="space-y-1 max-h-60 overflow-auto pr-1">
+                  {discovered.map((p) => {
+                    const checked = selectedPageIds.includes(p.pageId);
+                    const alreadyConnected = metaPages.some(mp => String(mp.page_id) === String(p.pageId));
+                    return (
+                      <button
+                        key={p.pageId}
+                        onClick={() => setSelectedPageIds(prev => checked ? prev.filter(x => x !== p.pageId) : [...prev, p.pageId])}
+                        className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg border text-left transition-colors ${checked ? 'border-blue-700/50 bg-blue-950/20' : 'border-slate-800 hover:bg-slate-900/40'}`}
+                      >
+                        <div className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${checked ? 'border-blue-500 bg-blue-600' : 'border-slate-600'}`}>
+                          {checked ? <span className="text-white text-[10px] font-bold">✓</span> : null}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-[12px] font-semibold text-slate-200 truncate">{p.pageName || p.pageId}</div>
+                          <div className="text-[10px] text-slate-600 truncate">
+                            {p.pageId}{p.igBusinessId ? ` · ig: ${p.igUsername ? `@${p.igUsername}` : p.igBusinessId}` : ''}
+                          </div>
+                        </div>
+                        {alreadyConnected ? <span className="text-[10px] text-green-400 font-bold shrink-0">bağlı</span> : null}
+                      </button>
+                    );
+                  })}
+                </div>
+                <button
+                  onClick={connectSelected}
+                  disabled={metaBusy || selectedPageIds.length === 0}
+                  className="mt-3 w-full py-2 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white transition-colors disabled:opacity-50"
+                >
+                  {metaBusy ? 'Qoşulur...' : `Seçilənləri Bağla (${selectedPageIds.length})`}
+                </button>
+              </div>
+            ) : null}
 
             {Array.isArray(lastConnectReport) && lastConnectReport.length > 0 ? (
               <div className="rounded-lg border border-slate-800 bg-slate-950/30 p-3">
