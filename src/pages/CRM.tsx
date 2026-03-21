@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useState, useMemo, useEffect, useCallback, type UIEvent } from 'react';
 import { useAppStore } from '../context/Store';
 import { Lead, LeadStatus } from '../types/crm';
 import { Badge } from '../components/ui/Badge';
@@ -9,6 +9,8 @@ import { LeadDetailsPanel } from '../components/LeadDetailsPanel';
 import { loadCRMSettings, CustomField, LeadCardUISettings, DelayDotsSettings } from '../lib/crmSettings';
 import { CRMFilterSidebar, countActiveFilters, makeDefaultCRMFilters, type CRMFilters } from '../components/CRMFilterSidebar';
 import { CrmService } from '../services/CrmService';
+
+const UNREAD_PAGE_SIZE = 20;
 
 function getLeadLastMessageTime(lead: Lead): number {
   const candidates = [
@@ -24,6 +26,27 @@ function getLeadLastMessageTime(lead: Lead): number {
   }
 
   return 0;
+}
+
+function formatRelativeMessageTime(lead: Lead): string {
+  const ts = Date.parse(String(lead.last_inbound_at || lead.updated_at || lead.created_at || ''));
+  if (!ts) return '';
+
+  const diffMs = Math.max(0, Date.now() - ts);
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  const week = 7 * day;
+  const month = 30 * day;
+  const year = 365 * day;
+
+  if (diffMs < minute) return 'indi';
+  if (diffMs < hour) return `${Math.floor(diffMs / minute)} deq once`;
+  if (diffMs < day) return `${Math.floor(diffMs / hour)} saat once`;
+  if (diffMs < week) return `${Math.floor(diffMs / day)} gun once`;
+  if (diffMs < month) return `${Math.floor(diffMs / week)} hefte once`;
+  if (diffMs < year) return `${Math.floor(diffMs / month)} ay once`;
+  return `${Math.floor(diffMs / year)} il once`;
 }
 
 export default function CRMPage() {
@@ -54,6 +77,7 @@ export default function CRMPage() {
   const [showFilters, setShowFilters] = useState(false);
   const [filters, setFilters] = useState<CRMFilters>(() => makeDefaultCRMFilters(pipelineStages));
   const [showNotif, setShowNotif] = useState(false);
+  const [visibleUnreadCount, setVisibleUnreadCount] = useState(UNREAD_PAGE_SIZE);
 
   // When settings sync updates pipeline stages, keep mobile tab + stage filters valid
   useEffect(() => {
@@ -263,8 +287,21 @@ export default function CRMPage() {
       const au = Number(a.unread_count || 0);
       return bu - au;
     });
-    return rows.slice(0, 8);
+    return rows;
   }, [leads]);
+
+  const visibleUnread = useMemo(() => topUnread.slice(0, visibleUnreadCount), [topUnread, visibleUnreadCount]);
+
+  const hasMoreUnread = visibleUnread.length < topUnread.length;
+
+  const handleUnreadScroll = useCallback((e: UIEvent<HTMLDivElement>) => {
+    if (!hasMoreUnread) return;
+    const el = e.currentTarget;
+    const threshold = 40;
+    const remaining = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (remaining > threshold) return;
+    setVisibleUnreadCount((prev) => Math.min(prev + UNREAD_PAGE_SIZE, topUnread.length));
+  }, [hasMoreUnread, topUnread.length]);
 
   useEffect(() => {
     if (!showNotif) return;
@@ -278,6 +315,11 @@ export default function CRMPage() {
     document.addEventListener('mousedown', onDoc);
     return () => document.removeEventListener('mousedown', onDoc);
   }, [showNotif]);
+
+  useEffect(() => {
+    if (!showNotif) return;
+    setVisibleUnreadCount(UNREAD_PAGE_SIZE);
+  }, [showNotif, unreadTotal]);
 
   return (
     <div className="p-2 sm:p-6 max-w-[1600px] mx-auto h-full flex flex-col font-sans space-y-2 sm:space-y-6">
@@ -345,11 +387,12 @@ export default function CRMPage() {
                   {topUnread.length === 0 ? (
                     <div className="px-2 py-3 text-[12px] text-slate-500">No unread messages</div>
                   ) : (
-                    <div className="max-h-[320px] overflow-auto pr-1 custom-scrollbar">
-                      {topUnread.map((l) => {
+                    <div className="max-h-[320px] overflow-auto pr-1 custom-scrollbar" onScroll={handleUnreadScroll}>
+                      {visibleUnread.map((l) => {
                         const u = Number(l.unread_count || 0);
                         const label = l.name || l.phone;
                         const last = l.last_message || '';
+                        const relativeTime = formatRelativeMessageTime(l);
                         return (
                           <button
                             key={l.id}
@@ -363,7 +406,14 @@ export default function CRMPage() {
                           >
                             <div className="flex items-start justify-between gap-2">
                               <div className="min-w-0">
-                                <div className="text-[12px] font-semibold text-slate-200 truncate">{label}</div>
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <div className="text-[12px] font-semibold text-slate-200 truncate">{label}</div>
+                                  {relativeTime ? (
+                                    <span className="shrink-0 text-[10px] text-slate-500" title={new Date(String(l.last_inbound_at || l.updated_at || l.created_at || '')).toLocaleString('az-AZ')}>
+                                      {relativeTime}
+                                    </span>
+                                  ) : null}
+                                </div>
                                 <div className="text-[11px] text-slate-500 truncate">{last}</div>
                               </div>
                               <div className="shrink-0">
@@ -375,6 +425,11 @@ export default function CRMPage() {
                           </button>
                         );
                       })}
+                      {hasMoreUnread ? (
+                        <div className="px-2 py-2 text-[10px] font-semibold text-slate-500 text-center">
+                          Asagi scroll et, daha cox unread gorunsun.
+                        </div>
+                      ) : null}
                     </div>
                   )}
 
