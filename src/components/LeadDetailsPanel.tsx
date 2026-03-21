@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { Lead, LeadStatus } from '../types/crm';
 import {
     User, Phone, Package, MessageSquare, Clock, Hash,
-    Save, CheckCircle2, TrendingUp, BarChart2, Edit3, Check, Route
+    Save, CheckCircle2, TrendingUp, BarChart2, Edit3, Check, Route, ChevronDown
 } from 'lucide-react';
 import { cn, toNumberSafe } from '../lib/utils';
 import { loadCRMSettings } from '../lib/crmSettings';
@@ -769,8 +769,10 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
     const [activeTab, setActiveTab] = useState<'info' | 'feed' | 'chat' | 'follow' | 'stats'>('chat');
     const [isSaving, setIsSaving] = useState(false);
     const [savedOk, setSavedOk] = useState(false);
+    const [showStatusMenu, setShowStatusMenu] = useState(false);
     const feedRef = useRef<HTMLDivElement>(null);
     const drawerRef = useRef<HTMLDivElement>(null);
+    const statusMenuRef = useRef<HTMLDivElement>(null);
     const serverUrl = CrmService.getServerUrl();
 
     const [story, setStory] = useState<StoryEvent[]>([]);
@@ -971,6 +973,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
 
     // Keep localStatus in sync if parent changes the lead
     useEffect(() => { setLocalStatus(lead.status); }, [lead.status]);
+    useEffect(() => { setShowStatusMenu(false); }, [lead.id]);
     useEffect(() => {
         setFormData({
             name: lead.name || '',
@@ -981,7 +984,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
         });
         const extra = (lead as any).extra_data;
         setCustomValues(extra ? (typeof extra === 'string' ? JSON.parse(extra) : extra) : {});
-    }, [lead]);
+    }, [lead.id]); // Only reset when switching to a different lead, not on every real-time update
 
     // ESC to close
     useEffect(() => {
@@ -989,6 +992,18 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
         window.addEventListener('keydown', fn);
         return () => window.removeEventListener('keydown', fn);
     }, [onClose]);
+
+    useEffect(() => {
+        const handleClickOutside = (e: MouseEvent) => {
+            if (!showStatusMenu) return;
+            const target = e.target as Node | null;
+            if (statusMenuRef.current && target && !statusMenuRef.current.contains(target)) {
+                setShowStatusMenu(false);
+            }
+        };
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, [showStatusMenu]);
 
     // ─── Handlers ──────────────────────────────────────────────────────────────
 
@@ -998,6 +1013,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
 
     const handleStatusClick = (statusId: LeadStatus) => {
         setLocalStatus(statusId);  // Optimistic: update UI immediately
+        setShowStatusMenu(false);
         onUpdateStatus(lead.id, statusId);
     };
 
@@ -1111,46 +1127,73 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
             >
 
                 {/* ════════════════════ TOP PIPELINE BAR ════════════════════ */}
-                <div className="flex items-center justify-between px-2 sm:px-4 py-2 border-b border-white/5 bg-[#111827] shrink-0 gap-2 sm:gap-3">
+                <div className="flex items-start justify-between px-2 sm:px-4 py-2 border-b border-white/5 bg-[#111827] shrink-0 gap-3">
 
                     {/* Back Button (Mobile) & Lead ID badge */}
-                    <div className="flex items-center gap-1 sm:gap-2 shrink-0">
-                        <button onClick={onClose} className="md:hidden p-1.5 text-slate-400 hover:text-white transition-colors">
+                    <div className="flex items-start gap-2 min-w-0 flex-1">
+                        <button onClick={onClose} className="md:hidden p-1.5 text-slate-400 hover:text-white transition-colors shrink-0">
                             <span className="text-xl leading-none">&larr;</span>
                         </button>
-                        <div className="flex items-center gap-1.5 bg-slate-800/80 px-2 sm:px-2.5 py-1 rounded-md border border-slate-700/50" title="Sistem Tərəfindən Verilmiş Müştəri Kodu">
-                            <span className="hidden sm:inline text-slate-500 text-[10px] uppercase font-bold tracking-wider">Kod:</span>
-                            <span className="text-[10px] sm:text-sm font-mono text-slate-300 font-semibold">{leadIdShort}</span>
-                        </div>
-                        <span className="text-slate-300 text-[11px] sm:text-sm font-semibold truncate max-w-[96px] xs:max-w-[120px] sm:max-w-[180px]">
-                            {lead.name || lead.phone}
-                        </span>
-                    </div>
+                        <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1 sm:gap-2 min-w-0">
+                                <div className="flex items-center gap-1.5 bg-slate-800/80 px-2 sm:px-2.5 py-1 rounded-md border border-slate-700/50 shrink-0" title="Sistem Tərəfindən Verilmiş Müştəri Kodu">
+                                    <span className="hidden sm:inline text-slate-500 text-[10px] uppercase font-bold tracking-wider">Kod:</span>
+                                    <span className="text-[10px] sm:text-sm font-mono text-slate-300 font-semibold">{leadIdShort}</span>
+                                </div>
+                                <span className="text-slate-300 text-[11px] sm:text-sm font-semibold truncate">
+                                    {lead.name || lead.phone}
+                                </span>
+                            </div>
 
-                    {/* Pipeline Status Buttons */}
-                    <div className="flex-1 flex items-center justify-center gap-1 overflow-x-auto no-scrollbar px-2">
-                        {STATUSES.map((s, i) => {
-                            const isActive = localStatus === s.id;
-                            const pastIdx = STATUSES.findIndex(x => x.id === localStatus);
-                            const isPast = pastIdx > i;
-                            return (
+                            <div ref={statusMenuRef} className="relative mt-2 max-w-full">
                                 <button
-                                    key={s.id}
-                                    onClick={() => handleStatusClick(s.id)}
-                                    className={cn(
-                                        'flex items-center gap-1 px-2 sm:px-3 py-1.5 rounded-md text-[10px] sm:text-xs font-bold uppercase tracking-wide border transition-all whitespace-nowrap shrink-0',
-                                        isActive
-                                            ? `${s.bg} text-white border-transparent shadow-lg`
-                                            : isPast
-                                                ? 'bg-slate-800/70 text-slate-400 border-slate-700 hover:bg-slate-700'
-                                                : 'bg-transparent text-slate-500 border-slate-800 hover:border-slate-600 hover:text-slate-300'
-                                    )}
+                                    type="button"
+                                    onClick={() => setShowStatusMenu((v) => !v)}
+                                    className="flex items-center justify-between gap-2 w-full sm:w-auto min-w-[220px] max-w-full bg-slate-900/80 border border-slate-700 hover:border-slate-600 rounded-lg px-3 py-2 text-left transition-colors"
                                 >
-                                    {s.icon}
-                                    <span className="hidden sm:inline">{s.label}</span>
+                                    <span className="flex items-center gap-2 min-w-0">
+                                        {activeStatus?.icon}
+                                        <span className="min-w-0">
+                                            <span className="block text-[10px] uppercase tracking-wide text-slate-500 font-bold">Cari mərhələ</span>
+                                            <span className="block text-[12px] sm:text-sm font-semibold text-slate-100 truncate">{activeStatus?.label || 'Status seç'}</span>
+                                        </span>
+                                    </span>
+                                    <ChevronDown className={cn('w-4 h-4 text-slate-400 shrink-0 transition-transform', showStatusMenu && 'rotate-180')} />
                                 </button>
-                            );
-                        })}
+
+                                {showStatusMenu ? (
+                                    <div className="absolute left-0 top-full mt-2 w-full sm:w-[320px] max-w-[calc(100vw-48px)] rounded-xl border border-slate-800 bg-[#0f172a] shadow-2xl z-30 overflow-hidden">
+                                        <div className="px-3 py-2 border-b border-slate-800 text-[10px] uppercase tracking-wide font-bold text-slate-500">
+                                            Mərhələ seçimi
+                                        </div>
+                                        <div className="max-h-[320px] overflow-y-auto p-2 space-y-1">
+                                            {STATUSES.map((s) => {
+                                                const isActive = localStatus === s.id;
+                                                return (
+                                                    <button
+                                                        key={s.id}
+                                                        type="button"
+                                                        onClick={() => handleStatusClick(s.id)}
+                                                        className={cn(
+                                                            'w-full flex items-center justify-between gap-3 rounded-lg px-3 py-2 border text-left transition-colors',
+                                                            isActive
+                                                                ? 'border-blue-500/40 bg-blue-500/10 text-white'
+                                                                : 'border-slate-800 bg-slate-950/40 text-slate-300 hover:border-slate-700 hover:bg-slate-900'
+                                                        )}
+                                                    >
+                                                        <span className="flex items-center gap-2 min-w-0">
+                                                            {s.icon}
+                                                            <span className="truncate text-[12px] sm:text-sm font-semibold">{s.label}</span>
+                                                        </span>
+                                                        {isActive ? <Check className="w-4 h-4 text-blue-400 shrink-0" /> : null}
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                ) : null}
+                            </div>
+                        </div>
                     </div>
 
                     {/* Close (Mobile) */}
