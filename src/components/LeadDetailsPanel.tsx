@@ -1144,55 +1144,6 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                     {lead.name || lead.phone}
                                 </span>
                             </div>
-
-                            <div ref={statusMenuRef} className="relative mt-2 max-w-full">
-                                <button
-                                    type="button"
-                                    onClick={() => setShowStatusMenu((v) => !v)}
-                                    className="flex items-center justify-between gap-2 w-full sm:w-auto min-w-[220px] max-w-full bg-slate-900/80 border border-slate-700 hover:border-slate-600 rounded-lg px-3 py-2 text-left transition-colors"
-                                >
-                                    <span className="flex items-center gap-2 min-w-0">
-                                        {activeStatus?.icon}
-                                        <span className="min-w-0">
-                                            <span className="block text-[10px] uppercase tracking-wide text-slate-500 font-bold">Cari mərhələ</span>
-                                            <span className="block text-[12px] sm:text-sm font-semibold text-slate-100 truncate">{activeStatus?.label || 'Status seç'}</span>
-                                        </span>
-                                    </span>
-                                    <ChevronDown className={cn('w-4 h-4 text-slate-400 shrink-0 transition-transform', showStatusMenu && 'rotate-180')} />
-                                </button>
-
-                                {showStatusMenu ? (
-                                    <div className="absolute left-0 top-full mt-2 w-full sm:w-[320px] max-w-[calc(100vw-48px)] rounded-xl border border-slate-800 bg-[#0f172a] shadow-2xl z-30 overflow-hidden">
-                                        <div className="px-3 py-2 border-b border-slate-800 text-[10px] uppercase tracking-wide font-bold text-slate-500">
-                                            Mərhələ seçimi
-                                        </div>
-                                        <div className="max-h-[320px] overflow-y-auto p-2 space-y-1">
-                                            {STATUSES.map((s) => {
-                                                const isActive = localStatus === s.id;
-                                                return (
-                                                    <button
-                                                        key={s.id}
-                                                        type="button"
-                                                        onClick={() => handleStatusClick(s.id)}
-                                                        className={cn(
-                                                            'w-full flex items-center justify-between gap-3 rounded-lg px-3 py-2 border text-left transition-colors',
-                                                            isActive
-                                                                ? 'border-blue-500/40 bg-blue-500/10 text-white'
-                                                                : 'border-slate-800 bg-slate-950/40 text-slate-300 hover:border-slate-700 hover:bg-slate-900'
-                                                        )}
-                                                    >
-                                                        <span className="flex items-center gap-2 min-w-0">
-                                                            {s.icon}
-                                                            <span className="truncate text-[12px] sm:text-sm font-semibold">{s.label}</span>
-                                                        </span>
-                                                        {isActive ? <Check className="w-4 h-4 text-blue-400 shrink-0" /> : null}
-                                                    </button>
-                                                );
-                                            })}
-                                        </div>
-                                    </div>
-                                ) : null}
-                            </div>
                         </div>
                     </div>
 
@@ -1335,6 +1286,54 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                 </div>
                             </FieldGroup>
 
+                            <FieldGroup label="Status / Mərhələ" icon={<BarChart2 className="w-3 h-3" />}>
+                                <div ref={statusMenuRef} className="relative">
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowStatusMenu((v) => !v)}
+                                        className="flex items-center justify-between gap-2 w-full bg-slate-900 border border-slate-700 hover:border-slate-600 rounded-lg px-3 py-2 text-left transition-colors"
+                                    >
+                                        <span className="flex items-center gap-2 min-w-0">
+                                            {activeStatus?.icon}
+                                            <span className="truncate text-sm font-semibold text-slate-100">{activeStatus?.label || 'Status seç'}</span>
+                                        </span>
+                                        <ChevronDown className={cn('w-4 h-4 text-slate-400 shrink-0 transition-transform', showStatusMenu && 'rotate-180')} />
+                                    </button>
+
+                                    {showStatusMenu ? (
+                                        <div className="absolute left-0 top-full mt-2 w-full rounded-xl border border-slate-800 bg-[#0f172a] shadow-2xl z-30 overflow-hidden">
+                                            <div className="px-3 py-2 border-b border-slate-800 text-[10px] uppercase tracking-wide font-bold text-slate-500">
+                                                Status seçimi
+                                            </div>
+                                            <div className="max-h-[320px] overflow-y-auto p-2 space-y-1">
+                                                {STATUSES.map((s) => {
+                                                    const isActive = localStatus === s.id;
+                                                    return (
+                                                        <button
+                                                            key={s.id}
+                                                            type="button"
+                                                            onClick={() => handleStatusClick(s.id)}
+                                                            className={cn(
+                                                                'w-full flex items-center justify-between gap-3 rounded-lg px-3 py-2 border text-left transition-colors',
+                                                                isActive
+                                                                    ? 'border-blue-500/40 bg-blue-500/10 text-white'
+                                                                    : 'border-slate-800 bg-slate-950/40 text-slate-300 hover:border-slate-700 hover:bg-slate-900'
+                                                            )}
+                                                        >
+                                                            <span className="flex items-center gap-2 min-w-0">
+                                                                {s.icon}
+                                                                <span className="truncate text-[12px] sm:text-sm font-semibold">{s.label}</span>
+                                                            </span>
+                                                            {isActive ? <Check className="w-4 h-4 text-blue-400 shrink-0" /> : null}
+                                                        </button>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    ) : null}
+                                </div>
+                            </FieldGroup>
+
                             {/* Dynamic Custom Fields from CRM Settings */}
                              {customFields.map(field => {
                                 const isBuiltin = field.id === 'product_name';
@@ -1379,17 +1378,6 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                     </FieldGroup>
                                 );
                             })}
-
-                            {/* Status göstəricisi */}
-                            <FieldGroup label="Cari Status" icon={<BarChart2 className="w-3 h-3" />}>
-                                <div className={cn(
-                                    'w-full px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 border',
-                                    activeStatus.accent, 'bg-slate-900'
-                                )}>
-                                    {activeStatus.icon}
-                                    {activeStatus.label}
-                                </div>
-                            </FieldGroup>
 
                             {/* Conversation close/reopen */}
                             <FieldGroup label="Söhbət" icon={<MessageSquare className="w-3 h-3" />}>
