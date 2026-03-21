@@ -10,6 +10,22 @@ import { loadCRMSettings, CustomField, LeadCardUISettings, DelayDotsSettings } f
 import { CRMFilterSidebar, countActiveFilters, makeDefaultCRMFilters, type CRMFilters } from '../components/CRMFilterSidebar';
 import { CrmService } from '../services/CrmService';
 
+function getLeadLastMessageTime(lead: Lead): number {
+  const candidates = [
+    lead.last_inbound_at,
+    (lead as any).last_outbound_at,
+    lead.updated_at,
+    lead.created_at,
+  ];
+
+  for (const value of candidates) {
+    const ts = Date.parse(String(value || ''));
+    if (Number.isFinite(ts)) return ts;
+  }
+
+  return 0;
+}
+
 export default function CRMPage() {
   const [activeMobileTab, setActiveMobileTab] = useState<string>('new');
   const {
@@ -239,12 +255,13 @@ export default function CRMPage() {
   const topUnread = useMemo(() => {
     const rows = (leads || []).filter(l => Number(l.unread_count || 0) > 0).slice();
     rows.sort((a, b) => {
-      const au = Number(a.unread_count || 0);
+      const bt = getLeadLastMessageTime(b);
+      const at = getLeadLastMessageTime(a);
+      if (bt !== at) return bt - at;
+
       const bu = Number(b.unread_count || 0);
-      if (bu !== au) return bu - au;
-      const at = new Date(a.last_inbound_at || a.updated_at || a.created_at).getTime();
-      const bt = new Date(b.last_inbound_at || b.updated_at || b.created_at).getTime();
-      return bt - at;
+      const au = Number(a.unread_count || 0);
+      return bu - au;
     });
     return rows.slice(0, 8);
   }, [leads]);
