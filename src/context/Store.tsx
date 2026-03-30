@@ -3,6 +3,17 @@ import { Lead, LeadStatus, DateRange, User } from '../types/crm';
 import { CrmService } from '../services/CrmService';
 import { loadCRMSettings, syncCRMSettingsFromServer } from '../lib/crmSettings';
 
+function parseDateRangeBoundary(dateStr: string | null, endOfDay = false): number | null {
+  const match = String(dateStr || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]) - 1;
+  const day = Number(match[3]);
+  return endOfDay
+    ? new Date(year, month, day, 23, 59, 59, 999).getTime()
+    : new Date(year, month, day, 0, 0, 0, 0).getTime();
+}
+
 const DEV_LOG = import.meta.env.DEV;
 
 function debugLog(...args: any[]) {
@@ -17,6 +28,18 @@ function isLeadVisualStateEqual(a?: Lead | null, b?: Lead | null) {
     && String((a as any).updated_at || '') === String((b as any).updated_at || '')
     && Number((a as any).unread_count || 0) === Number((b as any).unread_count || 0)
     && Number((a as any).value || 0) === Number((b as any).value || 0);
+}
+
+function hasNonEmptyKey(value: unknown) {
+  return String(value || '').trim() !== '';
+}
+
+function leadsMatch(a?: Partial<Lead> | null, b?: Partial<Lead> | null) {
+  if (!a || !b) return false;
+  if (hasNonEmptyKey(a.id) && hasNonEmptyKey(b.id) && String(a.id) === String(b.id)) return true;
+  if (hasNonEmptyKey(a.whatsapp_id) && hasNonEmptyKey(b.whatsapp_id) && String(a.whatsapp_id) === String(b.whatsapp_id)) return true;
+  if (hasNonEmptyKey(a.phone) && hasNonEmptyKey(b.phone) && String(a.phone) === String(b.phone)) return true;
+  return false;
 }
 import { toNumberSafe } from '../lib/utils';
 
@@ -81,6 +104,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   leadsRef.current = leads;
   const pendingLeadUpsertsRef = useRef<Map<string, Lead>>(new Map());
   const flushLeadUpdatesRafRef = useRef<number | null>(null);
+  const lastSilentRefreshAtRef = useRef(0);
 
   const flushPendingLeadUpserts = useCallback(() => {
     flushLeadUpdatesRafRef.current = null;
@@ -93,7 +117,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       let changed = false;
       const next = [...prev];
       for (const lead of batch) {
-        const index = next.findIndex((item) => item.id === lead.id || item.phone === lead.phone || item.whatsapp_id === lead.whatsapp_id);
+        const index = next.findIndex((item) => leadsMatch(item, lead));
         if (index !== -1) {
           if (isLeadVisualStateEqual(next[index], lead)) continue;
           next[index] = lead;
@@ -228,6 +252,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const refreshLeadsSilently = useCallback(async () => {
     try {
+      lastSilentRefreshAtRef.current = Date.now();
       const data = await CrmService.getLeads(dateRange);
       setLeads(data);
       leadsRef.current = data;
@@ -269,9 +294,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
 
       // Check if this lead already exists in current state
-      const existingIndex = leadsRef.current.findIndex(l =>
-        l.id === finalLead.id || l.whatsapp_id === finalLead.whatsapp_id || l.phone === finalLead.phone
-      );
+      const existingIndex = leadsRef.current.findIndex((l) => leadsMatch(l, finalLead));
 
       if (existingIndex !== -1) {
         debugLog('🔄 Updating existing lead in UI:', finalLead.phone);
@@ -298,7 +321,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // Listen for lead deletions
     const cleanupLeadDeleted = CrmService.onLeadDeleted((deletedLeadId) => {
       debugLog('🗑️ LEAD DELETED IN UI:', deletedLeadId);
-      setLeads(prev => prev.filter(l => l.id !== deletedLeadId));
+      setLeads(prev => {
+        const next = prev.filter(l => l.id !== deletedLeadId);
+        leadsRef.current = next;
+        return next;
+      });
     });
     cleanupFunctions.push(cleanupLeadDeleted);
 
@@ -311,6 +338,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // Listen for full database reset (Formatla)
     const cleanupLeadsReset = CrmService.onLeadsReset(() => {
       debugLog('🌀 LEADS RESET IN UI: Clearing all local state');
+      leadsRef.current = [];
       setLeads([]);
     });
     cleanupFunctions.push(cleanupLeadsReset);
@@ -403,10 +431,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!isAuthenticated) return;
 
-    const syncRealtime = () => {
+    const syncRealtime = (force = false) => {
       if (document.visibilityState === 'hidden') return;
       CrmService.autoConnect();
-      refreshLeadsSilently();
+
+      const socketConnected = CrmService.isSocketConnected();
+      const now = Date.now();
+      const recentlyRefreshed = (now - lastSilentRefreshAtRef.current) < 20000;
+
+      if (force || !socketConnected || !recentlyRefreshed) {
+        refreshLeadsSilently();
+      }
     };
 
     const onVisible = () => {
@@ -418,7 +453,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     const intervalId = window.setInterval(() => {
       if (document.visibilityState === 'visible') syncRealtime();
-    }, 5000);
+    }, 30000);
 
     window.addEventListener('focus', onFocus);
     window.addEventListener('online', onOnline);
@@ -446,8 +481,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       });
 
       // Update State - check if within current date range
-      const inRange = !dateRange.start || new Date(newLead.created_at) >= new Date(dateRange.start);
-      const inRangeEnd = !dateRange.end || new Date(newLead.created_at) <= new Date(dateRange.end);
+      const createdAtMs = Date.parse(String(newLead.created_at || ''));
+      const startMs = parseDateRangeBoundary(dateRange.start, false);
+      const endMs = parseDateRangeBoundary(dateRange.end, true);
+      const inRange = startMs === null || (Number.isFinite(createdAtMs) && createdAtMs >= startMs);
+      const inRangeEnd = endMs === null || (Number.isFinite(createdAtMs) && createdAtMs <= endMs);
 
       if (inRange && inRangeEnd) {
         setLeads(prev => [newLead, ...prev]);
@@ -490,7 +528,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const removeLead = useCallback((id: string) => {
     CrmService.deleteLead(id).then(() => {
-      setLeads((prev) => prev.filter((l) => l.id !== id));
+      setLeads((prev) => {
+        const next = prev.filter((l) => l.id !== id);
+        leadsRef.current = next;
+        return next;
+      });
     }).catch(error => {
       console.error('❌ Error removing lead:', error);
     });
@@ -501,28 +543,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
     try {
       debugLog('🔄 Starting manual sync from WhatsApp (DB-backed)...');
 
-      // Always reload leads from DB first
-      await loadLeads();
-
       // Fetch recent conversations (now DB-backed, survives restarts)
       const messages = await CrmService.fetchRecentMessages(50);
 
-      // Get fresh list from DB for de-duplication
-      const existingLeads = await CrmService.getLeads();
+      const existingLeads = leadsRef.current.length > 0 ? leadsRef.current : await CrmService.getLeads();
+      const knownPhones = new Set<string>();
+      for (const lead of existingLeads) {
+        const phone = String(lead.phone || '').replace(/\D/g, '');
+        if (!phone) continue;
+        knownPhones.add(phone);
+        const suffix = phone.slice(-9);
+        if (suffix.length >= 7) knownPhones.add(suffix);
+      }
 
       let newLeadsAdded = 0;
+      const pendingCreates: Array<Promise<Lead>> = [];
       for (const msg of messages) {
         const msgText = msg.lastMessage || msg.message || '';
         const msgPhone = String(msg.phone || '').replace(/\D/g, '');
+        const msgSuffix = msgPhone.slice(-9);
 
         // Skip if this phone already exists in DB (the /chats/recent now returns DB leads,
         // so most entries will already exist — we only upsert truly new ones)
-        const phoneExists = existingLeads.some(l => {
-          const lPhone = String(l.phone || '').replace(/\D/g, '');
-          const lSuffix = lPhone.slice(-9);
-          const mSuffix = msgPhone.slice(-9);
-          return lPhone === msgPhone || (lSuffix.length >= 7 && lSuffix === mSuffix);
-        });
+        const phoneExists = knownPhones.has(msgPhone) || (msgSuffix.length >= 7 && knownPhones.has(msgSuffix));
 
         if (!phoneExists && msgPhone.length >= 7) {
           const leadData: Omit<Lead, 'id' | 'created_at' | 'updated_at'> = {
@@ -533,9 +576,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
             source: 'whatsapp',
             value: 0,
           };
-          await CrmService.addLead(leadData);
+          pendingCreates.push(CrmService.addLead(leadData));
+          knownPhones.add(msgPhone);
+          if (msgSuffix.length >= 7) knownPhones.add(msgSuffix);
           newLeadsAdded++;
         }
+      }
+
+      if (pendingCreates.length > 0) {
+        await Promise.all(pendingCreates);
       }
 
       debugLog(`✅ Sync complete. Added ${newLeadsAdded} new leads.`);
@@ -552,6 +601,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (window.confirm('Are you sure you want to delete ALL leads? This cannot be undone.')) {
       try {
         await CrmService.clearAllLeads();
+        leadsRef.current = [];
         setLeads([]);
         debugLog('✅ All leads cleared');
       } catch (error) {
@@ -663,11 +713,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
         });
         setIsAuthenticated(true);
 
-        CrmService.autoConnect();
+        setLeads([]);
+        leadsRef.current = [];
+        setTeamMembers([]);
+
+        await CrmService.reconnect();
         try {
           await syncCRMSettingsFromServer();
           setCrmSettingsRev((v) => v + 1);
         } catch { }
+
+        await Promise.all([
+          loadLeads(),
+          loadTeamMembers()
+        ]);
       } else {
         throw new Error(data.error || 'İmpersonasiya xətası');
       }
@@ -689,6 +748,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem('crm_auth_token');
     localStorage.removeItem('crm_tenant_id');
     setIsAuthenticated(false);
+    leadsRef.current = [];
     setLeads([]);
     CrmService.disconnect();
   }, []);

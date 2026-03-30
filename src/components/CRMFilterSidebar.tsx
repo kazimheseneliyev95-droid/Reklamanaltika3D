@@ -175,7 +175,8 @@ export function CRMFilterSidebar({
       return;
     }
     const end = new Date();
-    const start = new Date(end.getTime() - (kind * 24 * 60 * 60 * 1000));
+    const start = new Date(end);
+    start.setDate(start.getDate() - Math.max(0, kind - 1));
     setDateRange({ start: toLocalISO(start), end: toLocalISO(end) });
   };
 

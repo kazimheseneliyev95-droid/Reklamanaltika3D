@@ -44,6 +44,9 @@ class CrmServiceImpl {
 
   // 🆕 In-memory cache for better performance and deduplication
   private leadsCache: Lead[] = [];
+  private storageWriteTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastPersistedLeadsJson = '';
+  private lastPersistedStorageKey = '';
 
   // 🆕 De-duplication cache
   private readonly PROCESSED_MESSAGES_TTL = 30000; // 30 seconds
@@ -87,6 +90,35 @@ class CrmServiceImpl {
     }
   }
 
+  private readStoredLeads(): Lead[] {
+    try {
+      const raw = localStorage.getItem(getStorageKey());
+      return raw ? (JSON.parse(raw) as Lead[]) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private schedulePersistLeads(leads: Lead[]) {
+    const snapshot = (Array.isArray(leads) ? leads : []).map((lead) => this.normalizeLead(lead as any));
+    if (this.storageWriteTimer) {
+      clearTimeout(this.storageWriteTimer);
+    }
+    this.storageWriteTimer = setTimeout(() => {
+      this.storageWriteTimer = null;
+      try {
+        const storageKey = getStorageKey();
+        const nextJson = JSON.stringify(snapshot);
+        if (storageKey === this.lastPersistedStorageKey && nextJson === this.lastPersistedLeadsJson) return;
+        localStorage.setItem(storageKey, nextJson);
+        this.lastPersistedStorageKey = storageKey;
+        this.lastPersistedLeadsJson = nextJson;
+      } catch {
+        // ignore storage quota / serialization errors
+      }
+    }, 250);
+  }
+
   applyLeadReadLocally(leadId: string, timestamp?: string) {
     const lid = String(leadId || '').trim();
     if (!lid) return;
@@ -99,14 +131,7 @@ class CrmServiceImpl {
       const updated = { ...this.leadsCache[idx], unread_count: 0, last_read_at: new Date(ts).toISOString() } as any;
       this.leadsCache[idx] = updated;
       this.notifyLeadUpdateListeners(updated as any);
-    }
-
-    const raw = localStorage.getItem(getStorageKey());
-    const allLeads: Lead[] = raw ? JSON.parse(raw) : [];
-    const index = allLeads.findIndex(l => l.id === lid);
-    if (index !== -1) {
-      allLeads[index] = { ...(allLeads[index] as any), unread_count: 0, last_read_at: new Date(ts).toISOString() } as any;
-      localStorage.setItem(getStorageKey(), JSON.stringify(allLeads));
+      this.schedulePersistLeads(this.leadsCache);
     }
   }
 
@@ -283,6 +308,10 @@ class CrmServiceImpl {
     };
   }
 
+  isSocketConnected() {
+    return Boolean(this.socket && this.socket.connected);
+  }
+
   async fetchHealth(): Promise<any | null> {
     try {
       if (this.isDemoMode) {
@@ -331,6 +360,10 @@ class CrmServiceImpl {
     // Clear cache
     this.leadsCache = [];
     this.processedMessageIds.clear();
+    if (this.storageWriteTimer) {
+      clearTimeout(this.storageWriteTimer);
+      this.storageWriteTimer = null;
+    }
   }
 
   // 🆕 Cleanup socket listeners properly
@@ -524,33 +557,15 @@ class CrmServiceImpl {
       } else {
         this.leadsCache.unshift(normalized);
       }
-
-      // Update localStorage to match database (robust to event ordering)
-      // NOTE: lead_updated may arrive before new_message for brand-new leads.
-      const raw = localStorage.getItem(getStorageKey());
-      const allLeads: Lead[] = raw ? JSON.parse(raw) : [];
-      const index = allLeads.findIndex(l => (l.id && normalized.id && l.id === normalized.id) || l.phone === normalized.phone);
-
-      if (index !== -1) {
-        allLeads[index] = this.normalizeLead({ ...allLeads[index], ...normalized } as any) as any;
-      } else {
-        allLeads.unshift(normalized);
-      }
-
-      localStorage.setItem(getStorageKey(), JSON.stringify(allLeads));
+      this.schedulePersistLeads(this.leadsCache);
       debugLog('✅ Lead synced with database');
       this.notifyLeadUpdateListeners(normalized);
     });
 
     this.socket.on('lead_deleted', (id: string) => {
       debugLog('🗑️ SOCKET: lead_deleted received', id);
-
-      const raw = localStorage.getItem(getStorageKey());
-      const allLeads: Lead[] = raw ? JSON.parse(raw) : [];
-      const updated = allLeads.filter(l => l.id !== id);
-      localStorage.setItem(getStorageKey(), JSON.stringify(updated));
-
       this.leadsCache = this.leadsCache.filter(l => l.id !== id);
+      this.schedulePersistLeads(this.leadsCache);
       this.notifyLeadDeletedListeners(id);
     });
 
@@ -558,7 +573,7 @@ class CrmServiceImpl {
       try {
         const normalized = (Array.isArray(rows) ? rows : []).map((lead) => this.normalizeLead(lead as any));
         this.leadsCache = normalized;
-        localStorage.setItem(getStorageKey(), JSON.stringify(normalized));
+        this.schedulePersistLeads(normalized);
         this.leadsUpdatedListeners.forEach((cb) => cb(normalized));
       } catch {
         // ignore
@@ -575,15 +590,7 @@ class CrmServiceImpl {
         if (idx !== -1) {
           const updated = { ...this.leadsCache[idx], unread_count: nextUnread, last_read_at: ts } as any;
           this.leadsCache[idx] = updated;
-
-          const raw = localStorage.getItem(getStorageKey());
-          const allLeads: Lead[] = raw ? JSON.parse(raw) : [];
-          const index = allLeads.findIndex(l => l.id === leadId);
-          if (index !== -1) {
-            allLeads[index] = updated as any;
-            localStorage.setItem(getStorageKey(), JSON.stringify(allLeads));
-          }
-
+          this.schedulePersistLeads(this.leadsCache);
           this.notifyLeadUpdateListeners(updated as any);
         }
       } catch {
@@ -1025,7 +1032,7 @@ class CrmServiceImpl {
           const leadsRaw = await response.json();
           const leads = (Array.isArray(leadsRaw) ? leadsRaw : []).map((l) => this.normalizeLead(l));
           this.leadsCache = leads;
-          localStorage.setItem(getStorageKey(), JSON.stringify(leads));
+          this.schedulePersistLeads(leads);
           return this.filterLeadsByDate(leads, dateRange);
         }
       } catch (error) {
@@ -1034,8 +1041,7 @@ class CrmServiceImpl {
     }
 
     // Fallback to localStorage
-    const raw = localStorage.getItem(getStorageKey());
-    let leads: Lead[] = (raw ? JSON.parse(raw) : []).map((l: any) => this.normalizeLead(l));
+    let leads: Lead[] = this.readStoredLeads().map((l: any) => this.normalizeLead(l));
 
     this.leadsCache = leads;
 
@@ -1086,8 +1092,7 @@ class CrmServiceImpl {
     }
 
     // Fallback: localStorage only
-    const raw = localStorage.getItem(getStorageKey());
-    const allLeads: Lead[] = raw ? JSON.parse(raw) : [];
+    const allLeads: Lead[] = this.readStoredLeads();
 
     // Fuzzy phone match for localStorage dedup (last 9 digits)
     const incomingPhone = String(lead.phone || '').replace(/\D/g, '');
@@ -1110,8 +1115,8 @@ class CrmServiceImpl {
       if (lead.value && lead.value > (existingLead.value || 0)) existingLead.value = lead.value;
       allLeads.splice(existingIndex, 1);
       const updatedList = [existingLead, ...allLeads];
-      localStorage.setItem(getStorageKey(), JSON.stringify(updatedList));
       this.leadsCache = updatedList;
+      this.schedulePersistLeads(updatedList);
       return existingLead;
     }
 
@@ -1122,8 +1127,8 @@ class CrmServiceImpl {
       updated_at: new Date().toISOString(),
     };
     const updated = [newLead, ...allLeads];
-    localStorage.setItem(getStorageKey(), JSON.stringify(updated));
     this.leadsCache = updated;
+    this.schedulePersistLeads(updated);
     return newLead;
   }
 
@@ -1138,15 +1143,7 @@ class CrmServiceImpl {
     }
 
     // Update localStorage
-    const raw = localStorage.getItem(getStorageKey());
-    const allLeads: Lead[] = raw ? JSON.parse(raw) : [];
-    const storageIndex = allLeads.findIndex(l => l.phone === normalized.phone);
-    if (storageIndex !== -1) {
-      allLeads[storageIndex] = normalized;
-    } else {
-      allLeads.unshift(normalized);
-    }
-    localStorage.setItem(getStorageKey(), JSON.stringify(allLeads));
+    this.schedulePersistLeads(this.leadsCache);
   }
 
   async updateLead(id: string, updates: Partial<Lead>): Promise<void> {
@@ -1177,17 +1174,11 @@ class CrmServiceImpl {
     }
 
     // Always update localStorage cache
-    const raw = localStorage.getItem(getStorageKey());
-    const allLeads: Lead[] = raw ? JSON.parse(raw) : [];
-    const updated = allLeads.map(l =>
-      l.id === id ? { ...l, ...updates, updated_at: new Date().toISOString() } : l
-    );
-    localStorage.setItem(getStorageKey(), JSON.stringify(updated));
-
     // Update cache
     const cacheIndex = this.leadsCache.findIndex(l => l.id === id);
     if (cacheIndex !== -1) {
       this.leadsCache[cacheIndex] = { ...this.leadsCache[cacheIndex], ...updates, updated_at: new Date().toISOString() };
+      this.schedulePersistLeads(this.leadsCache);
     }
   }
 
@@ -1212,14 +1203,9 @@ class CrmServiceImpl {
       }
     }
 
-    const raw = localStorage.getItem(getStorageKey());
-    const allLeads: Lead[] = raw ? JSON.parse(raw) : [];
-
-    const updated = allLeads.filter(l => l.id !== id);
-    localStorage.setItem(getStorageKey(), JSON.stringify(updated));
-
     // Update cache
     this.leadsCache = this.leadsCache.filter(l => l.id !== id);
+    this.schedulePersistLeads(this.leadsCache);
   }
 
   /**

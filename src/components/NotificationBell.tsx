@@ -49,7 +49,9 @@ export function NotificationBell({ className }: { className?: string }) {
     });
     const cleanupMeta = CrmService.onNotificationsMeta((meta: any) => {
       try {
+        let handledLocally = false;
         if (meta?.action === 'notification_read') {
+          handledLocally = true;
           const id = String(meta?.id || '').trim();
           const readAt = meta?.read_at ? String(meta.read_at) : new Date().toISOString();
           if (id) {
@@ -63,6 +65,7 @@ export function NotificationBell({ className }: { className?: string }) {
           }
         }
         if (meta?.action === 'notifications_read_all') {
+          handledLocally = true;
           const readAt = meta?.read_at ? String(meta.read_at) : new Date().toISOString();
           setItems((prev) => {
             const nextItems = prev.map((x) => ({ ...x, read_at: x.read_at || readAt }));
@@ -73,6 +76,7 @@ export function NotificationBell({ className }: { className?: string }) {
           });
         }
         if (meta?.action === 'lead_notifications_read') {
+          handledLocally = true;
           const leadId = String(meta?.lead_id || '').trim();
           const readAt = meta?.read_at ? String(meta.read_at) : new Date().toISOString();
           if (leadId) {
@@ -92,7 +96,7 @@ export function NotificationBell({ className }: { className?: string }) {
           const next = Number(meta.unread_count);
           if (Number.isFinite(next)) setUnreadCount(Math.max(0, next));
         }
-        refresh().catch(() => { });
+        if (!handledLocally) refresh().catch(() => { });
       } catch {
         // ignore
       }
@@ -114,7 +118,7 @@ export function NotificationBell({ className }: { className?: string }) {
       if (document.visibilityState === 'visible') sync();
     };
 
-    const intervalId = window.setInterval(sync, 5000);
+    const intervalId = window.setInterval(sync, 15000);
     window.addEventListener('focus', sync);
     window.addEventListener('online', sync);
     document.addEventListener('visibilitychange', onVisible);

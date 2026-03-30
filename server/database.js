@@ -716,6 +716,10 @@ async function initDb() {
             `);
             await client.query('CREATE INDEX IF NOT EXISTS idx_lead_reads_tenant_user ON lead_reads (tenant_id, user_id, updated_at DESC);');
             await client.query('CREATE INDEX IF NOT EXISTS idx_lead_reads_tenant_lead_user ON lead_reads (tenant_id, lead_id, user_id);');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_leads_tenant_created_at ON leads (tenant_id, created_at DESC);');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_leads_tenant_status_created_at ON leads (tenant_id, status, created_at DESC);');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_leads_tenant_assignee_created_at ON leads (tenant_id, assignee_id, created_at DESC);');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_messages_tenant_lead_direction_created ON messages (tenant_id, lead_id, direction, created_at DESC);');
         } catch (e) {
             console.warn('⚠️ Migration warning (lead_reads):', e.message);
         }
@@ -759,12 +763,16 @@ async function initDb() {
             CREATE INDEX IF NOT EXISTS idx_status ON leads(status);
             CREATE INDEX IF NOT EXISTS idx_tenant ON leads(tenant_id);
             CREATE INDEX IF NOT EXISTS idx_created_at ON leads(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_leads_tenant_created_at ON leads(tenant_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_leads_tenant_status_created_at ON leads(tenant_id, status, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_leads_tenant_assignee_created_at ON leads(tenant_id, assignee_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_whatsapp_id ON leads(whatsapp_id);
             CREATE INDEX IF NOT EXISTS idx_messages_lead_id ON messages(lead_id);
             CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at ASC);
             CREATE INDEX IF NOT EXISTS idx_messages_polling ON messages(direction, status);
             CREATE INDEX IF NOT EXISTS idx_messages_next_attempt_at ON messages(next_attempt_at);
             CREATE INDEX IF NOT EXISTS idx_messages_claimed_at ON messages(claimed_at);
+            CREATE INDEX IF NOT EXISTS idx_messages_tenant_lead_direction_created ON messages(tenant_id, lead_id, direction, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_whatsapp_media_assets_created_at ON whatsapp_media_assets(tenant_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_fb_ad_imports_auto_sync_due ON facebook_ad_imports (auto_sync_enabled, auto_sync_next_at);
             CREATE INDEX IF NOT EXISTS idx_fb_ad_insight_cache_lookup ON facebook_ad_insight_cache (tenant_id, metric, date_start, campaign_id);

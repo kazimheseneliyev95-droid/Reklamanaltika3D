@@ -62,10 +62,15 @@ export default function CRMPage() {
     dateRange,
     setDateRange,
     teamMembers,
-    currentUser
+    currentUser,
+    crmSettingsRev
   } = useAppStore();
 
-  const { pipelineStages, customFields, ui, notifications } = loadCRMSettings();
+  const crmSettings = useMemo(() => {
+    void crmSettingsRev;
+    return loadCRMSettings();
+  }, [crmSettingsRev]);
+  const { pipelineStages, customFields, ui, notifications } = crmSettings;
   const leadCardUi = ui?.leadCard;
   const delayDotsUi = ui?.delayDots;
   const slaIgnoreStages = Array.isArray(notifications?.slaIgnoreStages) ? notifications!.slaIgnoreStages : ['won'];
@@ -216,6 +221,7 @@ export default function CRMPage() {
     if (!selectedLead) return;
     const fresh = leads.find(l => l.id === selectedLead.id);
     if (fresh) setSelectedLead(fresh);
+    else setSelectedLead(null);
   }, [leads, selectedLead]);
 
   // --- METRICS CALCULATION ---
@@ -785,7 +791,7 @@ function parseExtraData(raw: any): Record<string, any> {
   return {};
 }
 
-function LeadCard({
+const LeadCard = memo(function LeadCard({
   lead,
   onRemove,
   onEdit,
@@ -1103,4 +1109,4 @@ function LeadCard({
       )}
     </div>
   );
-}
+});

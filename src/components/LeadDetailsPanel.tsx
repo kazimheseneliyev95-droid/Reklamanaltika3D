@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { Lead, LeadStatus } from '../types/crm';
 import {
@@ -757,7 +757,9 @@ interface LeadDetailsPanelProps {
 export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: LeadDetailsPanelProps) {
 
     // LOCAL STATE (mirrors lead props - updated on save)
-    const { teamMembers, currentUser } = useAppStore();
+    const { teamMembers, currentUser, crmSettingsRev } = useAppStore();
+    const leadRef = useRef(lead);
+    leadRef.current = lead;
     const [localStatus, setLocalStatus] = useState<LeadStatus>(lead.status);
     const [formData, setFormData] = useState({
         name: lead.name || '',
@@ -780,14 +782,16 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
     const [storyError, setStoryError] = useState('');
     const [noteDraft, setNoteDraft] = useState('');
     const [noteBusy, setNoteBusy] = useState(false);
+    const storyLoadLockRef = useRef(false);
 
     const loadStory = useCallback(async () => {
-        if (!serverUrl || !lead?.id || activeTab !== 'feed') return;
+        if (!serverUrl || !lead?.id || activeTab !== 'feed' || storyLoadLockRef.current) return;
+        storyLoadLockRef.current = true;
         setStoryLoading(true);
         setStoryError('');
         try {
             const token = localStorage.getItem('crm_auth_token') || '';
-            const res = await fetch(`${serverUrl}/api/leads/${lead.id}/story?limit=1200&includeMessages=0`, {
+            const res = await fetch(`${serverUrl}/api/leads/${lead.id}/story?limit=300&includeMessages=0`, {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             if (!res.ok) {
@@ -800,6 +804,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
         } catch (e: any) {
             setStoryError(e?.message || 'Story yuklenmedi');
         } finally {
+            storyLoadLockRef.current = false;
             setStoryLoading(false);
         }
     }, [serverUrl, lead?.id, activeTab]);
@@ -814,7 +819,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
         let t: any = null;
         const schedule = () => {
             if (t) clearTimeout(t);
-            t = setTimeout(() => loadStory(), 300);
+            t = setTimeout(() => loadStory(), 600);
         };
         const cleanupUpdate = CrmService.onLeadUpdated((updated) => {
             if (updated.id === lead.id || updated.phone === lead.phone) schedule();
@@ -937,7 +942,10 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
 
 
     // ─── Custom fields from CRM settings ─────────────────────────────────────
-    const crmSettings = loadCRMSettings();
+    const crmSettings = useMemo(() => {
+        void crmSettingsRev;
+        return loadCRMSettings();
+    }, [crmSettingsRev]);
     const customFields = crmSettings.customFields;
     const pipelineStages = crmSettings.pipelineStages;
 
@@ -975,14 +983,15 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
     useEffect(() => { setLocalStatus(lead.status); }, [lead.status]);
     useEffect(() => { setShowStatusMenu(false); }, [lead.id]);
     useEffect(() => {
+        const currentLead = leadRef.current;
         setFormData({
-            name: lead.name || '',
-            value: String(toNumberSafe((lead as any).value, 0)),
-            product_name: lead.product_name || '',
-            note: lead.last_message || '',
-            assignee_id: lead.assignee_id || '',
+            name: currentLead.name || '',
+            value: String(toNumberSafe((currentLead as any).value, 0)),
+            product_name: currentLead.product_name || '',
+            note: currentLead.last_message || '',
+            assignee_id: currentLead.assignee_id || '',
         });
-        const extra = (lead as any).extra_data;
+        const extra = (currentLead as any).extra_data;
         setCustomValues(extra ? (typeof extra === 'string' ? JSON.parse(extra) : extra) : {});
     }, [lead.id]); // Only reset when switching to a different lead, not on every real-time update
 

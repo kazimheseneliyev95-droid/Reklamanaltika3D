@@ -3050,14 +3050,7 @@ const visibleLead = HAS_DATABASE
     ? (await db.getLeads()).find(l => l.id === req.params.id && (!l.tenant_id || l.tenant_id === req.tenantId)) || null
     : { id: req.params.id });
   if (!visibleLead) return res.status(404).json({ error: 'Lead not found' });
-  let oldStatus = null;
-  if (HAS_DATABASE && db.pool) {
-    const beforeRes = await db.pool.query(
-      'SELECT status FROM leads WHERE id = $1 AND tenant_id = $2',
-      [req.params.id, req.tenantId]
-    );
-    oldStatus = beforeRes.rows[0]?.status || null;
-  }
+  const oldStatus = visibleLead?.status || null;
   const lead = await db.updateLeadStatus(req.params.id, req.body.status, req.tenantId);
   if (!lead) return res.status(404).json({ error: 'Lead not found' });
   await emitLeadUpdatedScoped(req.tenantId, lead);
@@ -3099,11 +3092,7 @@ app.put('/api/leads/:id', requireTenantAuth, asyncHandler(async (req, res) => {
     }
   }
 
-  const beforeRes = await db.pool.query(
-    'SELECT name, value, product_name, assignee_id, status, extra_data FROM leads WHERE id = $1 AND tenant_id = $2',
-    [req.params.id, req.tenantId]
-  );
-  const before = beforeRes.rows[0] || null;
+  const before = visibleLead || null;
 
   const lead = await db.updateLeadFields(req.params.id, req.body, req.tenantId);
   if (!lead) return res.status(404).json({ error: 'Lead not found' });
