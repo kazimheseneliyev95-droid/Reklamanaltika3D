@@ -292,8 +292,28 @@ function TableList({ data, total, mode, isMoney }: { data: Datum[]; total: numbe
   );
 }
 
-function DailyLeadsTrend({ leads }: { leads: { created_at: string }[] }) {
-  const [showMA, setShowMA] = useState(false);
+type SelectField = { id: string; label: string; options?: string[] };
+
+function DailyLeadsTrend({ leads, selectFields }: { leads: { created_at: string; extra_data?: any }[]; selectFields: SelectField[] }) {
+  const [filterFieldId, setFilterFieldId] = useState('');
+  const [filterValue, setFilterValue] = useState('');
+
+  const activeField = selectFields.find(f => f.id === filterFieldId) ?? null;
+  const fieldOptions = activeField?.options ?? [];
+
+  // Reset value when field changes
+  const handleFieldChange = (id: string) => {
+    setFilterFieldId(id);
+    setFilterValue('');
+  };
+
+  const filteredLeads = useMemo(() => {
+    if (!filterFieldId || !filterValue) return leads;
+    return leads.filter(l => {
+      const extra = safeParseExtra(l.extra_data);
+      return String(extra[filterFieldId] ?? '').trim() === filterValue;
+    });
+  }, [leads, filterFieldId, filterValue]);
 
   const data = useMemo(() => {
     const days = 30;
@@ -304,14 +324,14 @@ function DailyLeadsTrend({ leads }: { leads: { created_at: string }[] }) {
       d.setDate(d.getDate() - i);
       const dateStr = d.toLocaleDateString('en-CA');
       const label = `${d.toLocaleString('default', { month: 'short' })} ${String(d.getDate()).padStart(2, '0')}`;
-      const count = leads.filter(l => {
+      const count = filteredLeads.filter(l => {
         if (!l.created_at) return false;
         return new Date(l.created_at).toLocaleDateString('en-CA') === dateStr;
       }).length;
       result.push({ label, count });
     }
     return result;
-  }, [leads]);
+  }, [filteredLeads]);
 
   const maxCount = Math.max(1, ...data.map(d => d.count));
   const n = data.length;
@@ -326,28 +346,47 @@ function DailyLeadsTrend({ leads }: { leads: { created_at: string }[] }) {
   const linePath = data.map((d, i) => `${i === 0 ? 'M' : 'L'}${px(i).toFixed(1)},${py(d.count).toFixed(1)}`).join(' ');
   const areaPath = `${linePath} L${px(n - 1).toFixed(1)},${(PAD_T + cH).toFixed(1)} L${px(0).toFixed(1)},${(PAD_T + cH).toFixed(1)} Z`;
 
-  const maData = data.map((_, i) => {
-    const slice = data.slice(Math.max(0, i - 2), i + 3);
-    return slice.reduce((s, x) => s + x.count, 0) / slice.length;
-  });
-  const maPath = maData.map((v, i) => `${i === 0 ? 'M' : 'L'}${px(i).toFixed(1)},${py(v).toFixed(1)}`).join(' ');
-
   const yLevels = [0, Math.round(maxCount * 0.5), maxCount];
   const xLabels = data.filter((_, i) => i % 4 === 0 || i === n - 1);
 
+  const totalShown = filteredLeads.length;
+
   return (
     <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4 shadow-sm">
-      <div className="flex items-start justify-between gap-3 mb-2">
-        <div>
-          <h2 className="text-sm font-bold text-white">Gündəlik Müraciet (Leads)</h2>
-          <p className="text-[10px] text-slate-500 mt-0.5">Synced with global date filter (Date Created).</p>
+      <div className="flex flex-col sm:flex-row sm:items-start gap-3 mb-3">
+        <div className="flex-1 min-w-0">
+          <h2 className="text-sm font-bold text-white">
+            Gündəlik Müraciet (Leads)
+            {filterValue && <span className="ml-2 text-[11px] font-normal text-blue-400">— {filterValue} ({totalShown})</span>}
+          </h2>
+          <p className="text-[10px] text-slate-500 mt-0.5">Son 30 gün • Date Created</p>
         </div>
-        <button
-          onClick={() => setShowMA(v => !v)}
-          className={cn('px-3 py-1 rounded-lg text-[11px] font-semibold border transition-colors whitespace-nowrap', showMA ? 'bg-blue-600 border-blue-500/40 text-white' : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200')}
-        >
-          ~ Trend (MA)
-        </button>
+        {selectFields.length > 0 && (
+          <div className="flex items-center gap-2 shrink-0">
+            <select
+              value={filterFieldId}
+              onChange={e => handleFieldChange(e.target.value)}
+              className="bg-slate-950 border border-slate-800 text-slate-300 text-[11px] rounded-lg px-2 py-1.5"
+            >
+              <option value="">Hamisi</option>
+              {selectFields.map(f => (
+                <option key={f.id} value={f.id}>{f.label}</option>
+              ))}
+            </select>
+            {activeField && fieldOptions.length > 0 && (
+              <select
+                value={filterValue}
+                onChange={e => setFilterValue(e.target.value)}
+                className="bg-slate-950 border border-slate-800 text-slate-300 text-[11px] rounded-lg px-2 py-1.5"
+              >
+                <option value="">Bütün dəyərlər</option>
+                {fieldOptions.map(opt => (
+                  <option key={opt} value={opt}>{opt}</option>
+                ))}
+              </select>
+            )}
+          </div>
+        )}
       </div>
       <div className="overflow-x-auto">
         <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ minWidth: 380, height: 170 }}>
@@ -365,9 +404,6 @@ function DailyLeadsTrend({ leads }: { leads: { created_at: string }[] }) {
           ))}
           <path d={areaPath} fill="url(#dailyLeadGrad)" />
           <path d={linePath} fill="none" stroke="#3b82f6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-          {showMA && (
-            <path d={maPath} fill="none" stroke="#f97316" strokeWidth="1.5" strokeDasharray="4,3" strokeLinecap="round" strokeLinejoin="round" />
-          )}
           {data.map((d, i) => d.count > 0 && (
             <text key={i} x={px(i)} y={py(d.count) - 5} textAnchor="middle" fontSize="9" fill="#cbd5e1" fontWeight="600">{d.count}</text>
           ))}
@@ -691,7 +727,7 @@ export default function AnalyticsPage() {
         </div>
       </div>
 
-      <DailyLeadsTrend leads={scopedLeads} />
+      <DailyLeadsTrend leads={scopedLeads} selectFields={selectFields} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {layout.widgets.map((w, idx) => {
