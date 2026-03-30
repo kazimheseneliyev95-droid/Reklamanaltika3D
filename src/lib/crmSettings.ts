@@ -64,6 +64,12 @@ export interface LeadCardUISettings {
     colorByFieldId?: string; // select field id
     colorMap?: Record<string, string>; // option value -> css color (e.g. #22c55e)
     colorStyle?: 'tint' | 'border';
+
+    // Label badge: shows value of this select field as a colored tag in top-right
+    labelFieldId?: string;
+    // Priority bar: shows colored bar at card bottom based on this select field value
+    // Expected values: "yüksək"/"high" → red, "orta"/"medium" → orange, "aşağı"/"low" → blue
+    priorityFieldId?: string;
 }
 
 export interface NotificationsSettings {

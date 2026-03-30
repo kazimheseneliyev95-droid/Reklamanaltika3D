@@ -33,21 +33,28 @@ function formatRelativeMessageTime(lead: Lead): string {
   const ts = Date.parse(String(lead.last_inbound_at || lead.updated_at || lead.created_at || ''));
   if (!ts) return '';
 
+  const now = new Date();
+  const msgDate = new Date(ts);
+
+  const isToday = msgDate.toDateString() === now.toDateString();
+  if (isToday) {
+    return msgDate.toLocaleTimeString('az-AZ', { hour: '2-digit', minute: '2-digit' });
+  }
+
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (msgDate.toDateString() === yesterday.toDateString()) return 'dünən';
+
   const diffMs = Math.max(0, Date.now() - ts);
-  const minute = 60 * 1000;
-  const hour = 60 * minute;
-  const day = 24 * hour;
+  const day = 24 * 60 * 60 * 1000;
   const week = 7 * day;
   const month = 30 * day;
   const year = 365 * day;
 
-  if (diffMs < minute) return 'indi';
-  if (diffMs < hour) return `${Math.floor(diffMs / minute)} deq once`;
-  if (diffMs < day) return `${Math.floor(diffMs / hour)} saat once`;
-  if (diffMs < week) return `${Math.floor(diffMs / day)} gun once`;
-  if (diffMs < month) return `${Math.floor(diffMs / week)} hefte once`;
-  if (diffMs < year) return `${Math.floor(diffMs / month)} ay once`;
-  return `${Math.floor(diffMs / year)} il once`;
+  if (diffMs < week) return `${Math.floor(diffMs / day)} gün əvvəl`;
+  if (diffMs < month) return `${Math.floor(diffMs / week)} həftə əvvəl`;
+  if (diffMs < year) return `${Math.floor(diffMs / month)} ay əvvəl`;
+  return `${Math.floor(diffMs / year)} il əvvəl`;
 }
 
 export default function CRMPage() {
@@ -863,6 +870,8 @@ const LeadCard = memo(function LeadCard({
     customFieldBadgeMode: 'value',
     customFieldIds: [],
     maxCustomFieldBadges: 2,
+    labelFieldId: '',
+    priorityFieldId: '',
     ...(leadCardUi || {})
   };
 
@@ -918,7 +927,32 @@ const LeadCard = memo(function LeadCard({
 
   const primaryTitle = (cfg.showNameBadge !== false && lead.name && lead.name !== 'Unknown') ? String(lead.name) : String(lead.phone);
   const secondary = (cfg.showNameBadge !== false && lead.name && lead.name !== 'Unknown') ? String(lead.phone) : '';
-  const hasValue = cfg.showValue !== false && Boolean(lead.value && lead.value > 0);
+  const hasValue = cfg.showValue !== false;
+
+  // Label badge (top-right tag)
+  const labelFieldId = String(cfg.labelFieldId || '').trim();
+  const labelValue = labelFieldId ? String(extra?.[labelFieldId] ?? '').trim() : '';
+  const getLabelStyle = (v: string) => {
+    const lv = v.toLowerCase().trim();
+    if (lv === 'isti' || lv === 'hot') return 'border-orange-500/50 bg-orange-950/40 text-orange-300';
+    if (lv === 'yeni' || lv === 'new') return 'border-green-500/50 bg-green-950/40 text-green-300';
+    if (lv === 'vip') return 'border-yellow-500/50 bg-yellow-950/40 text-yellow-300';
+    if (lv === 'gözləyir' || lv === 'gozleyir' || lv === 'waiting') return 'border-blue-500/50 bg-blue-950/40 text-blue-300';
+    return 'border-slate-700 bg-slate-900/60 text-slate-300';
+  };
+
+  // Priority bar (bottom strip)
+  const priorityFieldId = String(cfg.priorityFieldId || '').trim();
+  const priorityValue = priorityFieldId ? String(extra?.[priorityFieldId] ?? '').trim() : '';
+  const getPriorityColor = (v: string): string | null => {
+    const lv = v.toLowerCase().trim();
+    if (!lv) return null;
+    if (lv === 'yüksək' || lv === 'yuksek' || lv === 'high' || lv === 'kritik' || lv === 'critical') return '#ef4444';
+    if (lv === 'orta' || lv === 'medium' || lv === 'normal') return '#f97316';
+    if (lv === 'aşağı' || lv === 'asagi' || lv === 'low') return '#3b82f6';
+    return null;
+  };
+  const priorityColor = getPriorityColor(priorityValue);
 
   const colorFieldId = String(cfg.colorByFieldId || '').trim();
   const colorStyle = (cfg.colorStyle === 'border' || cfg.colorStyle === 'tint') ? cfg.colorStyle : 'tint';
@@ -972,9 +1006,10 @@ const LeadCard = memo(function LeadCard({
     <div
       className={cn(
         "group relative rounded-2xl border bg-slate-950/40 px-3 py-2.5 shadow-sm transition-all duration-200",
+        "hover:-translate-y-0.5 hover:shadow-md",
         unread > 0
           ? "border-rose-500/35 hover:border-rose-400/60 shadow-rose-900/10"
-          : "border-slate-800/80 hover:border-slate-700"
+          : "border-slate-800/80 hover:border-slate-600"
       )}
       style={{
         boxShadow: unread > 0 ? '0 10px 24px rgba(244,63,94,0.05)' : undefined,
@@ -1011,22 +1046,37 @@ const LeadCard = memo(function LeadCard({
                  <div className="min-w-0">
                    <div className="text-[13px] sm:text-[14px] font-extrabold text-slate-100 truncate" title={primaryTitle}>{primaryTitle}</div>
                    {secondary ? (
-                     <div className="mt-0.5 text-[11px] text-slate-400 flex items-center gap-2 min-w-0">
+                     <div className="mt-0.5 text-[11px] text-slate-400 flex items-center gap-1.5 min-w-0 flex-wrap">
                        <span className="inline-flex items-center gap-1 min-w-0">
                          <Phone className="w-3 h-3 text-green-500 shrink-0" />
                          <span className="font-mono tabular-nums truncate">{secondary}</span>
                        </span>
+                       <span className="text-slate-600">·</span>
+                       <span className="shrink-0">{sourceLabel}</span>
+                       {formatRelativeMessageTime(lead) ? (
+                         <>
+                           <span className="text-slate-600">·</span>
+                           <span className="shrink-0 tabular-nums">{formatRelativeMessageTime(lead)}</span>
+                         </>
+                       ) : null}
                      </div>
                    ) : null}
                  </div>
 
                  <div className="shrink-0 flex flex-col items-end gap-1">
-                   {unread > 0 ? (
-                     <span className="inline-flex items-center gap-1 rounded-full border border-rose-500/30 bg-rose-950/25 px-2 py-0.5 text-[10px] font-extrabold text-rose-200 tabular-nums whitespace-nowrap">
-                       <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />
-                       {unread > 99 ? '99+' : unread}
-                     </span>
-                   ) : null}
+                   <div className="flex items-center gap-1">
+                     {labelValue ? (
+                       <span className={cn('inline-flex items-center px-2 py-0.5 rounded-full border text-[10px] font-bold whitespace-nowrap', getLabelStyle(labelValue))}>
+                         {labelValue}
+                       </span>
+                     ) : null}
+                     {unread > 0 ? (
+                       <span className="inline-flex items-center gap-1 rounded-full border border-rose-500/30 bg-rose-950/25 px-2 py-0.5 text-[10px] font-extrabold text-rose-200 tabular-nums whitespace-nowrap">
+                         <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />
+                         {unread > 99 ? '99+' : unread}
+                       </span>
+                     ) : null}
+                   </div>
 
                    {followDot || responseDot ? (
                      <span className="inline-flex items-center gap-1">
@@ -1041,20 +1091,19 @@ const LeadCard = memo(function LeadCard({
                  </div>
                </div>
 
-                {/* Source + value */}
-                {(cfg.showSource !== false || hasValue) ? (
-                  <div className="mt-1.5 flex items-center justify-between gap-2 min-w-0">
-                    {cfg.showSource !== false ? (
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-950/50 text-slate-300 border border-slate-800 whitespace-nowrap shrink-0">
-                        {sourceLabel}
-                      </span>
-                    ) : <span />}
-                    {hasValue ? (
+                {/* Value — always visible when showValue is on */}
+                {hasValue ? (
+                  <div className="mt-1.5 flex items-center justify-end gap-2 min-w-0">
+                    {lead.value && lead.value > 0 ? (
                       <span className="shrink-0 inline-flex items-center gap-1 rounded-full border border-emerald-900/30 bg-emerald-950/15 px-2 py-0.5 text-[10px] font-extrabold text-emerald-200 tabular-nums whitespace-nowrap">
                         <DollarSign className="w-3 h-3" />
-                        {formatCurrency(Number(lead.value || 0), 'AZN')}
+                        {formatCurrency(Number(lead.value), 'AZN')}
                       </span>
-                    ) : null}
+                    ) : (
+                      <span className="shrink-0 inline-flex items-center gap-1 rounded-full border border-slate-800 bg-slate-950/30 px-2 py-0.5 text-[10px] font-semibold text-slate-500 tabular-nums whitespace-nowrap">
+                        — ₼
+                      </span>
+                    )}
                   </div>
                 ) : null}
 
@@ -1128,18 +1177,27 @@ const LeadCard = memo(function LeadCard({
           type="button"
           onClick={onViewMessage}
           className={cn(
-            'mt-2 w-full text-left rounded-xl border px-3 py-1.5 transition-colors',
-            'border-slate-800/80 bg-slate-950/35 hover:bg-slate-950/55 hover:border-slate-700',
-            unread > 0 && 'border-rose-500/20'
+            'mt-2 w-full text-left rounded-r-xl border-y border-r border-l-2 px-3 py-1.5 transition-colors',
+            unread > 0
+              ? 'border-l-rose-500 border-rose-500/20 bg-rose-950/10 hover:bg-rose-950/20'
+              : 'border-l-blue-500 border-slate-800/80 bg-slate-950/35 hover:bg-slate-950/55 hover:border-slate-700'
           )}
-          title="Mesaji ac"
+          title="Mesajı aç"
         >
-          <div className="text-[10px] uppercase tracking-wide font-bold text-slate-500">Son mesaj</div>
-          <p className="mt-1 text-[12px] text-slate-200 line-clamp-2 leading-snug">
+          <p className="text-[12px] text-slate-200 line-clamp-2 leading-snug">
             {lead.last_message}
           </p>
         </button>
       )}
+
+      {/* Priority bar */}
+      {priorityColor ? (
+        <div
+          className="mt-2 h-1 rounded-full opacity-80"
+          style={{ background: priorityColor }}
+          title={`Prioritet: ${priorityValue}`}
+        />
+      ) : null}
     </div>
   );
 });
