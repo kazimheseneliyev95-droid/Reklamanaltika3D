@@ -292,6 +292,100 @@ function TableList({ data, total, mode, isMoney }: { data: Datum[]; total: numbe
   );
 }
 
+function DailyLeadsTrend({ leads }: { leads: { created_at: string }[] }) {
+  const [showMA, setShowMA] = useState(false);
+
+  const data = useMemo(() => {
+    const days = 30;
+    const result: { label: string; count: number }[] = [];
+    const now = new Date();
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date(now);
+      d.setDate(d.getDate() - i);
+      const dateStr = d.toLocaleDateString('en-CA');
+      const label = `${d.toLocaleString('default', { month: 'short' })} ${String(d.getDate()).padStart(2, '0')}`;
+      const count = leads.filter(l => {
+        if (!l.created_at) return false;
+        return new Date(l.created_at).toLocaleDateString('en-CA') === dateStr;
+      }).length;
+      result.push({ label, count });
+    }
+    return result;
+  }, [leads]);
+
+  const maxCount = Math.max(1, ...data.map(d => d.count));
+  const n = data.length;
+  const PAD_L = 36, PAD_R = 16, PAD_T = 24, PAD_B = 28;
+  const W = 760, H = 170;
+  const cW = W - PAD_L - PAD_R;
+  const cH = H - PAD_T - PAD_B;
+
+  const px = (i: number) => PAD_L + (i / (n - 1)) * cW;
+  const py = (v: number) => PAD_T + cH - (v / maxCount) * cH;
+
+  const linePath = data.map((d, i) => `${i === 0 ? 'M' : 'L'}${px(i).toFixed(1)},${py(d.count).toFixed(1)}`).join(' ');
+  const areaPath = `${linePath} L${px(n - 1).toFixed(1)},${(PAD_T + cH).toFixed(1)} L${px(0).toFixed(1)},${(PAD_T + cH).toFixed(1)} Z`;
+
+  const maData = data.map((_, i) => {
+    const slice = data.slice(Math.max(0, i - 2), i + 3);
+    return slice.reduce((s, x) => s + x.count, 0) / slice.length;
+  });
+  const maPath = maData.map((v, i) => `${i === 0 ? 'M' : 'L'}${px(i).toFixed(1)},${py(v).toFixed(1)}`).join(' ');
+
+  const yLevels = [0, Math.round(maxCount * 0.5), maxCount];
+  const xLabels = data.filter((_, i) => i % 4 === 0 || i === n - 1);
+
+  return (
+    <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4 shadow-sm">
+      <div className="flex items-start justify-between gap-3 mb-2">
+        <div>
+          <h2 className="text-sm font-bold text-white">Gündəlik Müraciet (Leads)</h2>
+          <p className="text-[10px] text-slate-500 mt-0.5">Synced with global date filter (Date Created).</p>
+        </div>
+        <button
+          onClick={() => setShowMA(v => !v)}
+          className={cn('px-3 py-1 rounded-lg text-[11px] font-semibold border transition-colors whitespace-nowrap', showMA ? 'bg-blue-600 border-blue-500/40 text-white' : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200')}
+        >
+          ~ Trend (MA)
+        </button>
+      </div>
+      <div className="overflow-x-auto">
+        <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ minWidth: 380, height: 170 }}>
+          <defs>
+            <linearGradient id="dailyLeadGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.3" />
+              <stop offset="100%" stopColor="#3b82f6" stopOpacity="0.02" />
+            </linearGradient>
+          </defs>
+          {yLevels.map(v => (
+            <g key={v}>
+              <line x1={PAD_L} y1={py(v)} x2={W - PAD_R} y2={py(v)} stroke="rgba(148,163,184,0.1)" strokeWidth="1" />
+              <text x={PAD_L - 4} y={py(v) + 4} textAnchor="end" fontSize="9" fill="#64748b">{v}</text>
+            </g>
+          ))}
+          <path d={areaPath} fill="url(#dailyLeadGrad)" />
+          <path d={linePath} fill="none" stroke="#3b82f6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+          {showMA && (
+            <path d={maPath} fill="none" stroke="#f97316" strokeWidth="1.5" strokeDasharray="4,3" strokeLinecap="round" strokeLinejoin="round" />
+          )}
+          {data.map((d, i) => d.count > 0 && (
+            <text key={i} x={px(i)} y={py(d.count) - 5} textAnchor="middle" fontSize="9" fill="#cbd5e1" fontWeight="600">{d.count}</text>
+          ))}
+          {data.map((d, i) => (
+            <circle key={i} cx={px(i)} cy={py(d.count)} r={d.count > 0 ? 3 : 2} fill={d.count > 0 ? '#3b82f6' : 'rgba(148,163,184,0.25)'} />
+          ))}
+          {xLabels.map((d, idx) => {
+            const i = data.indexOf(d);
+            return (
+              <text key={idx} x={px(i)} y={H - 4} textAnchor="middle" fontSize="9" fill="#64748b">{d.label}</text>
+            );
+          })}
+        </svg>
+      </div>
+    </div>
+  );
+}
+
 export default function AnalyticsPage() {
   const { leads, currentUser, teamMembers } = useAppStore();
 
@@ -596,6 +690,8 @@ export default function AnalyticsPage() {
           </button>
         </div>
       </div>
+
+      <DailyLeadsTrend leads={scopedLeads} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {layout.widgets.map((w, idx) => {

@@ -239,7 +239,13 @@ export default function CRMPage() {
       .filter(l => String(l.status) === String(revenueStageId))
       .reduce((sum, l) => sum + toNumberSafe((l as any).value, 0), 0);
 
-    return { totalLeads, totalRevenue };
+    const todayStr = new Date().toLocaleDateString('en-CA');
+    const todayLeads = filteredLeads.filter(l => {
+      if (!l.created_at) return false;
+      return new Date(l.created_at).toLocaleDateString('en-CA') === todayStr;
+    }).length;
+
+    return { totalLeads, totalRevenue, todayLeads };
   }, [filteredLeads, pipelineStages]);
 
   const openLead = useCallback((lead: Lead) => {
@@ -478,7 +484,12 @@ export default function CRMPage() {
               </div>
               <div className="min-w-0">
                 <p className="text-[9px] sm:text-xs text-slate-400 uppercase font-medium truncate">Leads</p>
-                <p className="text-sm sm:text-xl font-bold text-white truncate">{metrics.totalLeads}</p>
+                <div className="flex items-baseline gap-1.5 flex-wrap">
+                  <p className="text-sm sm:text-xl font-bold text-white tabular-nums">{metrics.totalLeads}</p>
+                  {metrics.todayLeads > 0 && (
+                    <span className="text-[9px] sm:text-[11px] font-semibold text-green-400 tabular-nums">+{metrics.todayLeads} bugün</span>
+                  )}
+                </div>
               </div>
             </div>
 
