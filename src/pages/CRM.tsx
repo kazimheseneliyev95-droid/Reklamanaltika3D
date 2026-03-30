@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback, type UIEvent } from 'react';
+import { memo, useState, useMemo, useEffect, useCallback, type UIEvent } from 'react';
 import { useAppStore } from '../context/Store';
 import { Lead, LeadStatus } from '../types/crm';
 import { Badge } from '../components/ui/Badge';
