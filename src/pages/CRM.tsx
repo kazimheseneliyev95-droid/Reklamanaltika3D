@@ -6,6 +6,7 @@ import { Trash2, Calendar, Filter, RefreshCcw, Pencil, ShoppingBag, DollarSign, 
 import { cn, formatCurrency, toNumberSafe } from '../lib/utils';
 import { businessMinutesBetween, type BusinessHoursCfg } from '../lib/businessHours';
 import { LeadDetailsPanel } from '../components/LeadDetailsPanel';
+import { CreateLeadSidebar } from '../components/CreateLeadSidebar';
 import { loadCRMSettings, CustomField, LeadCardUISettings, DelayDotsSettings } from '../lib/crmSettings';
 import { CRMFilterSidebar, countActiveFilters, makeDefaultCRMFilters, type CRMFilters } from '../components/CRMFilterSidebar';
 import { CrmService } from '../services/CrmService';
@@ -55,6 +56,7 @@ export default function CRMPage() {
     leads,
     isLoading,
     isWhatsAppConnected,
+    addLead,
     updateLead,
     updateLeadStatus,
     removeLead,
@@ -79,6 +81,7 @@ export default function CRMPage() {
   const pipelineSig = useMemo(() => (pipelineStages || []).map(s => s.id).join('|'), [pipelineStages]);
 
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
+  const [showCreateLead, setShowCreateLead] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
   const [filters, setFilters] = useState<CRMFilters>(() => makeDefaultCRMFilters(pipelineStages));
   const [showNotif, setShowNotif] = useState(false);
@@ -259,6 +262,14 @@ export default function CRMPage() {
     CrmService.markLeadFullyRead(lead.id).catch(() => { });
   }, []);
 
+  const handleCreateLead = useCallback(async (payload: Omit<Lead, 'id' | 'created_at' | 'updated_at'>) => {
+    const createdLead = await addLead(payload);
+    if (!createdLead) return;
+    setShowCreateLead(false);
+    setActiveMobileTab(createdLead.status);
+    openLead(createdLead);
+  }, [addLead, openLead]);
+
   const handleEdit = (lead: Lead) => {
     openLead(lead);
   };
@@ -283,6 +294,7 @@ export default function CRMPage() {
   }));
 
   const canViewBudget = currentUser?.permissions?.view_budget !== false;
+  const canCreateLead = currentUser?.permissions?.create_lead !== false;
 
   const unreadTotal = useMemo(() => {
     return (leads || []).reduce((sum, l) => sum + (Number(l.unread_count || 0) > 0 ? Number(l.unread_count || 0) : 0), 0);
@@ -462,6 +474,18 @@ export default function CRMPage() {
               <span className="hidden sm:inline">Yenilə</span>
             </button>
 
+            {canCreateLead ? (
+              <button
+                onClick={() => setShowCreateLead(true)}
+                className="bg-blue-600 hover:bg-blue-500 text-white p-1.5 sm:px-3 sm:py-2 rounded-lg flex items-center gap-1.5 text-xs sm:text-sm transition-all border border-blue-500/50"
+                title="Yeni Lead"
+                type="button"
+              >
+                <UserPlus className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                <span className="hidden sm:inline">Yeni Lead</span>
+              </button>
+            ) : null}
+
             <button
               onClick={() => setShowFilters(true)}
               className="bg-slate-800 hover:bg-slate-700 text-slate-200 p-1.5 sm:px-3 sm:py-2 rounded-lg flex items-center gap-1.5 text-xs sm:text-sm transition-all border border-slate-700"
@@ -548,6 +572,15 @@ export default function CRMPage() {
         setDateRange={setDateRange}
         resultCount={filteredLeads.length}
         totalCount={leads.length}
+      />
+
+      <CreateLeadSidebar
+        open={showCreateLead}
+        onClose={() => setShowCreateLead(false)}
+        onCreate={handleCreateLead}
+        pipelineStages={pipelineStages}
+        teamMembers={teamMembers}
+        currentUser={currentUser}
       />
 
       {/* AMOCRM STYLE LEAD DETAILS PANEL */}

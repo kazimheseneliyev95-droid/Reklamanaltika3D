@@ -64,7 +64,7 @@ interface AppContextType {
 
   // Actions
   setDateRange: (range: DateRange) => void;
-  addLead: (lead: Omit<Lead, 'id' | 'created_at' | 'updated_at'>) => void;
+  addLead: (lead: Omit<Lead, 'id' | 'created_at' | 'updated_at'>) => Promise<Lead | undefined>;
   updateLead: (id: string, updates: Partial<Lead>) => void;
   updateLeadStatus: (id: string, status: LeadStatus) => void;
   removeLead: (id: string) => void;
@@ -488,11 +488,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const inRangeEnd = endMs === null || (Number.isFinite(createdAtMs) && createdAtMs <= endMs);
 
       if (inRange && inRangeEnd) {
-        setLeads(prev => [newLead, ...prev]);
+        setLeads(prev => {
+          const existingIndex = prev.findIndex((lead) => leadsMatch(lead, newLead));
+          if (existingIndex !== -1) {
+            const next = [...prev];
+            next[existingIndex] = { ...next[existingIndex], ...newLead };
+            leadsRef.current = next;
+            return next;
+          }
+          const next = [newLead, ...prev];
+          leadsRef.current = next;
+          return next;
+        });
       }
+
+      return newLead;
     } catch (error) {
       console.error('❌ Error adding lead:', error);
       // Could add toast notification here
+      return undefined;
     }
   };
 
