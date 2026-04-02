@@ -2530,7 +2530,7 @@ app.post('/api/auth/logout', (req, res) => {
 });
 
 const handleAuthVerify = (req, res) => {
-  const token = req.cookies?.crm_auth_token || req.body.token;
+  const token = req.cookies?.crm_auth_token || req.body?.token || req.headers['authorization']?.replace('Bearer ', '');
   try {
     const data = verifyAnyToken(token);
     if (data.tenantId) {
