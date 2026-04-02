@@ -963,9 +963,9 @@ class CrmServiceImpl {
     }
   }
 
-  async markLeadRead(leadId: string): Promise<boolean> {
+  async markLeadRead(leadId: string): Promise<Lead | null> {
     const url = this.getServerUrl();
-    if (!url) return false;
+    if (!url) return null;
     try {
       const res = await this.authFetch(`${url}/api/leads/${leadId}/read`, {
         method: 'POST'
@@ -974,34 +974,42 @@ class CrmServiceImpl {
       if (res.ok) {
         try {
           const data = await res.json().catch(() => ({}));
-          const lead = data?.lead || null;
+          const lead = data?.lead ? this.normalizeLead(data.lead) : null;
           const nextUnread = Number.isFinite(Number(lead?.unread_count)) ? Number(lead.unread_count) : 0;
           const nextReadAt = lead?.last_read_at || new Date().toISOString();
           this.recentLeadReads.set(String(leadId || '').trim(), Date.parse(String(nextReadAt)) || Date.now());
           this.cleanupRecentLeadReads();
-          const idx = this.leadsCache.findIndex(l => l.id === leadId);
+          if (!lead) return null;
+          const idx = this.leadsCache.findIndex(l => l.id === leadId || l.phone === lead.phone);
+          const updated = idx !== -1
+            ? ({ ...this.leadsCache[idx], ...lead, unread_count: nextUnread, last_read_at: nextReadAt } as Lead)
+            : ({ ...lead, unread_count: nextUnread, last_read_at: nextReadAt } as Lead);
           if (idx !== -1) {
-            const updated = { ...this.leadsCache[idx], unread_count: nextUnread, last_read_at: nextReadAt } as any;
             this.leadsCache[idx] = updated;
-
-            const raw = localStorage.getItem(getStorageKey());
-            const allLeads: Lead[] = raw ? JSON.parse(raw) : [];
-            const index = allLeads.findIndex(l => l.id === leadId);
-            if (index !== -1) {
-              allLeads[index] = updated as any;
-              localStorage.setItem(getStorageKey(), JSON.stringify(allLeads));
-            }
-
-            this.notifyLeadUpdateListeners(updated as any);
+          } else {
+            this.leadsCache.unshift(updated);
           }
+
+          const raw = localStorage.getItem(getStorageKey());
+          const allLeads: Lead[] = raw ? JSON.parse(raw) : [];
+          const index = allLeads.findIndex(l => l.id === leadId || l.phone === updated.phone);
+          if (index !== -1) {
+            allLeads[index] = updated as any;
+          } else {
+            allLeads.unshift(updated as any);
+          }
+          localStorage.setItem(getStorageKey(), JSON.stringify(allLeads));
+
+          this.notifyLeadUpdateListeners(updated as any);
+          return updated;
         } catch {
           // ignore
         }
       }
 
-      return res.ok;
+      return null;
     } catch {
-      return false;
+      return null;
     }
   }
 
