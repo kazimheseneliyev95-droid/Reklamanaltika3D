@@ -3589,6 +3589,7 @@ app.post('/api/leads/:id/read', requireTenantAuth, asyncHandler(async (req, res)
   if (!visibleLead) return res.status(404).json({ error: 'Lead not found' });
   const lead = await db.markLeadRead(req.params.id, req.tenantId, req.userId || null);
   if (!lead) return res.status(404).json({ error: 'Lead not found' });
+  invalidateLeadListCache(req.tenantId);
   const room = req.userId ? `${req.tenantId}:user:${req.userId}` : req.tenantId;
   io.to(room).emit('lead_read', {
     leadId: req.params.id,
