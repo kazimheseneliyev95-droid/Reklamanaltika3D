@@ -44,6 +44,7 @@ class CrmServiceImpl {
 
   // 🆕 In-memory cache for better performance and deduplication
   private leadsCache: Lead[] = [];
+  private leadsRequests: Map<string, Promise<Lead[]>> = new Map();
   private storageWriteTimer: ReturnType<typeof setTimeout> | null = null;
   private lastPersistedLeadsJson = '';
   private lastPersistedStorageKey = '';
@@ -859,13 +860,6 @@ class CrmServiceImpl {
     const lid = String(leadId || '').trim();
     if (!lid) return false;
 
-    this.applyLeadReadLocally(lid);
-    this.notifyNotificationsMeta({
-      action: 'lead_notifications_read',
-      lead_id: lid,
-      read_at: new Date().toISOString(),
-    });
-
     const pending = this.pendingLeadReadRequests.get(lid);
     if (pending) return pending;
 
@@ -983,6 +977,8 @@ class CrmServiceImpl {
           const lead = data?.lead || null;
           const nextUnread = Number.isFinite(Number(lead?.unread_count)) ? Number(lead.unread_count) : 0;
           const nextReadAt = lead?.last_read_at || new Date().toISOString();
+          this.recentLeadReads.set(String(leadId || '').trim(), Date.parse(String(nextReadAt)) || Date.now());
+          this.cleanupRecentLeadReads();
           const idx = this.leadsCache.findIndex(l => l.id === leadId);
           if (idx !== -1) {
             const updated = { ...this.leadsCache[idx], unread_count: nextUnread, last_read_at: nextReadAt } as any;
@@ -1016,10 +1012,19 @@ class CrmServiceImpl {
    */
   async getLeads(dateRange?: DateRange): Promise<Lead[]> {
     const url = this.getServerUrl();
+    const requestKey = JSON.stringify({
+      start: dateRange?.start || null,
+      end: dateRange?.end || null,
+      tenantId: localStorage.getItem('crm_tenant_id') || 'admin',
+    });
 
     // Skip cache and always hit DB — this ensures fresh data on every page open
     // Try database API first (always available in production via window.location.origin)
     if (url) {
+      const inFlight = this.leadsRequests.get(requestKey);
+      if (inFlight) return inFlight;
+
+      const request = (async () => {
       try {
         const params = new URLSearchParams();
         if (dateRange?.start) params.append('startDate', dateRange.start);
@@ -1038,6 +1043,13 @@ class CrmServiceImpl {
       } catch (error) {
         console.warn('⚠️ Failed to fetch from database, using localStorage fallback:', error);
       }
+        return this.filterLeadsByDate(this.readStoredLeads().map((l: any) => this.normalizeLead(l)), dateRange);
+      })().finally(() => {
+        this.leadsRequests.delete(requestKey);
+      });
+
+      this.leadsRequests.set(requestKey, request);
+      return request;
     }
 
     // Fallback to localStorage

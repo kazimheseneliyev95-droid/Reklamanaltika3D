@@ -9,7 +9,6 @@ import { LeadDetailsPanel } from '../components/LeadDetailsPanel';
 import { CreateLeadSidebar } from '../components/CreateLeadSidebar';
 import { loadCRMSettings, CustomField, LeadCardUISettings, DelayDotsSettings } from '../lib/crmSettings';
 import { CRMFilterSidebar, countActiveFilters, makeDefaultCRMFilters, type CRMFilters } from '../components/CRMFilterSidebar';
-import { CrmService } from '../services/CrmService';
 
 const UNREAD_PAGE_SIZE = 20;
 
@@ -66,6 +65,7 @@ export default function CRMPage() {
     addLead,
     updateLead,
     updateLeadStatus,
+    markLeadRead,
     removeLead,
     syncLeadsFromWhatsApp,
     dateRange,
@@ -266,8 +266,8 @@ export default function CRMPage() {
 
   const openLead = useCallback((lead: Lead) => {
     setSelectedLead(lead);
-    CrmService.markLeadFullyRead(lead.id).catch(() => { });
-  }, []);
+    void markLeadRead(lead.id);
+  }, [markLeadRead]);
 
   const handleCreateLead = useCallback(async (payload: Omit<Lead, 'id' | 'created_at' | 'updated_at'>) => {
     const createdLead = await addLead(payload);

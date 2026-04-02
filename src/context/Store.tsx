@@ -67,6 +67,7 @@ interface AppContextType {
   addLead: (lead: Omit<Lead, 'id' | 'created_at' | 'updated_at'>) => Promise<Lead | undefined>;
   updateLead: (id: string, updates: Partial<Lead>) => void;
   updateLeadStatus: (id: string, status: LeadStatus) => void;
+  markLeadRead: (id: string) => Promise<void>;
   removeLead: (id: string) => void;
   syncLeadsFromWhatsApp: () => Promise<void>;
   clearAllLeads: () => Promise<void>;
@@ -540,6 +541,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const markLeadRead = useCallback(async (id: string) => {
+    const leadId = String(id || '').trim();
+    if (!leadId) return;
+    try {
+      await CrmService.markLeadFullyRead(leadId);
+    } catch {
+      // Ignore transient failures; socket/reload path will reconcile.
+    }
+  }, []);
+
   const removeLead = useCallback((id: string) => {
     CrmService.deleteLead(id).then(() => {
       setLeads((prev) => {
@@ -787,6 +798,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       addLead,
       updateLead,
       updateLeadStatus,
+      markLeadRead,
       removeLead,
       syncLeadsFromWhatsApp,
       clearAllLeads,

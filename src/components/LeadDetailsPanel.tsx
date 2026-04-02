@@ -757,7 +757,7 @@ interface LeadDetailsPanelProps {
 export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: LeadDetailsPanelProps) {
 
     // LOCAL STATE (mirrors lead props - updated on save)
-    const { teamMembers, currentUser, crmSettingsRev } = useAppStore();
+    const { teamMembers, currentUser, crmSettingsRev, markLeadRead } = useAppStore();
     const leadRef = useRef(lead);
     leadRef.current = lead;
     const [localStatus, setLocalStatus] = useState<LeadStatus>(lead.status);
@@ -862,8 +862,8 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
 
     const markRead = useCallback(() => {
         if (!lead?.id) return;
-        CrmService.markLeadFullyRead(lead.id).catch(() => { });
-    }, [lead?.id]);
+        void markLeadRead(lead.id);
+    }, [lead?.id, markLeadRead]);
 
     // Mark as read when opened
     useEffect(() => {

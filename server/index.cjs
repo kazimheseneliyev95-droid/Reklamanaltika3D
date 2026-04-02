@@ -416,14 +416,31 @@ const tenantSettingsCache = new Map(); // tenantId -> { atMs, settings }
 const tenantAdminIdsCache = new Map(); // tenantId -> { atMs, userIds }
 const tenantAutomationCache = new Map(); // tenantId -> { atMs, settings }
 const dashboardCombinedCache = new Map(); // cacheKey -> { atMs, payload }
+const leadsListCache = new Map(); // cacheKey -> { tenantId, atMs, payload }
+const leadsListInFlight = new Map(); // cacheKey -> Promise<payload>
 const SETTINGS_CACHE_TTL_MS = 60 * 1000;
 const DASHBOARD_CACHE_TTL_MS = 15000;
+const LEADS_CACHE_TTL_MS = 2500;
+
+function invalidateLeadListCache(tenantId) {
+  const tid = String(tenantId || '').trim();
+  if (!tid) return;
+  for (const [key, value] of leadsListCache.entries()) {
+    if (String(value?.tenantId || '') === tid) leadsListCache.delete(key);
+  }
+  for (const [key, value] of leadsListInFlight.entries()) {
+    if (String(value?.tenantId || '') === tid) leadsListInFlight.delete(key);
+  }
+}
 
 // BUG-08 fix: Periodic cleanup for in-memory caches — prevents unbounded Map growth
 setInterval(() => {
   const now = Date.now();
   for (const [k, v] of dashboardCombinedCache.entries()) {
     if ((now - v.atMs) > DASHBOARD_CACHE_TTL_MS * 20) dashboardCombinedCache.delete(k);
+  }
+  for (const [k, v] of leadsListCache.entries()) {
+    if ((now - v.atMs) > LEADS_CACHE_TTL_MS * 20) leadsListCache.delete(k);
   }
   for (const [k, v] of tenantSettingsCache.entries()) {
     if ((now - v.atMs) > SETTINGS_CACHE_TTL_MS * 20) tenantSettingsCache.delete(k);
@@ -1945,23 +1962,49 @@ function socketCanAccessLead(socket, lead) {
   return Boolean(assigneeId && userId && assigneeId === userId);
 }
 
-async function emitLeadUpdatedScoped(tenantId, lead) {
+async function emitLeadUpdatedScopedNow(tenantId, lead) {
   if (!lead) return;
+  invalidateLeadListCache(tenantId);
   const sockets = await io.in(tenantId).fetchSockets().catch(() => []);
-  for (const socket of sockets) {
-    if (socketCanAccessLead(socket, lead)) {
-      const decorated = (process.env.DATABASE_URL && typeof db.getLeadById === 'function')
-        ? await db.getLeadById(lead.id, tenantId, socket.userId).catch(() => lead)
-        : lead;
-      socket.emit('lead_updated', decorated || lead);
-    } else if (lead.id) {
-      socket.emit('lead_deleted', lead.id);
+  if (!Array.isArray(sockets) || sockets.length === 0) return;
+
+  const decoratedByScope = new Map();
+  const getDecoratedForSocket = async (socket) => {
+    if (!process.env.DATABASE_URL || typeof db.getLeadById !== 'function' || !lead?.id) return lead;
+    const scopeKey = socketCanViewAllLeads(socket)
+      ? 'all'
+      : `user:${String(socket.userId || '').trim()}`;
+    if (!decoratedByScope.has(scopeKey)) {
+      decoratedByScope.set(
+        scopeKey,
+        db.getLeadById(lead.id, tenantId, socketCanViewAllLeads(socket) ? null : socket.userId).catch(() => lead)
+      );
     }
-  }
+    return decoratedByScope.get(scopeKey);
+  };
+
+  await Promise.all(sockets.map(async (socket) => {
+    if (socketCanAccessLead(socket, lead)) {
+      const decorated = await getDecoratedForSocket(socket);
+      socket.emit('lead_updated', decorated || lead);
+      return;
+    }
+    if (lead.id) socket.emit('lead_deleted', lead.id);
+  }));
+}
+
+function emitLeadUpdatedScoped(tenantId, lead) {
+  if (!lead) return;
+  setImmediate(() => {
+    void emitLeadUpdatedScopedNow(tenantId, lead).catch((error) => {
+      console.warn('Scoped lead update emit failed:', error?.message || error);
+    });
+  });
 }
 
 async function emitLeadDeletedScoped(tenantId, lead) {
   if (!lead || !lead.id) return;
+  invalidateLeadListCache(tenantId);
   const sockets = await io.in(tenantId).fetchSockets().catch(() => []);
   for (const socket of sockets) {
     if (socketCanAccessLead(socket, lead)) {
@@ -1971,6 +2014,7 @@ async function emitLeadDeletedScoped(tenantId, lead) {
 }
 
 async function emitNewMessageScoped(tenantId, lead, payload) {
+  invalidateLeadListCache(tenantId);
   const sockets = await io.in(tenantId).fetchSockets().catch(() => []);
   for (const socket of sockets) {
     if (!lead || socketCanAccessLead(socket, lead)) {
@@ -1984,6 +2028,7 @@ async function emitNewMessageScoped(tenantId, lead, payload) {
 
 async function emitScopedLeadList(tenantId) {
   if (!db || typeof db.getLeads !== 'function') return;
+  invalidateLeadListCache(tenantId);
   const sockets = await io.in(tenantId).fetchSockets().catch(() => []);
   await Promise.all(sockets.map(async (socket) => {
     const filters = socketCanViewAllLeads(socket)
@@ -3006,7 +3051,7 @@ app.post('/api/whatsapp/start', requireTenantAuth, asyncHandler(async (req, res)
 app.get('/api/leads', requireTenantAuth, asyncHandler(async (req, res) => {
   if (typeof db.getLeads !== 'function') return res.status(503).json({ error: 'Lead storage not configured' });
   const { status, startDate, endDate, limit, offset, tzOffsetMinutes } = req.query;
-  const leads = await db.getLeads({
+  const filters = {
     status,
     startDate,
     endDate,
@@ -3015,13 +3060,36 @@ app.get('/api/leads', requireTenantAuth, asyncHandler(async (req, res) => {
     offset: offset ? parseInt(offset) : undefined,
     assigneeId: canViewAllLeads(req) ? undefined : req.userId,
     userId: req.userId || null,
-  }, req.tenantId);
+  };
+  const cacheKey = JSON.stringify({ tenantId: req.tenantId, filters });
+  const cached = leadsListCache.get(cacheKey);
+  if (cached && (Date.now() - cached.atMs) < LEADS_CACHE_TTL_MS) {
+    return res.json(cached.payload);
+  }
+
+  const inflight = leadsListInFlight.get(cacheKey);
+  if (inflight) {
+    const payload = await inflight.promise;
+    return res.json(payload);
+  }
+
+  const promise = db.getLeads(filters, req.tenantId)
+    .then((payload) => {
+      leadsListCache.set(cacheKey, { tenantId: req.tenantId, atMs: Date.now(), payload });
+      return payload;
+    })
+    .finally(() => {
+      leadsListInFlight.delete(cacheKey);
+    });
+  leadsListInFlight.set(cacheKey, { tenantId: req.tenantId, promise });
+  const leads = await promise;
   res.json(leads);
 }));
 
 app.post('/api/leads', requireTenantAuth, requirePermission('create_lead', 'Lead yaratmaq icazəniz yoxdur'), asyncHandler(async (req, res) => {
   if (typeof db.createLead !== 'function') return res.status(503).json({ error: 'Lead storage not configured' });
   const lead = await db.createLead(req.body, req.tenantId);
+  invalidateLeadListCache(req.tenantId);
   let finalLead = lead;
 
   try {
