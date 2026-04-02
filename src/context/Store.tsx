@@ -68,6 +68,7 @@ interface AppContextType {
   updateLead: (id: string, updates: Partial<Lead>) => void;
   updateLeadStatus: (id: string, status: LeadStatus) => void;
   markLeadRead: (id: string) => Promise<void>;
+  syncLeadLocal: (lead: Lead) => void;
   removeLead: (id: string) => void;
   syncLeadsFromWhatsApp: () => Promise<void>;
   clearAllLeads: () => Promise<void>;
@@ -541,6 +542,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const syncLeadLocal = useCallback((lead: Lead) => {
+    if (!lead) return;
+    scheduleLeadUpsert(lead);
+  }, [scheduleLeadUpsert]);
+
   const markLeadRead = useCallback(async (id: string) => {
     const leadId = String(id || '').trim();
     if (!leadId) return;
@@ -552,16 +558,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       const updatedLead = leadResult.status === 'fulfilled' ? leadResult.value : null;
       if (updatedLead) {
-        setLeads((prev) => {
-          const next = prev.map((lead) => lead.id === updatedLead.id ? { ...lead, ...updatedLead } : lead);
-          leadsRef.current = next;
-          return next;
-        });
+        scheduleLeadUpsert(updatedLead);
       }
     } catch {
       // Ignore transient failures; socket/reload path will reconcile.
     }
-  }, []);
+  }, [scheduleLeadUpsert]);
 
   const removeLead = useCallback((id: string) => {
     CrmService.deleteLead(id).then(() => {
@@ -811,6 +813,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       updateLead,
       updateLeadStatus,
       markLeadRead,
+      syncLeadLocal,
       removeLead,
       syncLeadsFromWhatsApp,
       clearAllLeads,

@@ -2026,7 +2026,7 @@ async function emitNewMessageScoped(tenantId, lead, payload) {
   }
 }
 
-async function emitScopedLeadList(tenantId) {
+async function emitScopedLeadListNow(tenantId) {
   if (!db || typeof db.getLeads !== 'function') return;
   invalidateLeadListCache(tenantId);
   const sockets = await io.in(tenantId).fetchSockets().catch(() => []);
@@ -2037,6 +2037,14 @@ async function emitScopedLeadList(tenantId) {
     const leads = await db.getLeads(filters, tenantId).catch(() => []);
     socket.emit('leads_updated', leads);
   }));
+}
+
+function emitScopedLeadList(tenantId) {
+  setImmediate(() => {
+    void emitScopedLeadListNow(tenantId).catch((error) => {
+      console.warn('Scoped lead list emit failed:', error?.message || error);
+    });
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -3587,7 +3595,6 @@ app.post('/api/leads/:id/read', requireTenantAuth, asyncHandler(async (req, res)
     timestamp: lead.last_read_at || new Date().toISOString(),
     unread_count: lead.unread_count ?? 0,
   });
-  emitLeadUpdatedScoped(req.tenantId, lead);
   res.json({ success: true, lead });
 }));
 
@@ -3646,22 +3653,8 @@ app.post('/api/leads/:id/close', requireTenantAuth, asyncHandler(async (req, res
     details: movedToStage ? { moved_to_stage: movedToStage } : {}
   }).catch(() => null);
 
-  const decorated = await db.pool.query(
-    `SELECT l.*, fu.next_due_at AS next_followup_due_at
-     FROM leads l
-     LEFT JOIN LATERAL (
-       SELECT MIN(due_at) AS next_due_at
-       FROM follow_ups f
-       WHERE f.tenant_id = l.tenant_id
-         AND f.lead_id = l.id
-         AND f.status = 'open'
-     ) fu ON true
-     WHERE l.id = $1 AND l.tenant_id = $2`,
-    [leadId, req.tenantId]
-  );
-
-  const lead = decorated.rows?.[0] || null;
-  if (lead) await emitLeadUpdatedScoped(req.tenantId, lead);
+  const lead = await db.getLeadById(leadId, req.tenantId, canViewAllLeads(req) ? null : req.userId).catch(() => null);
+  if (lead) emitLeadUpdatedScoped(req.tenantId, lead);
   res.json(lead || { success: true });
 }));
 
@@ -3688,22 +3681,8 @@ app.post('/api/leads/:id/reopen', requireTenantAuth, asyncHandler(async (req, re
     details: {}
   }).catch(() => null);
 
-  const decorated = await db.pool.query(
-    `SELECT l.*, fu.next_due_at AS next_followup_due_at
-     FROM leads l
-     LEFT JOIN LATERAL (
-       SELECT MIN(due_at) AS next_due_at
-       FROM follow_ups f
-       WHERE f.tenant_id = l.tenant_id
-         AND f.lead_id = l.id
-         AND f.status = 'open'
-     ) fu ON true
-     WHERE l.id = $1 AND l.tenant_id = $2`,
-    [leadId, req.tenantId]
-  );
-
-  const lead = decorated.rows?.[0] || null;
-  if (lead) await emitLeadUpdatedScoped(req.tenantId, lead);
+  const lead = await db.getLeadById(leadId, req.tenantId, canViewAllLeads(req) ? null : req.userId).catch(() => null);
+  if (lead) emitLeadUpdatedScoped(req.tenantId, lead);
   res.json(lead || { success: true });
 }));
 
