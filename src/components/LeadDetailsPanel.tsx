@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { Lead, LeadStatus } from '../types/crm';
 import {
     User, Phone, Package, MessageSquare, Clock, Hash,
-    Save, CheckCircle2, TrendingUp, BarChart2, Edit3, Check, Route, ChevronDown
+    Save, CheckCircle2, TrendingUp, BarChart2, Edit3, Check, Route, ChevronDown, NotebookPen
 } from 'lucide-react';
 import { cn, toNumberSafe } from '../lib/utils';
 import { loadCRMSettings } from '../lib/crmSettings';
@@ -15,9 +15,11 @@ import { useAppStore } from '../context/Store';
 interface ChatMessage {
     id: string;
     body: string;
-    direction: 'in' | 'out';
+    direction: 'in' | 'out' | 'note';
     created_at: string;
     metadata?: any;
+    status?: string;
+    authorLabel?: string;
 }
 
 type StoryEvent =
@@ -60,7 +62,9 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
     }, [messages]);
 
     const isMeta = lead.source === 'facebook' || lead.source === 'instagram';
+    const canAddInternalNote = true;
     const [metaMode, setMetaMode] = useState<'dm' | 'comment' | 'private'>(isMeta ? 'comment' : 'dm');
+    const [composerMode, setComposerMode] = useState<'message' | 'note'>('message');
     const [sendError, setSendError] = useState('');
 
     const canSend = lead.source === 'whatsapp' || isMeta;
@@ -114,12 +118,37 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
 
         try {
             const token = localStorage.getItem('crm_auth_token') || '';
-            const res = await fetch(`${serverUrl}/api/leads/${lead.id}/messages`, {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
-            if (res.ok) {
-                const data = await res.json();
-                if (Array.isArray(data)) setMessages(data);
+            const [messagesRes, storyRes] = await Promise.all([
+                fetch(`${serverUrl}/api/leads/${lead.id}/messages`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                }),
+                fetch(`${serverUrl}/api/leads/${lead.id}/story?limit=150&includeMessages=0`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                })
+            ]);
+            if (messagesRes.ok) {
+                const data = await messagesRes.json();
+                const messageRows: ChatMessage[] = Array.isArray(data) ? data : [];
+                let noteRows: ChatMessage[] = [];
+                if (storyRes.ok) {
+                    const storyData = await storyRes.json().catch(() => ({}));
+                    noteRows = (Array.isArray(storyData?.events) ? storyData.events : [])
+                        .filter((ev: any) => ev?.kind === 'audit' && String(ev?.action || '') === 'LEAD_NOTE' && String(ev?.details?.note || '').trim())
+                        .map((ev: any) => ({
+                            id: `note-${ev.id}`,
+                            body: String(ev.details.note || ''),
+                            direction: 'note' as const,
+                            created_at: ev.at || new Date().toISOString(),
+                            metadata: { internal_note: true },
+                            authorLabel: ev.user?.displayName || ev.user?.username || 'Komanda qeydi'
+                        }));
+                }
+                const merged = [...messageRows, ...noteRows].sort((a, b) => {
+                    const at = Date.parse(String(a.created_at || '')) || 0;
+                    const bt = Date.parse(String(b.created_at || '')) || 0;
+                    return at - bt;
+                });
+                setMessages(merged);
             }
         } catch {
             /* non-fatal */
@@ -187,29 +216,48 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
 
     const handleSend = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!canSend) return;
-        const outgoing = replyText.trim();
+        const raw = replyText.trim();
+        const slashNote = raw.match(/^\/note\s+([\s\S]+)$/i);
+        const effectiveMode = slashNote ? 'note' : composerMode;
+        const outgoing = slashNote ? String(slashNote[1] || '').trim() : raw;
+        if (effectiveMode === 'message' && !canSend) return;
         if (!outgoing || isSending) return;
         setIsSending(true);
         setSendError('');
 
-        // Optimistic: show immediately (important on mobile)
         const optimisticId = `tmp-${Date.now()}`;
-        setMessages(prev => ([
-            ...prev,
-            { id: optimisticId, body: outgoing, direction: 'out', created_at: new Date().toISOString() }
-        ]));
+        const optimisticMessage: ChatMessage = effectiveMode === 'note'
+            ? {
+                id: optimisticId,
+                body: outgoing,
+                direction: 'note',
+                created_at: new Date().toISOString(),
+                metadata: { internal_note: true, optimistic: true },
+                authorLabel: 'Daxili qeyd'
+            }
+            : {
+                id: optimisticId,
+                body: outgoing,
+                direction: 'out',
+                created_at: new Date().toISOString(),
+                status: 'pending'
+            };
+        setMessages(prev => ([...prev, optimisticMessage]));
         setReplyText('');
         requestAnimationFrame(() => scrollToBottom('smooth'));
         try {
             const token = localStorage.getItem('crm_auth_token') || '';
-            const endpoint = lead.source === 'whatsapp'
-                ? `${serverUrl}/api/leads/${lead.id}/messages`
-                : `${serverUrl}/api/meta/leads/${lead.id}/reply`;
+            const endpoint = effectiveMode === 'note'
+                ? `${serverUrl}/api/leads/${lead.id}/notes`
+                : lead.source === 'whatsapp'
+                    ? `${serverUrl}/api/leads/${lead.id}/messages`
+                    : `${serverUrl}/api/meta/leads/${lead.id}/reply`;
 
-            const payload = lead.source === 'whatsapp'
-                ? { body: outgoing }
-                : { body: outgoing, mode: metaMode };
+            const payload = effectiveMode === 'note'
+                ? { note: outgoing }
+                : lead.source === 'whatsapp'
+                    ? { body: outgoing }
+                    : { body: outgoing, mode: metaMode };
 
             const res = await fetch(endpoint, {
                 method: 'POST',
@@ -217,17 +265,28 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                 body: JSON.stringify(payload)
             });
             if (res.ok) {
+                if (effectiveMode === 'note') setComposerMode('message');
                 loadMessages({ background: true });
             } else {
                 const data = await res.json().catch(() => ({}));
-                setSendError(String(data?.error || 'Mesaj gonderilemedi'));
+                setSendError(String(data?.error || (effectiveMode === 'note' ? 'Qeyd elave olunmadi' : 'Mesaj gonderilemedi')));
             }
         } catch (err) {
             console.error('Failed to send message', err);
-            setSendError('Mesaj gonderilemedi');
+            setSendError(effectiveMode === 'note' ? 'Qeyd elave olunmadi' : 'Mesaj gonderilemedi');
         } finally {
             setIsSending(false);
         }
+    };
+
+    const renderMessageStatus = (status?: string) => {
+        const normalized = String(status || '').toLowerCase();
+        if (!normalized || normalized === 'pending') return <span className="text-slate-400">✓</span>;
+        if (normalized === 'sent') return <span className="text-slate-300">✓</span>;
+        if (normalized === 'delivered') return <span className="text-slate-200">✓✓</span>;
+        if (normalized === 'read') return <span className="text-sky-300">✓✓</span>;
+        if (normalized === 'failed') return <span className="text-red-300">!</span>;
+        return <span className="text-slate-300">✓</span>;
     };
 
     if (loading && messages.length === 0) return (
@@ -271,6 +330,7 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                 ) : (
                     messages.map((msg) => {
                         const isOut = msg.direction === 'out';
+                        const isNote = msg.direction === 'note' || Boolean(msg?.metadata?.internal_note);
                         const timeStr = new Date(msg.created_at).toLocaleTimeString('az-AZ', { hour: '2-digit', minute: '2-digit' });
                         const dateStr2 = new Date(msg.created_at).toLocaleDateString('az-AZ', { day: '2-digit', month: 'short' });
                         const ad = msg?.metadata?.ad;
@@ -284,13 +344,22 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                         const hideBody = Boolean(mediaSrc) && isWorkerPlaceholder(msg.body);
 
                         return (
-                            <div key={msg.id} className={cn('flex', isOut ? 'justify-end' : 'justify-start')}>
+                            <div key={msg.id} className={cn('flex', isNote ? 'justify-center' : isOut ? 'justify-end' : 'justify-start')}>
                                 <div className={cn(
                                     'max-w-[85%] px-3 py-2 rounded-2xl text-sm leading-relaxed',
-                                    isOut
+                                    isNote
+                                        ? 'w-full max-w-[92%] border border-amber-500/30 bg-amber-950/20 text-amber-100 rounded-xl'
+                                        : isOut
                                         ? 'bg-blue-600/90 text-white rounded-br-sm'
                                         : 'bg-slate-800 text-slate-200 rounded-bl-sm'
                                 )}>
+                                    {isNote ? (
+                                        <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-wide text-amber-300">
+                                            <NotebookPen className="w-3.5 h-3.5" />
+                                            Daxili qeyd
+                                            {msg.authorLabel ? <span className="normal-case tracking-normal text-amber-200/80">{msg.authorLabel}</span> : null}
+                                        </div>
+                                    ) : null}
                                     {(adUrl || qAd?.advertiserName || qAd?.caption) && (
                                         <div className={cn(
                                             'mb-2 rounded-xl border p-2',
@@ -390,10 +459,12 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                                         <p className="whitespace-pre-wrap break-words">{msg.body}</p>
                                     ) : null}
                                     <p className={cn(
-                                        'text-[10px] mt-1 text-right',
-                                        isOut ? 'text-blue-200/70' : 'text-slate-500'
+                                        'text-[10px] mt-1 flex items-center gap-1',
+                                        isNote ? 'justify-between text-amber-200/70' : 'justify-end',
+                                        isNote ? '' : isOut ? 'text-blue-200/70' : 'text-slate-500'
                                     )}>
-                                        {dateStr2} · {timeStr} · {isOut ? '📤' : '📥'}
+                                        <span>{dateStr2} · {timeStr}{!isNote ? ` · ${isOut ? '📤' : '📥'}` : ''}</span>
+                                        {!isNote && isOut ? <span className="inline-flex items-center">{renderMessageStatus(msg.status)}</span> : null}
                                     </p>
                                 </div>
                             </div>
@@ -442,22 +513,51 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                     </div>
                 ) : null}
                 <form onSubmit={handleSend} className="flex gap-2">
+                    <div className="flex shrink-0 overflow-hidden rounded-lg border border-slate-700 bg-slate-900">
+                        <button
+                            type="button"
+                            onClick={() => setComposerMode('message')}
+                            className={cn(
+                                'px-3 py-2 text-[11px] font-bold transition-colors',
+                                composerMode === 'message' ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'
+                            )}
+                        >
+                            Mesaj
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setComposerMode('note')}
+                            disabled={!canAddInternalNote}
+                            className={cn(
+                                'px-3 py-2 text-[11px] font-bold transition-colors border-l border-slate-700',
+                                composerMode === 'note' ? 'bg-amber-600/90 text-white' : 'text-slate-300 hover:bg-slate-800',
+                                !canAddInternalNote && 'opacity-50 cursor-not-allowed'
+                            )}
+                        >
+                            Note
+                        </button>
+                    </div>
                     <input
                         type="text"
                         value={replyText}
                         onChange={(e) => setReplyText(e.target.value)}
-                        placeholder={'Mesaj yazın...'}
-                        disabled={isSending || !canSend}
+                        placeholder={composerMode === 'note' ? 'Daxili qeyd yazın... (/note da istifadə edə bilərsiniz)' : 'Mesaj yazın...'}
+                        disabled={isSending || (composerMode === 'message' ? !canSend : !canAddInternalNote)}
                         enterKeyHint="send"
                         autoComplete="off"
                         className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-50"
                     />
                     <button
                         type="submit"
-                        disabled={!canSend || !replyText.trim() || isSending}
-                        className="bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 disabled:text-slate-500 text-white rounded-lg px-3 sm:px-4 py-2 text-sm font-semibold transition-colors flex items-center justify-center min-w-[70px] sm:min-w-[80px]"
+                        disabled={!(replyText.trim()) || isSending || (composerMode === 'message' ? !canSend : !canAddInternalNote)}
+                        className={cn(
+                            'text-white rounded-lg px-3 sm:px-4 py-2 text-sm font-semibold transition-colors flex items-center justify-center min-w-[70px] sm:min-w-[80px]',
+                            composerMode === 'note'
+                                ? 'bg-amber-600 hover:bg-amber-500 disabled:bg-slate-800 disabled:text-slate-500'
+                                : 'bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 disabled:text-slate-500'
+                        )}
                     >
-                        {isSending ? <span className="animate-spin">⌛</span> : 'Göndər'}
+                        {isSending ? <span className="animate-spin">⌛</span> : composerMode === 'note' ? 'Qeyd et' : 'Göndər'}
                     </button>
                 </form>
             </div>
