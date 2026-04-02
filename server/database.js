@@ -2621,14 +2621,23 @@ async function markLeadRead(leadId, tenantId = 'admin', userId = null) {
         await client.query('BEGIN');
         let result = null;
         if (userId) {
-            await client.query(
+            const readNow = await client.query(
                 `INSERT INTO lead_reads (tenant_id, lead_id, user_id, last_read_at, updated_at)
                  VALUES ($1, $2, $3, NOW(), NOW())
                  ON CONFLICT (tenant_id, lead_id, user_id)
-                 DO UPDATE SET last_read_at = NOW(), updated_at = NOW()`,
+                 DO UPDATE SET last_read_at = NOW(), updated_at = NOW()
+                 RETURNING last_read_at`,
                 [tenantId, leadId, userId]
             );
-            result = await getLeadById(leadId, tenantId, userId, client);
+            const lastReadAt = readNow.rows[0]?.last_read_at || new Date();
+            // Fast path: simple PK lookup instead of heavy CTE (avoids 1-20s delay)
+            const leadRow = await client.query(
+                `SELECT * FROM leads WHERE id = $1 AND tenant_id = $2`,
+                [leadId, tenantId]
+            );
+            result = leadRow.rows[0]
+                ? { ...leadRow.rows[0], unread_count: 0, last_read_at: lastReadAt }
+                : null;
         } else {
             const legacyResult = await client.query(
                 `UPDATE leads

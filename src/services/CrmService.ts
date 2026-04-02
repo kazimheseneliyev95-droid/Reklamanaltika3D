@@ -73,7 +73,8 @@ class CrmServiceImpl {
     if (!readAtMs) return lead;
 
     const updatedAtMs = Date.parse(String(lead?.updated_at || lead?.last_message_at || lead?.created_at || ''));
-    if (Number.isFinite(updatedAtMs) && updatedAtMs > readAtMs) return lead;
+    // 5s buffer covers server/client clock skew — messages arriving within 5s before open still get cleared
+    if (Number.isFinite(updatedAtMs) && updatedAtMs > readAtMs + 5000) return lead;
 
     lead.unread_count = 0;
     if (!lead.last_read_at || Date.parse(String(lead.last_read_at)) < readAtMs) {
