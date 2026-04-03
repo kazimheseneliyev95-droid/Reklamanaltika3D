@@ -1970,33 +1970,15 @@ async function emitLeadUpdatedScopedNow(tenantId, lead) {
 
   const decoratedByScope = new Map();
   const getDecoratedForSocket = async (socket) => {
-    if (!process.env.DATABASE_URL || !lead?.id) return lead;
+    if (!process.env.DATABASE_URL || typeof db.getLeadById !== 'function' || !lead?.id) return lead;
     const scopeKey = socketCanViewAllLeads(socket)
       ? 'all'
       : `user:${String(socket.userId || '').trim()}`;
     if (!decoratedByScope.has(scopeKey)) {
-      const userId = socketCanViewAllLeads(socket) ? null : (socket.userId || null);
-      if (!userId) {
-        // No user scope: lead already has global unread_count from leads table
-        decoratedByScope.set(scopeKey, Promise.resolve(lead));
-      } else {
-        // Fast targeted query — only counts unread for this user+lead, no full CTE
-        decoratedByScope.set(
-          scopeKey,
-          db.pool.query(
-            `SELECT COUNT(*)::int AS unread_count
-             FROM messages m
-             LEFT JOIN lead_reads lr
-               ON lr.lead_id = m.lead_id AND lr.tenant_id = m.tenant_id AND lr.user_id = $2
-             WHERE m.tenant_id = $1
-               AND m.lead_id = $3
-               AND m.direction = 'in'
-               AND (lr.last_read_at IS NULL OR m.created_at > lr.last_read_at)`,
-            [tenantId, userId, lead.id]
-          ).then(res => ({ ...lead, unread_count: res.rows[0]?.unread_count ?? 0 }))
-           .catch(() => lead)
-        );
-      }
+      decoratedByScope.set(
+        scopeKey,
+        db.getLeadById(lead.id, tenantId, socketCanViewAllLeads(socket) ? null : socket.userId).catch(() => lead)
+      );
     }
     return decoratedByScope.get(scopeKey);
   };
