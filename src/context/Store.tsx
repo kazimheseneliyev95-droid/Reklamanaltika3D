@@ -453,7 +453,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     const intervalId = window.setInterval(() => {
       if (document.visibilityState === 'visible') syncRealtime();
-    }, 30000);
+    }, 10000);
 
     window.addEventListener('focus', onFocus);
     window.addEventListener('online', onOnline);

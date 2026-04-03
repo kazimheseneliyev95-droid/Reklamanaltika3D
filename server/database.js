@@ -37,9 +37,9 @@ function toUtcBoundaryFromLocalDate(dateStr, tzOffsetMinutes, endExclusive = fal
 const pool = new Pool({
     connectionString: normalizedDatabaseUrl,
     ssl: { rejectUnauthorized: false }, // Required for Supabase
-    max: 25, // Increased pool size for better concurrency
-    idleTimeoutMillis: 60000, // Increased from 30s to 60s
-    connectionTimeoutMillis: 10000, // Increased from 2s to 10s for production
+    max: 8, // Keep low: Supabase free tier allows 60 direct connections; 8 leaves headroom for multiple processes
+    idleTimeoutMillis: 30000, // Release idle connections quickly to avoid Supabase's 60s idle timeout killing them silently
+    connectionTimeoutMillis: 10000,
 });
 
 let didLogAuthHint = false;
@@ -1583,32 +1583,45 @@ async function healthCheck() {
  * Append a single message to the messages table (idempotent via whatsapp_id without relying on constraints)
  */
 async function appendMessage({ leadId, phone, body, direction, whatsappId, metadata, createdAt, tenantId = 'admin', senderUserId = null }) {
-    try {
-        const ts = createdAt ? new Date(createdAt * 1000) : new Date();
+    const ts = createdAt ? new Date(createdAt * 1000) : new Date();
 
-        // 1. Check if message already exists (safer than ON CONFLICT due to partial index migrations)
-        if (whatsappId) {
-            const existing = await pool.query(
-                'SELECT id FROM messages WHERE whatsapp_id = $1 AND tenant_id = $2',
-                [whatsappId, tenantId]
-            );
-            if (existing.rows.length > 0) return; // already exists
+    let meta = metadata;
+    if (typeof meta === 'string') {
+        try { meta = JSON.parse(meta); } catch { meta = {}; }
+    }
+    if (!meta || typeof meta !== 'object' || Array.isArray(meta)) meta = {};
+
+    const MAX_ATTEMPTS = 3;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        try {
+            // 1. Check if message already exists (safer than ON CONFLICT due to partial index migrations)
+            if (whatsappId) {
+                const existing = await pool.query(
+                    'SELECT id FROM messages WHERE whatsapp_id = $1 AND tenant_id = $2',
+                    [whatsappId, tenantId]
+                );
+                if (existing.rows.length > 0) return; // already exists
+            }
+
+            // 2. Insert message
+            await pool.query(`
+                INSERT INTO messages (lead_id, phone, body, direction, whatsapp_id, metadata, created_at, tenant_id, sender_user_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            `, [leadId, phone, body || '', direction, whatsappId || null, meta, ts, tenantId, senderUserId || null]);
+            return; // success
+        } catch (error) {
+            const isUnique = error.code === '23505'; // unique_violation — message already exists
+            if (isUnique) return; // idempotent: already saved by another path
+            const isTransient = error.code === '57P01' || error.code === '08006' || error.code === '08003' || String(error.message).includes('connection');
+            console.warn(`⚠️ appendMessage attempt ${attempt}/${MAX_ATTEMPTS} failed [${error.code || 'ERR'}]: ${error.message}`);
+            if (attempt < MAX_ATTEMPTS && isTransient) {
+                await new Promise(r => setTimeout(r, 200 * attempt));
+                continue;
+            }
+            // Final failure — log full detail so it's visible in Render logs
+            console.error(`❌ appendMessage FINAL FAILURE (lead=${leadId}, waid=${whatsappId}, tenant=${tenantId}): ${error.message}`);
+            return;
         }
-
-        // 2. Insert message
-        let meta = metadata;
-        if (typeof meta === 'string') {
-            try { meta = JSON.parse(meta); } catch { meta = {}; }
-        }
-        if (!meta || typeof meta !== 'object' || Array.isArray(meta)) meta = {};
-
-        await pool.query(`
-            INSERT INTO messages (lead_id, phone, body, direction, whatsapp_id, metadata, created_at, tenant_id, sender_user_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        `, [leadId, phone, body || '', direction, whatsappId || null, meta, ts, tenantId, senderUserId || null]);
-    } catch (error) {
-        // Non-fatal - log and continue
-        console.warn('⚠️ appendMessage error:', error.message);
     }
 }
 

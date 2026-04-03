@@ -824,7 +824,26 @@ async function processMessage(tenantId, msg, isFromMe) {
                     }
                 }
             } catch (dbError) {
-                console.error('⚠️ DB error (non-fatal):', dbError.message);
+                console.error('❌ DB error saving message (phone=' + rawNumber + ', tenant=' + tenantId + '):', dbError.message);
+                // If savedLead has partial data, still try to save the message
+                if (savedLead && savedLead.id) {
+                    try {
+                        await db.appendMessage({
+                            leadId: savedLead.id,
+                            phone: savedLead.phone || rawNumber,
+                            body: messageContent,
+                            direction: isFromMe ? 'out' : 'in',
+                            whatsappId: whatsappId,
+                            metadata: metadata,
+                            createdAt: msg.messageTimestamp || null,
+                            tenantId: tenantId
+                        });
+                    } catch (appendErr) {
+                        console.error('❌ appendMessage recovery also failed:', appendErr.message);
+                    }
+                } else {
+                    console.error('❌ Message lost (no lead): phone=' + rawNumber + ', msg=' + messageContent.slice(0, 80));
+                }
             }
         }
 

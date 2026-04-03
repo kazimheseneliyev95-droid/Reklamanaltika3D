@@ -119,7 +119,15 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
             });
             if (res.ok) {
                 const data = await res.json();
-                if (Array.isArray(data)) setMessages(data);
+                if (Array.isArray(data)) {
+                    setMessages(prev => {
+                        // Preserve optimistic messages that server hasn't confirmed yet
+                        const serverIds = new Set(data.map((m: ChatMessage) => m.id));
+                        const pending = prev.filter(m => String(m.id).startsWith('tmp-') && !serverIds.has(m.id));
+                        if (pending.length === 0) return data;
+                        return [...data, ...pending];
+                    });
+                }
             }
         } catch {
             /* non-fatal */
@@ -164,7 +172,7 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
         if (atBottom) setShowJump(false);
     };
 
-    // Live: listen for new socket messages
+    // Live: listen for new socket messages + fallback polling when socket is disconnected
     useEffect(() => {
         let t: any = null;
         const schedule = () => {
@@ -178,10 +186,23 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
         const cleanupNew = CrmService.onNewMessage((newLead) => {
             if (newLead.id === lead.id || newLead.phone === lead.phone) schedule();
         });
+        const cleanupReconnect = CrmService.onReconnect(() => {
+            loadMessages({ background: true });
+        });
+
+        // Fallback: poll every 15s in case socket misses an event
+        const pollInterval = window.setInterval(() => {
+            if (!CrmService.isSocketConnected()) {
+                loadMessages({ background: true });
+            }
+        }, 15000);
+
         return () => {
             if (t) clearTimeout(t);
+            window.clearInterval(pollInterval);
             cleanupUpdate();
             cleanupNew();
+            cleanupReconnect();
         };
     }, [lead.id, lead.phone, loadMessages]);
 
@@ -217,9 +238,21 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                 body: JSON.stringify(payload)
             });
             if (res.ok) {
-                loadMessages({ background: true });
+                const serverMsg = await res.json().catch(() => null);
+                // Replace optimistic message in-place with server-confirmed data
+                if (serverMsg?.id) {
+                    setMessages(prev => prev.map(m =>
+                        m.id === optimisticId
+                            ? { ...m, id: serverMsg.id, created_at: serverMsg.created_at || m.created_at, status: 'pending' as any }
+                            : m
+                    ));
+                }
+                // Background reload after delay to get final status from DB
+                setTimeout(() => loadMessages({ background: true }), 2500);
             } else {
                 const data = await res.json().catch(() => ({}));
+                // Remove the optimistic message if send failed
+                setMessages(prev => prev.filter(m => m.id !== optimisticId));
                 setSendError(String(data?.error || 'Mesaj gonderilemedi'));
             }
         } catch (err) {
