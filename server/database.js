@@ -43,28 +43,6 @@ const pool = new Pool({
 });
 
 let didLogAuthHint = false;
-const defaultAdminCache = new Map();
-const DEFAULT_ADMIN_CACHE_TTL_MS = 30000;
-
-async function getDefaultAdminId(client, tenantId) {
-    const tid = String(tenantId || 'admin');
-    const cached = defaultAdminCache.get(tid);
-    if (cached && (Date.now() - cached.atMs) < DEFAULT_ADMIN_CACHE_TTL_MS) {
-        return cached.userId || null;
-    }
-    try {
-        const a = await client.query(
-            "SELECT id FROM users WHERE tenant_id = $1 AND role = 'admin' ORDER BY created_at ASC LIMIT 1",
-            [tid]
-        );
-        const userId = a.rows[0]?.id || null;
-        defaultAdminCache.set(tid, { atMs: Date.now(), userId });
-        return userId;
-    } catch {
-        defaultAdminCache.set(tid, { atMs: Date.now(), userId: null });
-        return null;
-    }
-}
 
 // Connection pool health monitoring
 let poolConnectCount = 0;
@@ -742,7 +720,6 @@ async function initDb() {
             await client.query('CREATE INDEX IF NOT EXISTS idx_leads_tenant_status_created_at ON leads (tenant_id, status, created_at DESC);');
             await client.query('CREATE INDEX IF NOT EXISTS idx_leads_tenant_assignee_created_at ON leads (tenant_id, assignee_id, created_at DESC);');
             await client.query('CREATE INDEX IF NOT EXISTS idx_messages_tenant_lead_direction_created ON messages (tenant_id, lead_id, direction, created_at DESC);');
-            await client.query('CREATE INDEX IF NOT EXISTS idx_followups_tenant_lead_open_due ON follow_ups (tenant_id, lead_id, due_at) WHERE status = \'open\';');
         } catch (e) {
             console.warn('⚠️ Migration warning (lead_reads):', e.message);
         }
@@ -789,8 +766,6 @@ async function initDb() {
             CREATE INDEX IF NOT EXISTS idx_leads_tenant_created_at ON leads(tenant_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_leads_tenant_status_created_at ON leads(tenant_id, status, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_leads_tenant_assignee_created_at ON leads(tenant_id, assignee_id, created_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_leads_tenant_phone ON leads(tenant_id, phone);
-            CREATE INDEX IF NOT EXISTS idx_leads_tenant_whatsapp_id ON leads(tenant_id, whatsapp_id);
             CREATE INDEX IF NOT EXISTS idx_whatsapp_id ON leads(whatsapp_id);
             CREATE INDEX IF NOT EXISTS idx_messages_lead_id ON messages(lead_id);
             CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at ASC);
@@ -798,8 +773,6 @@ async function initDb() {
             CREATE INDEX IF NOT EXISTS idx_messages_next_attempt_at ON messages(next_attempt_at);
             CREATE INDEX IF NOT EXISTS idx_messages_claimed_at ON messages(claimed_at);
             CREATE INDEX IF NOT EXISTS idx_messages_tenant_lead_direction_created ON messages(tenant_id, lead_id, direction, created_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_messages_tenant_lead_in_created ON messages(tenant_id, lead_id, created_at DESC) WHERE direction = 'in';
-            CREATE INDEX IF NOT EXISTS idx_followups_tenant_lead_open_due ON follow_ups(tenant_id, lead_id, due_at) WHERE status = 'open';
             CREATE INDEX IF NOT EXISTS idx_whatsapp_media_assets_created_at ON whatsapp_media_assets(tenant_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_fb_ad_imports_auto_sync_due ON facebook_ad_imports (auto_sync_enabled, auto_sync_next_at);
             CREATE INDEX IF NOT EXISTS idx_fb_ad_insight_cache_lookup ON facebook_ad_insight_cache (tenant_id, metric, date_start, campaign_id);
@@ -972,7 +945,15 @@ async function createLead(data, tenantId = 'admin') {
         // Default assignee: tenant's first admin (only if not provided)
         let finalAssigneeId = assignee_id || null;
         if (!finalAssigneeId) {
-            finalAssigneeId = await getDefaultAdminId(client, tenantId);
+            try {
+                const a = await client.query(
+                    "SELECT id FROM users WHERE tenant_id = $1 AND role = 'admin' ORDER BY created_at ASC LIMIT 1",
+                    [tenantId]
+                );
+                finalAssigneeId = a.rows[0]?.id || null;
+            } catch {
+                finalAssigneeId = null;
+            }
         }
 
         // Normalize extra_data (JSONB)
@@ -1156,7 +1137,15 @@ async function updateLeadMessage(phone, message, whatsappId, name = null, tenant
 
         // Default assignee: tenant's first admin (only if currently unassigned)
         let defaultAssigneeId = null;
-        defaultAssigneeId = await getDefaultAdminId(client, tenantId);
+        try {
+            const a = await client.query(
+                "SELECT id FROM users WHERE tenant_id = $1 AND role = 'admin' ORDER BY created_at ASC LIMIT 1",
+                [tenantId]
+            );
+            defaultAssigneeId = a.rows[0]?.id || null;
+        } catch {
+            defaultAssigneeId = null;
+        }
 
         const query = `
         UPDATE leads
@@ -1390,8 +1379,35 @@ async function getLeads(filters = {}, tenantId = 'admin', existingClient = null)
     try {
         const runner = existingClient || pool;
         const viewerUserId = filters.userId ? String(filters.userId) : null;
+        let query = `
+          SELECT l.*,
+                 ${viewerUserId ? 'COALESCE(msg_unread.unread_count, 0) AS unread_count,' : 'l.unread_count,'}
+                 ${viewerUserId ? 'lr.last_read_at AS last_read_at,' : 'l.last_read_at,'}
+                 fu.next_due_at AS next_followup_due_at,
+                 CASE WHEN l.last_inbound_at IS NOT NULL THEN (EXTRACT(EPOCH FROM l.last_inbound_at) * 1000)::bigint ELSE NULL END AS last_inbound_ms,
+                 CASE WHEN l.last_outbound_at IS NOT NULL THEN (EXTRACT(EPOCH FROM l.last_outbound_at) * 1000)::bigint ELSE NULL END AS last_outbound_ms,
+                 CASE WHEN fu.next_due_at IS NOT NULL THEN (EXTRACT(EPOCH FROM fu.next_due_at) * 1000)::bigint ELSE NULL END AS next_followup_due_ms
+          FROM leads l
+          ${viewerUserId ? `LEFT JOIN lead_reads lr
+            ON lr.tenant_id = l.tenant_id AND lr.lead_id = l.id AND lr.user_id = $2` : ''}
+          ${viewerUserId ? `LEFT JOIN LATERAL (
+            SELECT COUNT(*)::int AS unread_count
+            FROM messages m
+            WHERE m.tenant_id = l.tenant_id
+              AND m.lead_id = l.id
+              AND m.direction = 'in'
+              AND (lr.last_read_at IS NULL OR m.created_at > lr.last_read_at)
+          ) msg_unread ON true` : ''}
+          LEFT JOIN LATERAL (
+            SELECT MIN(due_at) AS next_due_at
+            FROM follow_ups f
+            WHERE f.tenant_id = l.tenant_id
+              AND f.lead_id = l.id
+              AND f.status = 'open'
+          ) fu ON true
+          WHERE l.tenant_id = $1
+        `;
         const values = [tenantId];
-        const where = ['l.tenant_id = $1'];
         let paramCount = 2;
 
         if (viewerUserId) {
@@ -1401,7 +1417,7 @@ async function getLeads(filters = {}, tenantId = 'admin', existingClient = null)
 
         if (filters.status) {
             const validStatus = validateStatus(filters.status);
-            where.push(`l.status = $${paramCount}`);
+            query += ` AND l.status = $${paramCount}`;
             values.push(validStatus);
             paramCount++;
         }
@@ -1409,10 +1425,10 @@ async function getLeads(filters = {}, tenantId = 'admin', existingClient = null)
         if (filters.startDate) {
             const tzOffsetMinutes = parseTzOffsetMinutes(filters.tzOffsetMinutes);
             if (tzOffsetMinutes !== null) {
-                where.push(`l.created_at >= $${paramCount}::timestamptz`);
+                query += ` AND l.created_at >= $${paramCount}::timestamptz`;
                 values.push(toUtcBoundaryFromLocalDate(filters.startDate, tzOffsetMinutes, false));
             } else {
-                where.push(`l.created_at >= $${paramCount}::timestamptz`);
+                query += ` AND l.created_at >= $${paramCount}::timestamptz`;
                 values.push(filters.startDate);
             }
             paramCount++;
@@ -1421,106 +1437,45 @@ async function getLeads(filters = {}, tenantId = 'admin', existingClient = null)
         if (filters.endDate) {
             const tzOffsetMinutes = parseTzOffsetMinutes(filters.tzOffsetMinutes);
             if (tzOffsetMinutes !== null) {
-                where.push(`l.created_at < $${paramCount}::timestamptz`);
+                query += ` AND l.created_at < $${paramCount}::timestamptz`;
                 values.push(toUtcBoundaryFromLocalDate(filters.endDate, tzOffsetMinutes, true));
             } else {
-                where.push(`l.created_at < ($${paramCount}::date + INTERVAL '1 day')`);
+                // Inclusive end-of-day for YYYY-MM-DD filters from UI
+                query += ` AND l.created_at < ($${paramCount}::date + INTERVAL '1 day')`;
                 values.push(filters.endDate);
             }
             paramCount++;
         }
 
         if (filters.search) {
-            where.push(`(l.name ILIKE $${paramCount} OR l.phone ILIKE $${paramCount} OR l.last_message ILIKE $${paramCount})`);
+            query += ` AND (l.name ILIKE $${paramCount} OR l.phone ILIKE $${paramCount} OR l.last_message ILIKE $${paramCount})`;
             values.push(`%${filters.search}%`);
             paramCount++;
         }
 
         if (filters.leadId) {
-            where.push(`l.id = $${paramCount}`);
+            query += ` AND l.id = $${paramCount}`;
             values.push(filters.leadId);
             paramCount++;
         }
 
         if (filters.assigneeId) {
-            where.push(`l.assignee_id = $${paramCount}`);
+            query += ` AND l.assignee_id = $${paramCount}`;
             values.push(filters.assigneeId);
             paramCount++;
         }
 
-        let paginationClause = ' ORDER BY l.created_at DESC';
+        query += ' ORDER BY l.created_at DESC';
 
         if (filters.limit) {
-            paginationClause += ` LIMIT $${paramCount}`;
+            query += ` LIMIT $${paramCount}`;
             values.push(filters.limit);
-            paramCount++;
+            paramCount++; // Add this depending on offset usage
         }
 
         if (filters.offset) {
-            paginationClause += ` OFFSET $${paramCount}`;
+            query += ` OFFSET $${paramCount}`;
             values.push(filters.offset);
-        }
-
-        const filteredLeadsCte = `
-          WITH filtered_leads AS (
-            SELECT l.*
-            FROM leads l
-            WHERE ${where.join(' AND ')}
-            ${paginationClause}
-          ),
-          next_followups AS (
-            SELECT f.lead_id, MIN(f.due_at) AS next_due_at
-            FROM follow_ups f
-            WHERE f.tenant_id = $1
-              AND f.status = 'open'
-              AND f.lead_id IN (SELECT id FROM filtered_leads)
-            GROUP BY f.lead_id
-          )`;
-
-        let query = '';
-        if (viewerUserId) {
-            query = `${filteredLeadsCte},
-          lead_reads_scope AS (
-            SELECT lr.lead_id, lr.last_read_at
-            FROM lead_reads lr
-            WHERE lr.tenant_id = $1
-              AND lr.user_id = $2
-              AND lr.lead_id IN (SELECT id FROM filtered_leads)
-          ),
-          unread_counts AS (
-            SELECT m.lead_id, COUNT(*)::int AS unread_count
-            FROM messages m
-            LEFT JOIN lead_reads_scope lr ON lr.lead_id = m.lead_id
-            WHERE m.tenant_id = $1
-              AND m.direction = 'in'
-              AND m.lead_id IN (SELECT id FROM filtered_leads)
-              AND (lr.last_read_at IS NULL OR m.created_at > lr.last_read_at)
-            GROUP BY m.lead_id
-          )
-          SELECT fl.*,
-                 COALESCE(uc.unread_count, 0) AS unread_count,
-                 lr.last_read_at AS last_read_at,
-                 nf.next_due_at AS next_followup_due_at,
-                 CASE WHEN fl.last_inbound_at IS NOT NULL THEN (EXTRACT(EPOCH FROM fl.last_inbound_at) * 1000)::bigint ELSE NULL END AS last_inbound_ms,
-                 CASE WHEN fl.last_outbound_at IS NOT NULL THEN (EXTRACT(EPOCH FROM fl.last_outbound_at) * 1000)::bigint ELSE NULL END AS last_outbound_ms,
-                 CASE WHEN nf.next_due_at IS NOT NULL THEN (EXTRACT(EPOCH FROM nf.next_due_at) * 1000)::bigint ELSE NULL END AS next_followup_due_ms
-          FROM filtered_leads fl
-          LEFT JOIN lead_reads_scope lr ON lr.lead_id = fl.id
-          LEFT JOIN unread_counts uc ON uc.lead_id = fl.id
-          LEFT JOIN next_followups nf ON nf.lead_id = fl.id
-          ORDER BY fl.created_at DESC`;
-        } else {
-            query = `${filteredLeadsCte}
-          SELECT fl.*,
-                 fl.unread_count AS unread_count,
-                 fl.last_read_at AS last_read_at,
-                 nf.next_due_at AS next_followup_due_at,
-                 CASE WHEN fl.last_inbound_at IS NOT NULL THEN (EXTRACT(EPOCH FROM fl.last_inbound_at) * 1000)::bigint ELSE NULL END AS last_inbound_ms,
-                 CASE WHEN fl.last_outbound_at IS NOT NULL THEN (EXTRACT(EPOCH FROM fl.last_outbound_at) * 1000)::bigint ELSE NULL END AS last_outbound_ms,
-                 CASE WHEN nf.next_due_at IS NOT NULL THEN (EXTRACT(EPOCH FROM nf.next_due_at) * 1000)::bigint ELSE NULL END AS next_followup_due_ms
-          FROM filtered_leads fl
-          LEFT JOIN next_followups nf ON nf.lead_id = fl.id
-          ORDER BY fl.created_at DESC`;
         }
 
         const result = await runner.query(query, values);
@@ -1631,7 +1586,16 @@ async function appendMessage({ leadId, phone, body, direction, whatsappId, metad
     try {
         const ts = createdAt ? new Date(createdAt * 1000) : new Date();
 
-        // 1. Insert message (dedup by whatsapp_id + tenant_id unique index)
+        // 1. Check if message already exists (safer than ON CONFLICT due to partial index migrations)
+        if (whatsappId) {
+            const existing = await pool.query(
+                'SELECT id FROM messages WHERE whatsapp_id = $1 AND tenant_id = $2',
+                [whatsappId, tenantId]
+            );
+            if (existing.rows.length > 0) return; // already exists
+        }
+
+        // 2. Insert message
         let meta = metadata;
         if (typeof meta === 'string') {
             try { meta = JSON.parse(meta); } catch { meta = {}; }
@@ -1641,7 +1605,6 @@ async function appendMessage({ leadId, phone, body, direction, whatsappId, metad
         await pool.query(`
             INSERT INTO messages (lead_id, phone, body, direction, whatsapp_id, metadata, created_at, tenant_id, sender_user_id)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            ON CONFLICT (whatsapp_id, tenant_id) DO NOTHING
         `, [leadId, phone, body || '', direction, whatsappId || null, meta, ts, tenantId, senderUserId || null]);
     } catch (error) {
         // Non-fatal - log and continue

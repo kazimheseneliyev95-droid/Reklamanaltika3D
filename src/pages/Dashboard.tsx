@@ -367,7 +367,6 @@ export default function DashboardPage() {
   const metric: MetricType = 'message';
   const tzOffsetMinutes = useMemo(() => new Date().getTimezoneOffset(), []);
   const dashboardRefreshTimeoutRef = useRef<number | null>(null);
-  const dashboardRequestInFlightRef = useRef(false);
 
   const range = useMemo(() => {
     if (preset === 'custom') return customRange;
@@ -375,8 +374,6 @@ export default function DashboardPage() {
   }, [customRange, preset]);
 
   const loadDashboardData = useCallback(async (opts?: { silent?: boolean }) => {
-    if (opts?.silent && dashboardRequestInFlightRef.current) return;
-    dashboardRequestInFlightRef.current = true;
     if (!opts?.silent) setLoading(true);
     if (!opts?.silent) setError('');
     try {
@@ -402,7 +399,6 @@ export default function DashboardPage() {
         setData(EMPTY_DATA);
       }
     } finally {
-      dashboardRequestInFlightRef.current = false;
       if (!opts?.silent) setLoading(false);
     }
   }, [metric, range.end, range.start, tzOffsetMinutes]);
@@ -547,7 +543,7 @@ export default function DashboardPage() {
 
     const intervalId = window.setInterval(() => {
       if (document.visibilityState === 'visible') scheduleRefresh();
-    }, 15000);
+    }, 5000);
 
     const cleanupNewMessage = CrmService.onNewMessage(() => scheduleRefresh());
     const cleanupLeadUpdated = CrmService.onLeadUpdated(() => scheduleRefresh());
