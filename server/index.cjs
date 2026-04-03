@@ -3552,16 +3552,23 @@ app.get('/api/leads/:id/messages', requireTenantAuth, asyncHandler(async (req, r
   if (leadRes.rowCount === 0) return res.status(404).json({ error: 'Lead not found' });
   const lead = leadRes.rows[0];
 
-  let messages = await db.getMessages(req.params.id, req.tenantId);
-
-  // Fallback: if messages are attached to a different lead_id (duplicate/merge), fetch by phone
-  if (!messages || messages.length === 0) {
-    const byPhone = await db.pool.query(
-      'SELECT * FROM messages WHERE phone = $1 AND tenant_id = $2 ORDER BY created_at ASC',
-      [lead.phone, req.tenantId]
-    );
-    messages = byPhone.rows || [];
-  }
+  // Always merge direct lead messages with same-phone messages because older imports,
+  // duplicate leads, merges, or worker race conditions can leave history split across lead_ids.
+  const mergedMessagesRes = await db.pool.query(
+    `SELECT *
+       FROM messages
+      WHERE tenant_id = $1
+        AND (lead_id = $2 OR phone = $3)
+      ORDER BY created_at ASC, id ASC`,
+    [req.tenantId, req.params.id, lead.phone]
+  );
+  const seenMessageIds = new Set();
+  const messages = (mergedMessagesRes.rows || []).filter((row) => {
+    const key = String(row?.id || row?.whatsapp_id || `${row?.lead_id || ''}:${row?.phone || ''}:${row?.created_at || ''}:${row?.body || ''}`);
+    if (seenMessageIds.has(key)) return false;
+    seenMessageIds.add(key);
+    return true;
+  });
 
   // If still empty or missing snapshot fields, synthesize from lead columns
   const out = Array.isArray(messages) ? [...messages] : [];
