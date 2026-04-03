@@ -2550,10 +2550,7 @@ const handleAuthVerify = (req, res) => {
   } catch (err) {
     res.status(401).json({ success: false, valid: false });
   }
-};
-
-app.get('/api/auth/verify', handleAuthVerify);
-app.post('/api/auth/verify', handleAuthVerify);
+});
 
 // Middleware for API routes
 const requireTenantAuth = (req, res, next) => {
@@ -3587,7 +3584,7 @@ app.post('/api/leads/:id/read', requireTenantAuth, asyncHandler(async (req, res)
     timestamp: lead.last_read_at || new Date().toISOString(),
     unread_count: lead.unread_count ?? 0,
   });
-  emitLeadUpdatedScoped(req.tenantId, lead);
+  await emitLeadUpdatedScoped(req.tenantId, lead);
   res.json({ success: true, lead });
 }));
 

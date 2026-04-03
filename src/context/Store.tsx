@@ -545,19 +545,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const leadId = String(id || '').trim();
     if (!leadId) return;
     try {
-      const [leadResult] = await Promise.allSettled([
-        CrmService.markLeadRead(leadId),
-        CrmService.markNotificationsForLeadRead(leadId),
-      ]);
-
-      const updatedLead = leadResult.status === 'fulfilled' ? leadResult.value : null;
-      if (updatedLead) {
-        setLeads((prev) => {
-          const next = prev.map((lead) => lead.id === updatedLead.id ? { ...lead, ...updatedLead } : lead);
-          leadsRef.current = next;
-          return next;
-        });
-      }
+      await CrmService.markLeadFullyRead(leadId);
     } catch {
       // Ignore transient failures; socket/reload path will reconcile.
     }
