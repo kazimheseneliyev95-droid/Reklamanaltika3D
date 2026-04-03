@@ -550,22 +550,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const markLeadRead = useCallback(async (id: string) => {
     const leadId = String(id || '').trim();
     if (!leadId) return;
-    const optimisticReadAt = new Date().toISOString();
-    setLeads((prev) => {
-      let changed = false;
-      const next = prev.map((lead) => {
-        if (lead.id !== leadId) return lead;
-        if (Number((lead as any).unread_count || 0) <= 0) return { ...lead, last_read_at: optimisticReadAt } as Lead;
-        changed = true;
-        return { ...lead, unread_count: 0, last_read_at: optimisticReadAt } as Lead;
-      });
-      if (!changed) {
-        leadsRef.current = next;
-        return next;
-      }
-      leadsRef.current = next;
-      return next;
-    });
     try {
       const [leadResult] = await Promise.allSettled([
         CrmService.markLeadRead(leadId),
