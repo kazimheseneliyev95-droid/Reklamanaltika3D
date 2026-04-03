@@ -757,7 +757,7 @@ interface LeadDetailsPanelProps {
 export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: LeadDetailsPanelProps) {
 
     // LOCAL STATE (mirrors lead props - updated on save)
-    const { teamMembers, currentUser, crmSettingsRev, markLeadRead, syncLeadLocal } = useAppStore();
+    const { teamMembers, currentUser, crmSettingsRev, markLeadRead } = useAppStore();
     const leadRef = useRef(lead);
     leadRef.current = lead;
     const [localStatus, setLocalStatus] = useState<LeadStatus>(lead.status);
@@ -1062,13 +1062,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             if (res.ok) {
-                const updatedLead = await res.json().catch(() => null);
-                if (updatedLead && typeof updatedLead === 'object' && updatedLead.id) {
-                    syncLeadLocal(updatedLead as Lead);
-                    setConvClosed(Boolean((updatedLead as any).conversation_closed));
-                } else {
-                    setConvClosed(!convClosed);
-                }
+                setConvClosed(!convClosed);
                 // Refresh story so the event appears immediately
                 setTimeout(() => loadStory(), 250);
             }
