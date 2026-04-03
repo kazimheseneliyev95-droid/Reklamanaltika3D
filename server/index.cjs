@@ -2505,7 +2505,10 @@ const handleAuthVerify = (req, res) => {
   } catch (err) {
     res.status(401).json({ success: false, valid: false });
   }
-});
+};
+
+app.get('/api/auth/verify', handleAuthVerify);
+app.post('/api/auth/verify', handleAuthVerify);
 
 // Middleware for API routes
 const requireTenantAuth = (req, res, next) => {
