@@ -3302,6 +3302,25 @@ async function findArchivedAccountByPhone(tenantId, phoneNumber) {
     return res.rows[0] || null;
 }
 
+/**
+ * Rename a WhatsApp account. Returns the updated row or null if not found.
+ */
+async function renameWhatsAppAccount(accountId, tenantId, label) {
+    if (!accountId || !tenantId) return null;
+    const cleanLabel = String(label || '').trim().slice(0, 120);
+    if (!cleanLabel) return null;
+    const res = await pool.query(
+        `UPDATE whatsapp_accounts
+         SET label = $1, updated_at = NOW()
+         WHERE id = $2 AND tenant_id = $3 AND deleted_at IS NULL
+         RETURNING id, tenant_id, label, phone_number, phone_number_normalized, status,
+                   is_default, last_qr_at, last_connected_at, last_disconnected_at,
+                   last_error, deleted_at, created_at, updated_at`,
+        [cleanLabel, accountId, tenantId]
+    );
+    return res.rows[0] || null;
+}
+
 async function setDefaultWhatsAppAccount(accountId, tenantId) {
     if (!accountId || !tenantId) return false;
     const client = await pool.connect();
@@ -3553,6 +3572,7 @@ module.exports = {
     softDeleteWhatsAppAccount,
     restoreWhatsAppAccount,
     findArchivedAccountByPhone,
+    renameWhatsAppAccount,
     setDefaultWhatsAppAccount,
     updateWhatsAppAccountStatus,
     getDefaultWhatsAppAccountId,

@@ -3198,6 +3198,19 @@ app.post('/api/whatsapp/accounts/:accountId/logout', requireTenantAuth, requireA
   res.json({ success: true });
 }));
 
+// Rename a WhatsApp account (label only — phone number is bound by Baileys)
+app.patch('/api/whatsapp/accounts/:accountId', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL || typeof db.renameWhatsAppAccount !== 'function') {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+  const label = String(req.body?.label || '').trim();
+  if (!label) return res.status(400).json({ error: 'Hesab adı boş ola bilməz' });
+  if (label.length > 120) return res.status(400).json({ error: 'Hesab adı 120 simvoldan uzun ola bilməz' });
+  const updated = await db.renameWhatsAppAccount(req.params.accountId, req.tenantId, label);
+  if (!updated) return res.status(404).json({ error: 'Account not found' });
+  res.json({ account: updated });
+}));
+
 // Set this account as the tenant default (used for outgoing messages on non-WA leads)
 app.post('/api/whatsapp/accounts/:accountId/default', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL || typeof db.setDefaultWhatsAppAccount !== 'function') {

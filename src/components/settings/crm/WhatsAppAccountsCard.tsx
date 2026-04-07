@@ -12,6 +12,8 @@ import {
   CheckCircle2,
   X,
   Loader2,
+  Pencil,
+  Check,
 } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import { CrmService } from '../../../services/CrmService';
@@ -127,6 +129,40 @@ export function WhatsAppAccountsCard() {
   const [newLabel, setNewLabel] = useState('');
   const [creating, setCreating] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+
+  // Inline rename state
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [renameBusy, setRenameBusy] = useState(false);
+
+  const startRename = (accountId: string, currentLabel: string) => {
+    setRenamingId(accountId);
+    setRenameDraft(currentLabel || '');
+    setError('');
+  };
+
+  const cancelRename = () => {
+    setRenamingId(null);
+    setRenameDraft('');
+  };
+
+  const saveRename = async (accountId: string) => {
+    const label = renameDraft.trim();
+    if (!label) return;
+    setRenameBusy(true);
+    setError('');
+    try {
+      const result = await CrmService.renameWhatsAppAccount(accountId, label);
+      if (!result.ok) {
+        setError(result.error || 'Ad dəyişdirilə bilmədi');
+        return;
+      }
+      cancelRename();
+      await refresh();
+    } finally {
+      setRenameBusy(false);
+    }
+  };
 
   const refresh = async () => {
     setBusy(true);
@@ -330,19 +366,62 @@ export function WhatsAppAccountsCard() {
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
-                        <span className={cn('w-2 h-2 rounded-full', theme.dot)} />
-                        <div className="text-[12px] font-extrabold text-slate-100 truncate">
-                          {account.label}
-                        </div>
-                        {account.is_default ? (
-                          <span
-                            className="inline-flex items-center gap-1 rounded-full border border-amber-900/40 bg-amber-950/20 text-amber-300 px-1.5 py-0.5 text-[9px] font-extrabold"
-                            title="Bu hesap varsayılan olaraq giden mesajlar üçün istifadə olunur"
-                          >
-                            <Star className="w-2.5 h-2.5" />
-                            DEFAULT
-                          </span>
-                        ) : null}
+                        <span className={cn('w-2 h-2 rounded-full shrink-0', theme.dot)} />
+                        {renamingId === account.id ? (
+                          <div className="flex items-center gap-1 flex-1 min-w-0">
+                            <input
+                              type="text"
+                              value={renameDraft}
+                              onChange={(e) => setRenameDraft(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') saveRename(account.id);
+                                if (e.key === 'Escape') cancelRename();
+                              }}
+                              autoFocus
+                              maxLength={120}
+                              className="flex-1 min-w-0 h-6 rounded-md bg-slate-950 border border-blue-700/50 px-2 text-[12px] font-bold text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                              placeholder="Hesab adı..."
+                            />
+                            <button
+                              onClick={() => saveRename(account.id)}
+                              disabled={renameBusy || !renameDraft.trim()}
+                              className="shrink-0 p-1 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-40"
+                              title="Saxla"
+                            >
+                              {renameBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+                            </button>
+                            <button
+                              onClick={cancelRename}
+                              disabled={renameBusy}
+                              className="shrink-0 p-1 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 disabled:opacity-40"
+                              title="İmtina"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="text-[12px] font-extrabold text-slate-100 truncate">
+                              {account.label}
+                            </div>
+                            <button
+                              onClick={() => startRename(account.id, account.label)}
+                              className="shrink-0 p-0.5 rounded text-slate-500 hover:text-blue-300 hover:bg-slate-800/50"
+                              title="Adı dəyişdir"
+                            >
+                              <Pencil className="w-2.5 h-2.5" />
+                            </button>
+                            {account.is_default ? (
+                              <span
+                                className="inline-flex items-center gap-1 rounded-full border border-amber-900/40 bg-amber-950/20 text-amber-300 px-1.5 py-0.5 text-[9px] font-extrabold shrink-0"
+                                title="Bu hesap varsayılan olaraq giden mesajlar üçün istifadə olunur"
+                              >
+                                <Star className="w-2.5 h-2.5" />
+                                DEFAULT
+                              </span>
+                            ) : null}
+                          </>
+                        )}
                       </div>
                       <p className={cn('mt-1 text-[10px] font-bold', theme.text)}>
                         {theme.label}

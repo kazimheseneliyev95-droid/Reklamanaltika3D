@@ -377,6 +377,25 @@ class CrmServiceImpl {
     }
   }
 
+  async renameWhatsAppAccount(accountId: string, label: string): Promise<{ ok: boolean; error?: string }> {
+    const url = this.getServerUrl();
+    if (!url) return { ok: false, error: 'no_server' };
+    try {
+      const res = await this.authFetch(`${url}/api/whatsapp/accounts/${encodeURIComponent(accountId)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label })
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        return { ok: false, error: data?.error || 'rename_failed' };
+      }
+      return { ok: true };
+    } catch (e: any) {
+      return { ok: false, error: e?.message || 'network_error' };
+    }
+  }
+
   async setDefaultWhatsAppAccount(accountId: string): Promise<boolean> {
     const url = this.getServerUrl();
     if (!url) return false;
