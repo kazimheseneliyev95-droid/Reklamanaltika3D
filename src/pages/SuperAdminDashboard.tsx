@@ -34,6 +34,8 @@ type TenantStatus = {
   status?: 'active' | 'archived';
   archived_at?: string | null;
   import_source?: string | null;
+  max_whatsapp_accounts?: number;
+  whatsapp_account_count?: number;
 };
 
 type TenantFilter = 'active' | 'archived' | 'all';
@@ -267,6 +269,35 @@ export default function SuperAdminDashboard() {
     window.location.href = '/crm';
   };
 
+  // Multi-WhatsApp: superadmin sets per-tenant max account limit
+  const handleUpdateWhatsAppLimit = async (tenantId: string, currentLimit: number) => {
+    const input = window.prompt(
+      `'${tenantId}' şirkəti üçün maksimum WhatsApp hesabı sayını daxil edin (0–50):`,
+      String(currentLimit ?? 1)
+    );
+    if (input === null) return;
+    const n = parseInt(String(input).trim(), 10);
+    if (!Number.isFinite(n) || n < 0 || n > 50) {
+      alert('Limit aralığı 0–50 olmalıdır');
+      return;
+    }
+    setBusyTenantId(tenantId);
+    try {
+      const res = await fetch(`${CrmService.getServerUrl()}/api/admin/tenants/${tenantId}/whatsapp-limit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ limit: n })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'Limit yenilənmədi');
+      await loadTenants();
+    } catch (err: any) {
+      alert(err.message || 'Limit yenilənmədi');
+    } finally {
+      setBusyTenantId(null);
+    }
+  };
+
   if (currentUser?.role !== 'superadmin') {
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4">
@@ -460,6 +491,7 @@ export default function SuperAdminDashboard() {
                       <th className="p-4">Admin</th>
                       <th className="p-4">Lifecycle</th>
                       <th className="p-4">WhatsApp</th>
+                      <th className="p-4">WA Limit</th>
                       <th className="p-4">İstifadəçi</th>
                       <th className="p-4">Lead</th>
                       <th className="p-4 text-right">Əməliyyatlar</th>
@@ -495,6 +527,16 @@ export default function SuperAdminDashboard() {
                               <span className={cn('w-1.5 h-1.5 rounded-full', t.whatsapp_status === 'connected' ? 'bg-emerald-400' : 'bg-rose-400')} />
                               {t.whatsapp_status === 'connected' ? 'Connected' : 'Offline'}
                             </span>
+                          </td>
+                          <td className="p-4">
+                            <button
+                              onClick={() => handleUpdateWhatsAppLimit(t.tenant_id, t.max_whatsapp_accounts ?? 1)}
+                              disabled={busyTenantId === t.tenant_id || t.tenant_id === 'admin'}
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold border border-slate-700 bg-slate-800/40 hover:bg-slate-800 text-slate-200 disabled:opacity-40"
+                              title="Bu şirkət üçün maksimum WhatsApp hesabı sayını dəyişin"
+                            >
+                              {t.whatsapp_account_count ?? 0} / {t.max_whatsapp_accounts ?? 1}
+                            </button>
                           </td>
                           <td className="p-4 text-sm text-slate-300">{t.user_count}</td>
                           <td className="p-4 text-sm text-slate-300">{t.lead_count}</td>
@@ -536,7 +578,7 @@ export default function SuperAdminDashboard() {
                     })}
                     {visibleTenants.length === 0 ? (
                       <tr>
-                        <td colSpan={7} className="p-10 text-center text-slate-500">Filterə uyğun şirkət tapılmadı.</td>
+                        <td colSpan={8} className="p-10 text-center text-slate-500">Filterə uyğun şirkət tapılmadı.</td>
                       </tr>
                     ) : null}
                   </tbody>

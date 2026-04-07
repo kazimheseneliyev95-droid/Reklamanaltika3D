@@ -2204,8 +2204,13 @@ async function maybeApplyRoutingRulesToLead(tenantId, lead, message, meta) {
 }
 
 app.post('/api/internal/webhook', async (req, res) => requireInternalRequest(req, res, async () => {
-  const { tenantId, event, payload } = req.body;
+  const { tenantId, event, payload, accountId: webhookAccountId } = req.body;
   if (!tenantId || !event) return res.status(400).json({ error: 'Invalid payload' });
+  // Multi-account: prefer the account_id carried inside the payload, fall back to top-level accountId
+  const messageAccountId = (payload && payload.whatsapp_account_id)
+    || (payload && payload.account_id)
+    || webhookAccountId
+    || null;
 
   // Apply routing rules server-side (both incoming and outgoing)
   // This ensures first matching message assigns the field and won't change later.
@@ -2213,8 +2218,10 @@ app.post('/api/internal/webhook', async (req, res) => requireInternalRequest(req
     let leadForAutomation = null;
     let statusBefore = '';
     try {
+      // Multi-account aware: scope lookup to the WA account that produced this message
+      // so we route the right lead even when the same phone exists across multiple accounts.
       const lead = (db && typeof db.findLeadByPhone === 'function')
-        ? await db.findLeadByPhone(payload.phone, tenantId)
+        ? await db.findLeadByPhone(payload.phone, tenantId, messageAccountId)
         : null;
       if (lead) {
         leadForAutomation = lead;
@@ -2312,12 +2319,23 @@ app.post('/api/internal/webhook', async (req, res) => requireInternalRequest(req
 
   if (event === 'new_message' && payload && payload.phone) {
     const currentLead = (db && typeof db.findLeadByPhone === 'function')
-      ? await db.findLeadByPhone(payload.phone, tenantId).catch(() => null)
+      ? await db.findLeadByPhone(payload.phone, tenantId, messageAccountId).catch(() => null)
       : null;
     if (currentLead) {
       await emitLeadUpdatedScoped(tenantId, currentLead);
       await emitNewMessageScoped(tenantId, currentLead, payload);
     }
+  } else if (event === 'qr_code') {
+    // Account-aware QR delivery: include account_id so the UI can route the QR to the right card.
+    io.to(tenantId).emit('qr_code', {
+      qr: (payload && (payload.qr || payload)) || null,
+      account_id: messageAccountId
+    });
+  } else if (event === 'ready' || event === 'authenticated' || event === 'auth_failure' || event === 'account_restored') {
+    io.to(tenantId).emit(event, {
+      ...(payload && typeof payload === 'object' ? payload : { value: payload }),
+      account_id: messageAccountId
+    });
   } else {
     io.to(tenantId).emit(event, payload);
   }
@@ -2906,6 +2924,27 @@ app.delete('/api/admin/tenants/:id', requireTenantAuth, requireAdmin, asyncHandl
   }
 }));
 
+// Superadmin: set per-tenant WhatsApp account limit
+app.post('/api/admin/tenants/:id/whatsapp-limit', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (req.userRole !== 'superadmin') {
+    return res.status(403).json({ error: 'Forbidden: Superadmin access required' });
+  }
+  if (!process.env.DATABASE_URL || typeof db.setTenantWhatsAppLimit !== 'function') {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+  const targetTenantId = String(req.params.id || '').trim();
+  if (!targetTenantId || targetTenantId === 'admin') {
+    return res.status(400).json({ error: 'Invalid tenant id' });
+  }
+  const limit = parseInt(String(req.body?.limit ?? '1'), 10);
+  if (!Number.isFinite(limit) || limit < 0 || limit > 50) {
+    return res.status(400).json({ error: 'limit aralığı 0–50 olmalıdır' });
+  }
+  const ok = await db.setTenantWhatsAppLimit(targetTenantId, limit);
+  if (!ok) return res.status(404).json({ error: 'Tenant not found' });
+  res.json({ success: true, tenant_id: targetTenantId, max_whatsapp_accounts: limit });
+}));
+
 app.post('/api/admin/tenants/:id/restore', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
   if (req.userRole !== 'superadmin') {
     return res.status(403).json({ error: 'Forbidden: Superadmin access required' });
@@ -3005,10 +3044,172 @@ app.post('/api/whatsapp/start', requireTenantAuth, asyncHandler(async (req, res)
   }
 }));
 
+// ═══════════════════════════════════════════════════════════════
+// 📱 MULTI-WHATSAPP ACCOUNTS API
+// ═══════════════════════════════════════════════════════════════
+
+function decorateAccountWithLiveStatus(account, liveSessions) {
+  if (!account) return account;
+  const live = (Array.isArray(liveSessions) ? liveSessions : []).find(
+    (s) => String(s.account_id || '') === String(account.id || '')
+  );
+  return {
+    ...account,
+    live: live ? {
+      isReady: Boolean(live.isReady),
+      qr: Boolean(live.qr),
+      number: live.number || null,
+      error: live.error || null
+    } : null
+  };
+}
+
+async function fetchWorkerStatusForTenant(tenantId) {
+  try {
+    const data = await fetchJsonWithRetry(`http://localhost:4001/api/internal/status/${encodeURIComponent(tenantId)}`, {
+      method: 'GET',
+      headers: safeInternalHeaders()
+    }, { retries: 0, timeoutMs: 3000 });
+    return Array.isArray(data?.accounts) ? data.accounts : [];
+  } catch {
+    return [];
+  }
+}
+
+// List all WhatsApp accounts for the tenant (with live worker status merged in).
+app.get('/api/whatsapp/accounts', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL || typeof db.listWhatsAppAccounts !== 'function') {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+  const [accounts, liveSessions, limit] = await Promise.all([
+    db.listWhatsAppAccounts(req.tenantId),
+    fetchWorkerStatusForTenant(req.tenantId),
+    db.getTenantWhatsAppLimit(req.tenantId).catch(() => 1)
+  ]);
+  res.json({
+    accounts: accounts.map((a) => decorateAccountWithLiveStatus(a, liveSessions)),
+    limit,
+    used: accounts.length
+  });
+}));
+
+// Create a new account row, then start the worker session for it (will yield a QR).
+app.post('/api/whatsapp/accounts', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL || typeof db.createWhatsAppAccount !== 'function') {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+  const label = String(req.body?.label || '').trim() || 'WhatsApp';
+  const result = await db.createWhatsAppAccount(req.tenantId, label);
+  if (result.error === 'limit_exceeded') {
+    return res.status(403).json({
+      error: 'WhatsApp hesap limiti doldu',
+      code: 'limit_exceeded',
+      limit: result.limit,
+      current: result.current
+    });
+  }
+  if (!result.account) {
+    return res.status(400).json({ error: result.error || 'Yaradıla bilmədi' });
+  }
+
+  // Kick off the worker so a QR is produced
+  fetchJsonWithRetry(`http://localhost:4001/api/internal/start/${encodeURIComponent(req.tenantId)}/${encodeURIComponent(result.account.id)}`, {
+    method: 'POST',
+    headers: safeInternalHeaders()
+  }, { retries: 0, timeoutMs: 4000 }).catch((err) => {
+    console.warn(`⚠️ Worker start request failed for new account ${result.account.id}:`, err.message);
+  });
+
+  res.status(201).json({ account: result.account });
+}));
+
+// Start (or restart) a single account
+app.post('/api/whatsapp/accounts/:accountId/start', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL || typeof db.getWhatsAppAccountById !== 'function') {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+  const account = await db.getWhatsAppAccountById(req.params.accountId, req.tenantId);
+  if (!account || account.deleted_at) return res.status(404).json({ error: 'Account not found' });
+  try {
+    const data = await fetchJsonWithRetry(`http://localhost:4001/api/internal/start/${encodeURIComponent(req.tenantId)}/${encodeURIComponent(account.id)}`, {
+      method: 'POST',
+      headers: safeInternalHeaders()
+    }, { retries: 1, timeoutMs: 5000 });
+    res.json(data);
+  } catch (err) {
+    res.status(502).json({ success: false, message: 'Worker is unavailable' });
+  }
+}));
+
+// Hard restart (kill sock + restart)
+app.post('/api/whatsapp/accounts/:accountId/restart', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL || typeof db.getWhatsAppAccountById !== 'function') {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+  const account = await db.getWhatsAppAccountById(req.params.accountId, req.tenantId);
+  if (!account || account.deleted_at) return res.status(404).json({ error: 'Account not found' });
+  try {
+    const data = await fetchJsonWithRetry(`http://localhost:4001/api/internal/restart/${encodeURIComponent(req.tenantId)}/${encodeURIComponent(account.id)}`, {
+      method: 'POST',
+      headers: safeInternalHeaders()
+    }, { retries: 1, timeoutMs: 5000 });
+    res.json(data);
+  } catch {
+    res.status(502).json({ success: false, message: 'Worker is unavailable' });
+  }
+}));
+
+// Logout (clear creds, mark logged_out — keeps the row in DB so leads survive)
+app.post('/api/whatsapp/accounts/:accountId/logout', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL || typeof db.getWhatsAppAccountById !== 'function') {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+  const account = await db.getWhatsAppAccountById(req.params.accountId, req.tenantId);
+  if (!account || account.deleted_at) return res.status(404).json({ error: 'Account not found' });
+  try {
+    await fetchJsonWithRetry(`http://localhost:4001/api/internal/logout/${encodeURIComponent(req.tenantId)}/${encodeURIComponent(account.id)}`, {
+      method: 'POST',
+      headers: safeInternalHeaders()
+    }, { retries: 1, timeoutMs: 5000 });
+  } catch {
+    // ignore worker error — DB-level cleanup happens via the worker endpoint anyway
+  }
+  res.json({ success: true });
+}));
+
+// Set this account as the tenant default (used for outgoing messages on non-WA leads)
+app.post('/api/whatsapp/accounts/:accountId/default', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL || typeof db.setDefaultWhatsAppAccount !== 'function') {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+  const ok = await db.setDefaultWhatsAppAccount(req.params.accountId, req.tenantId);
+  if (!ok) return res.status(404).json({ error: 'Account not found' });
+  res.json({ success: true });
+}));
+
+// Soft-delete account (leads survive; same phone re-bind auto-restores)
+app.delete('/api/whatsapp/accounts/:accountId', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL || typeof db.softDeleteWhatsAppAccount !== 'function') {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+  // Logout first (kill sock + clear baileys auth)
+  try {
+    await fetchJsonWithRetry(`http://localhost:4001/api/internal/logout/${encodeURIComponent(req.tenantId)}/${encodeURIComponent(req.params.accountId)}`, {
+      method: 'POST',
+      headers: safeInternalHeaders()
+    }, { retries: 0, timeoutMs: 4000 });
+  } catch {
+    // ignore — DB soft-delete still proceeds
+  }
+  const ok = await db.softDeleteWhatsAppAccount(req.params.accountId, req.tenantId);
+  if (!ok) return res.status(404).json({ error: 'Account not found' });
+  res.json({ success: true });
+}));
+
 // 🗄️ LEADS API
 app.get('/api/leads', requireTenantAuth, asyncHandler(async (req, res) => {
   if (typeof db.getLeads !== 'function') return res.status(503).json({ error: 'Lead storage not configured' });
-  const { status, startDate, endDate, limit, offset, tzOffsetMinutes } = req.query;
+  const { status, startDate, endDate, limit, offset, tzOffsetMinutes, whatsappAccountId } = req.query;
   const leads = await db.getLeads({
     status,
     startDate,
@@ -3018,8 +3219,22 @@ app.get('/api/leads', requireTenantAuth, asyncHandler(async (req, res) => {
     offset: offset ? parseInt(offset) : undefined,
     assigneeId: canViewAllLeads(req) ? undefined : req.userId,
     userId: req.userId || null,
+    whatsappAccountId: whatsappAccountId || undefined,
   }, req.tenantId);
   res.json(leads);
+}));
+
+// Returns the list of "duplicate" leads — same phone in same tenant but a
+// different lead row (i.e. different WhatsApp account). Used by the lead detail
+// banner that says "this customer is also writing to your other WhatsApp".
+app.get('/api/leads/:id/duplicates', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL || typeof db.getDuplicateLeadsForLead !== 'function') {
+    return res.json({ duplicates: [] });
+  }
+  const visibleLead = await loadAccessibleLead(req, req.params.id);
+  if (!visibleLead) return res.status(404).json({ error: 'Lead not found' });
+  const duplicates = await db.getDuplicateLeadsForLead(req.params.id, req.tenantId);
+  res.json({ duplicates });
 }));
 
 app.post('/api/leads', requireTenantAuth, requirePermission('create_lead', 'Lead yaratmaq icazəniz yoxdur'), asyncHandler(async (req, res) => {
@@ -3938,8 +4153,10 @@ app.post('/api/leads/:id/messages', requireTenantAuth, asyncHandler(async (req, 
   const { body } = req.body;
   if (!body) return res.status(400).json({ error: 'Message body is required' });
 
-  // Get lead to know the phone number
-  const fullLead = await db.pool.query('SELECT id, phone, name, status, source, extra_data FROM leads WHERE id = $1 AND tenant_id = $2', [leadId, req.tenantId]);
+  // Get lead to know the phone number AND which WhatsApp account to send through.
+  // Multi-account: outgoing messages are AUTOMATIC — they always go through the account
+  // the lead originated from. Falls back to tenant default for legacy leads.
+  const fullLead = await db.pool.query('SELECT id, phone, name, status, source, extra_data, whatsapp_account_id FROM leads WHERE id = $1 AND tenant_id = $2', [leadId, req.tenantId]);
   if (fullLead.rowCount === 0) return res.status(404).json({ error: 'Lead not found' });
   const lead = fullLead.rows[0];
 
@@ -3950,15 +4167,21 @@ app.post('/api/leads/:id/messages', requireTenantAuth, asyncHandler(async (req, 
     return res.status(400).json({ error: 'Only WhatsApp leads can be messaged from CRM right now' });
   }
 
+  // Resolve which WA account to send through (lead's account → tenant default)
+  let sendAccountId = lead.whatsapp_account_id || null;
+  if (!sendAccountId && typeof db.getDefaultWhatsAppAccountId === 'function') {
+    try { sendAccountId = await db.getDefaultWhatsAppAccountId(req.tenantId); } catch { }
+  }
+
   // Insert into messages as pending
   // Compatibility: older DBs might not have sender_user_id yet.
   let insertResult = null;
   try {
     insertResult = await db.pool.query(`
-      INSERT INTO messages (lead_id, phone, body, direction, status, tenant_id, sender_user_id)
-      VALUES ($1, $2, $3, 'out', 'pending', $4, $5)
+      INSERT INTO messages (lead_id, phone, body, direction, status, tenant_id, sender_user_id, whatsapp_account_id)
+      VALUES ($1, $2, $3, 'out', 'pending', $4, $5, $6)
       RETURNING id, created_at
-    `, [leadId, lead.phone, body, req.tenantId, req.userId || null]);
+    `, [leadId, lead.phone, body, req.tenantId, req.userId || null, sendAccountId]);
   } catch (e) {
     const msg = String(e?.message || 'insert_failed');
     if (msg.includes('sender_user_id') && msg.includes('does not exist')) {
@@ -3966,10 +4189,10 @@ app.post('/api/leads/:id/messages', requireTenantAuth, asyncHandler(async (req, 
         await db.pool.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_user_id UUID REFERENCES users(id) ON DELETE SET NULL;');
       } catch { }
       insertResult = await db.pool.query(`
-        INSERT INTO messages (lead_id, phone, body, direction, status, tenant_id)
-        VALUES ($1, $2, $3, 'out', 'pending', $4)
+        INSERT INTO messages (lead_id, phone, body, direction, status, tenant_id, whatsapp_account_id)
+        VALUES ($1, $2, $3, 'out', 'pending', $4, $5)
         RETURNING id, created_at
-      `, [leadId, lead.phone, body, req.tenantId]);
+      `, [leadId, lead.phone, body, req.tenantId, sendAccountId]);
     } else {
       throw e;
     }

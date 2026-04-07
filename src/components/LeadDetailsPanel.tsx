@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Lead, LeadStatus } from '../types/crm';
+import { Lead, LeadStatus, DuplicateLead } from '../types/crm';
 import {
     User, Phone, Package, MessageSquare, Clock, Hash,
-    Save, CheckCircle2, TrendingUp, BarChart2, Edit3, Check, Route, ChevronDown
+    Save, CheckCircle2, TrendingUp, BarChart2, Edit3, Check, Route, ChevronDown,
+    Smartphone, Users, AlertTriangle
 } from 'lucide-react';
 import { cn, toNumberSafe } from '../lib/utils';
 import { loadCRMSettings } from '../lib/crmSettings';
@@ -817,6 +818,23 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
     const [noteBusy, setNoteBusy] = useState(false);
     const storyLoadLockRef = useRef(false);
 
+    // Multi-WhatsApp: cross-link duplicates (same phone in another WA account of the tenant)
+    const [duplicates, setDuplicates] = useState<DuplicateLead[]>([]);
+    useEffect(() => {
+        let cancelled = false;
+        const probable = (lead as any)?.duplicate_lead_count ?? 0;
+        if (!lead?.id || probable === 0) {
+            setDuplicates([]);
+            return;
+        }
+        CrmService.fetchDuplicateLeads(lead.id).then((rows) => {
+            if (!cancelled) setDuplicates(rows || []);
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [lead?.id, (lead as any)?.duplicate_lead_count]);
+
     const loadStory = useCallback(async () => {
         if (!serverUrl || !lead?.id || activeTab !== 'feed' || storyLoadLockRef.current) return;
         storyLoadLockRef.current = true;
@@ -1256,6 +1274,45 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                             <div className={cn('w-2 h-2 rounded-full shrink-0', activeStatus.bg)} title={activeStatus.label} />
                         </div>
 
+                        {/* Multi-WhatsApp duplicate banner: this customer is also writing
+                            to one of your other WhatsApp accounts. */}
+                        {duplicates.length > 0 ? (
+                            <div className="mx-3 mt-3 rounded-lg border border-amber-900/40 bg-amber-950/15 px-3 py-2">
+                                <div className="flex items-start gap-2">
+                                    <AlertTriangle className="w-3.5 h-3.5 text-amber-300 mt-0.5 shrink-0" />
+                                    <div className="min-w-0">
+                                        <p className="text-[11px] font-extrabold text-amber-200">
+                                            Bu müştəri başqa WhatsApp hesabınıza da yazır
+                                        </p>
+                                        <p className="text-[10px] text-amber-300/70 mt-0.5">
+                                            Eyni nömrə {duplicates.length} fərqli hesabda lead yaradıb:
+                                        </p>
+                                        <div className="mt-2 space-y-1">
+                                            {duplicates.slice(0, 5).map((d) => (
+                                                <button
+                                                    key={d.id}
+                                                    type="button"
+                                                    onClick={() => {
+                                                        // Naive cross-link: emit a global event so the lead list can switch
+                                                        const evt = new CustomEvent('crm:open-lead', { detail: { id: d.id } });
+                                                        window.dispatchEvent(evt);
+                                                    }}
+                                                    className="block w-full text-left rounded-md border border-amber-900/30 bg-amber-950/20 hover:bg-amber-950/30 px-2 py-1.5 text-[10px] text-amber-100"
+                                                >
+                                                    <div className="flex items-center gap-1.5 font-bold">
+                                                        <Smartphone className="w-2.5 h-2.5" />
+                                                        {d.whatsapp_account_label || 'Naməlum hesab'}
+                                                        {d.message_count ? <span className="text-amber-300/60">· {d.message_count} mesaj</span> : null}
+                                                    </div>
+                                                    {d.name ? <div className="text-amber-200/60 truncate">{d.name}</div> : null}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        ) : null}
+
                         {/* Fields (scrollable) */}
                         <div
                             className="flex-1 min-h-0 overflow-y-auto overscroll-contain touch-pan-y"
@@ -1476,6 +1533,33 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                                 : '✍️ Manual'}
                                 </span>
                             </FieldGroup>
+
+                            {/* WhatsApp hesabı — multi-account: hangi WhatsApp numarasından geldi */}
+                            {lead.source === 'whatsapp' && (lead.whatsapp_account_label || lead.whatsapp_account_phone) ? (
+                                <FieldGroup label="WhatsApp Hesabı" icon={<Smartphone className="w-3 h-3" />}>
+                                    <div className="rounded-lg border border-emerald-900/30 bg-emerald-950/15 px-2.5 py-2">
+                                        <div className="text-[11px] font-extrabold text-emerald-200 truncate">
+                                            {lead.whatsapp_account_label || 'WhatsApp'}
+                                        </div>
+                                        {lead.whatsapp_account_phone ? (
+                                            <div className="text-[10px] text-emerald-300/70 font-mono mt-0.5">
+                                                +{String(lead.whatsapp_account_phone).replace(/\D/g, '')}
+                                            </div>
+                                        ) : null}
+                                        <div className="text-[9px] text-emerald-400/60 uppercase font-bold mt-1">
+                                            Bu hesabdan mesajlaşıldı
+                                        </div>
+                                    </div>
+                                </FieldGroup>
+                            ) : null}
+
+                            {(lead.duplicate_lead_count ?? 0) > 0 ? (
+                                <FieldGroup label="Dublikat Lead'lər" icon={<Users className="w-3 h-3" />}>
+                                    <p className="text-[10px] text-amber-300">
+                                        Eyni nömrədən {(lead.duplicate_lead_count ?? 0)} başqa hesapda lead var. Yuxarıdakı bannerden keçid edə bilərsiniz.
+                                    </p>
+                                </FieldGroup>
+                            ) : null}
                         </div>
                         </div>
 

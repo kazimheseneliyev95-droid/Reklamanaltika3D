@@ -24,7 +24,7 @@ const {
 const pino = require('pino');
 const HAS_DATABASE = Boolean(process.env.DATABASE_URL);
 const db = HAS_DATABASE ? require('./database') : null;
-const { usePostgresAuthState, getAllAuthenticatedTenants } = require('./postgresAuthState.cjs');
+const { usePostgresAuthState, getAllAuthenticatedAccounts } = require('./postgresAuthState.cjs');
 
 const workerApp = express();
 workerApp.use(express.json());
@@ -92,13 +92,22 @@ async function fetchWithRetry(url, options = {}, retryOptions = {}) {
     throw lastError;
 }
 
-function getTenantAuthDir(tenantId) {
+function getTenantAuthDir(tenantId, accountId) {
     var safeTenantId = String(tenantId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
+    if (accountId) {
+        var safeAccountId = String(accountId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
+        return path.join(__dirname, '.baileys_auth', safeTenantId, safeAccountId);
+    }
     return path.join(__dirname, '.baileys_auth', safeTenantId);
 }
 
 function toSafeTenantId(tenantId) {
     return String(tenantId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+// Composite session key: tenant + account.
+function makeSessionKey(tenantId, accountId) {
+    return String(tenantId || '') + '::' + String(accountId || '');
 }
 
 function toSafeFileBase(value, maxLen) {
@@ -156,7 +165,7 @@ function safeNumberFromLong(v) {
     return null;
 }
 
-async function maybePersistWhatsAppMedia(tenantId, msg, unwrapped, msgType, whatsappId) {
+async function maybePersistWhatsAppMedia(tenantId, accountId, msg, unwrapped, msgType, whatsappId) {
     if (!WA_MEDIA_ENABLED) return null;
     if (!tenantId || !msg || !unwrapped || !whatsappId) return null;
     if (msgType !== 'image' && msgType !== 'audio' && msgType !== 'video' && msgType !== 'document') return null;
@@ -180,7 +189,7 @@ async function maybePersistWhatsAppMedia(tenantId, msg, unwrapped, msgType, what
         };
     }
 
-    var session = sessions.get(tenantId);
+    var session = sessions.get(makeSessionKey(tenantId, accountId));
     if (!session || !session.sock) return null;
 
     var safeTenant = toSafeTenantId(tenantId);
@@ -263,7 +272,7 @@ async function maybePersistWhatsAppMedia(tenantId, msg, unwrapped, msgType, what
     }
 }
 
-async function getAuthState(tenantId) {
+async function getAuthState(tenantId, accountId) {
     if (HAS_DATABASE && db) {
         if (!db.pool && db.initDb) {
             await db.initDb();
@@ -271,18 +280,22 @@ async function getAuthState(tenantId) {
         if (!db.pool) {
             throw new Error('Database pool is not initialized');
         }
-        return usePostgresAuthState(db.pool, tenantId);
+        return usePostgresAuthState(db.pool, tenantId, accountId || null);
     }
-    var authDir = getTenantAuthDir(tenantId);
+    var authDir = getTenantAuthDir(tenantId, accountId);
     return useMultiFileAuthState(authDir);
 }
 
-// State Variables (Multi-Tenant)
+// State Variables (Multi-Tenant + Multi-Account)
+// Keyed by tenantId::accountId so each WhatsApp account has its own session.
 const sessions = new Map();
 
-function getSession(tenantId) {
-    if (!sessions.has(tenantId)) {
-        sessions.set(tenantId, {
+function getSession(tenantId, accountId) {
+    var key = makeSessionKey(tenantId, accountId);
+    if (!sessions.has(key)) {
+        sessions.set(key, {
+            tenantId: tenantId,
+            accountId: accountId,
             isReady: false,
             isAuthenticated: false,
             qrCodeData: null,
@@ -296,7 +309,21 @@ function getSession(tenantId) {
             lastStartAt: 0,
         });
     }
-    return sessions.get(tenantId);
+    return sessions.get(key);
+}
+
+/**
+ * List all sessions for a tenant. Returns an array of session objects.
+ * Used by the status endpoint.
+ */
+function getSessionsForTenant(tenantId) {
+    var out = [];
+    for (var pair of sessions.entries()) {
+        if (pair[1] && pair[1].tenantId === tenantId) {
+            out.push(pair[1]);
+        }
+    }
+    return out;
 }
 
 function clearReconnectTimer(session) {
@@ -310,12 +337,12 @@ function clearReconnectTimer(session) {
     }
 }
 
-function scheduleSessionRestart(tenantId, session, delayMs) {
+function scheduleSessionRestart(tenantId, accountId, session, delayMs) {
     if (!session) return;
     if (session.reconnectTimer) return;
     session.reconnectTimer = setTimeout(function () {
         session.reconnectTimer = null;
-        startWhatsAppClient(tenantId);
+        startWhatsAppClient(tenantId, accountId);
     }, delayMs);
 }
 
@@ -334,10 +361,10 @@ setInterval(() => {
     }
 }, REPAIRED_PHONE_TTL_MS).unref();
 
-async function getPNForLidUser(tenantId, lidUser) {
+async function getPNForLidUser(tenantId, accountId, lidUser) {
     try {
         if (!lidUser) return null;
-        var session = sessions.get(tenantId);
+        var session = sessions.get(makeSessionKey(tenantId, accountId));
         var keys = session && session.keys;
         if (!keys || !keys.get) return null;
         var reverseKey = String(lidUser) + '_reverse';
@@ -352,23 +379,27 @@ async function getPNForLidUser(tenantId, lidUser) {
     }
 }
 
-async function repairLeadPhoneMapping(tenantId, oldPhone, newPhone) {
+async function repairLeadPhoneMapping(tenantId, accountId, oldPhone, newPhone) {
     if (!HAS_DATABASE || !db || !db.pool) return;
     if (!oldPhone || !newPhone || oldPhone === newPhone) return;
 
     const now = Date.now();
-    const k = String(tenantId) + ':' + String(oldPhone);
+    const k = String(tenantId) + ':' + String(accountId || '') + ':' + String(oldPhone);
     const last = repairedOldPhones.get(k) || 0;
     if (now - last < 10 * 60 * 1000) return; // 10 min
     repairedOldPhones.set(k, now);
+
+    // Multi-account: only repair leads belonging to THIS account so we don't merge across accounts.
+    const accountFilterSql = accountId ? ' AND whatsapp_account_id = $3' : '';
+    const accountParams = accountId ? [accountId] : [];
 
     const client = await db.pool.connect();
     try {
         await client.query('BEGIN');
 
         const oldRes = await client.query(
-            'SELECT id, phone, name, last_message FROM leads WHERE phone = $1 AND tenant_id = $2 LIMIT 1',
-            [oldPhone, tenantId]
+            `SELECT id, phone, name, last_message FROM leads WHERE phone = $1 AND tenant_id = $2${accountFilterSql} LIMIT 1`,
+            [oldPhone, tenantId, ...accountParams]
         );
         if (oldRes.rowCount === 0) {
             await client.query('COMMIT');
@@ -377,8 +408,8 @@ async function repairLeadPhoneMapping(tenantId, oldPhone, newPhone) {
         const oldLead = oldRes.rows[0];
 
         const newRes = await client.query(
-            'SELECT id, phone, name, last_message FROM leads WHERE phone = $1 AND tenant_id = $2 LIMIT 1',
-            [newPhone, tenantId]
+            `SELECT id, phone, name, last_message FROM leads WHERE phone = $1 AND tenant_id = $2${accountFilterSql} LIMIT 1`,
+            [newPhone, tenantId, ...accountParams]
         );
 
         if (newRes.rowCount > 0) {
@@ -421,28 +452,31 @@ async function repairLeadPhoneMapping(tenantId, oldPhone, newPhone) {
     }
 }
 
-async function maybeRepairMappedLeads(tenantId) {
+async function maybeRepairMappedLeads(tenantId, accountId) {
     if (!HAS_DATABASE || !db || !db.pool) return;
-    const session = sessions.get(tenantId);
+    const session = sessions.get(makeSessionKey(tenantId, accountId));
     if (!session || !session.keys) return;
 
+    const scanKey = String(tenantId) + ':' + String(accountId || '');
     const now = Date.now();
-    const last = lastRepairScanAt.get(tenantId) || 0;
+    const last = lastRepairScanAt.get(scanKey) || 0;
     if (now - last < REPAIR_SCAN_COOLDOWN_MS) return;
-    lastRepairScanAt.set(tenantId, now);
+    lastRepairScanAt.set(scanKey, now);
 
-    // Light-touch scan: check recent leads and fix if a reverse mapping exists
+    // Light-touch scan: check recent leads tied to THIS account and fix if a reverse mapping exists
     try {
+        const accountFilterSql = accountId ? ' AND whatsapp_account_id = $2' : '';
+        const accountParams = accountId ? [accountId] : [];
         const res = await db.pool.query(
-            'SELECT phone FROM leads WHERE tenant_id = $1 ORDER BY updated_at DESC LIMIT 120',
-            [tenantId]
+            `SELECT phone FROM leads WHERE tenant_id = $1${accountFilterSql} ORDER BY updated_at DESC LIMIT 120`,
+            [tenantId, ...accountParams]
         );
         for (let i = 0; i < res.rows.length; i++) {
             const phone = String(res.rows[i].phone || '');
             if (!phone) continue;
-            const mapped = await getPNForLidUser(tenantId, phone);
+            const mapped = await getPNForLidUser(tenantId, accountId, phone);
             if (mapped && mapped !== phone) {
-                await repairLeadPhoneMapping(tenantId, phone, mapped);
+                await repairLeadPhoneMapping(tenantId, accountId, phone, mapped);
             }
         }
     } catch (e) {
@@ -479,8 +513,9 @@ console.log('📋 API URL: ' + API_URL);
 console.log('📋 Storage Mode: ' + (HAS_DATABASE ? 'postgres' : 'file-auth/no-db'));
 console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
-// Notify Main API Server via Webhook
-async function notifyApiServer(tenantId, event, payload) {
+// Notify Main API Server via Webhook.
+// accountId is optional but recommended — it lets the API server emit per-account events.
+async function notifyApiServer(tenantId, event, payload, accountId) {
     try {
         await fetchWithRetry(API_URL + '/api/internal/webhook', {
             method: 'POST',
@@ -488,7 +523,7 @@ async function notifyApiServer(tenantId, event, payload) {
                 'Content-Type': 'application/json',
                 ...(INTERNAL_WEBHOOK_SECRET ? { 'x-internal-secret': INTERNAL_WEBHOOK_SECRET } : {})
             },
-            body: JSON.stringify({ tenantId: tenantId, event: event, payload: payload })
+            body: JSON.stringify({ tenantId: tenantId, accountId: accountId || null, event: event, payload: payload })
         }, { retries: 1, timeoutMs: 4000 });
     } catch (err) {
         console.error('⚠️ Webhook to API failed for ' + event + ': ' + err.message);
@@ -499,7 +534,7 @@ async function notifyApiServer(tenantId, event, payload) {
 // 📨 INCOMING MESSAGE PROCESSOR
 // ═══════════════════════════════════════════════════════════════
 
-async function processMessage(tenantId, msg, isFromMe) {
+async function processMessage(tenantId, accountId, msg, isFromMe) {
     try {
         if (!msg || !msg.key) return;
 
@@ -645,7 +680,7 @@ async function processMessage(tenantId, msg, isFromMe) {
             }
 
             // If remoteJid resolves to ourselves, participant is the other party (edge cases)
-            var session = sessions.get(tenantId);
+            var session = sessions.get(makeSessionKey(tenantId, accountId));
             var me = session && session.sock && session.sock.user && session.sock.user.id;
             if (me && participantJid) {
                 if (jidNormalizedUser(remoteJid) === jidNormalizedUser(me)) {
@@ -705,9 +740,9 @@ async function processMessage(tenantId, msg, isFromMe) {
             lidUser = peerDecoded.user;
         }
 
-        var mappedPn = lidUser ? await getPNForLidUser(tenantId, lidUser) : null;
+        var mappedPn = lidUser ? await getPNForLidUser(tenantId, accountId, lidUser) : null;
         if (mappedPn && lidUser && mappedPn !== String(lidUser)) {
-            await repairLeadPhoneMapping(tenantId, String(lidUser).replace(/\D/g, ''), mappedPn);
+            await repairLeadPhoneMapping(tenantId, accountId, String(lidUser).replace(/\D/g, ''), mappedPn);
         }
 
         var rawNumber = mappedPn || phoneFromJid(peerJid);
@@ -749,7 +784,7 @@ async function processMessage(tenantId, msg, isFromMe) {
         // Media: download and persist, then store URL in metadata (so UI can render image/audio)
         try {
             if (msgType === 'image' || msgType === 'audio' || msgType === 'video' || msgType === 'document') {
-                var media = await maybePersistWhatsAppMedia(tenantId, msg, unwrapped, msgType, whatsappId);
+                var media = await maybePersistWhatsAppMedia(tenantId, accountId, msg, unwrapped, msgType, whatsappId);
                 if (media) {
                     metadata.media = media;
                 }
@@ -759,7 +794,9 @@ async function processMessage(tenantId, msg, isFromMe) {
         // Write ALL messages (incoming AND outgoing caught by Baileys) to DB
         if (HAS_DATABASE && db) {
             try {
-                var existingLead = await db.findLeadByPhone(rawNumber, tenantId);
+                // Multi-account: scope lead lookup to THIS WhatsApp account so the same phone
+                // writing to a different account becomes a separate lead.
+                var existingLead = await db.findLeadByPhone(rawNumber, tenantId, accountId);
                 // Preserve pre-message state for automation rules in API server.
                 var wasClosedBefore = Boolean(existingLead && existingLead.conversation_closed);
                 var statusBefore = (existingLead && existingLead.status) ? String(existingLead.status) : '';
@@ -768,7 +805,7 @@ async function processMessage(tenantId, msg, isFromMe) {
                 if (existingLead) {
                     // Use the canonical phone from the DB to avoid mismatch
                     var canonicalPhone = existingLead.phone;
-                    savedLead = await db.updateLeadMessage(canonicalPhone, messageContent, whatsappId, contactName, tenantId, isFromMe ? 'out' : 'in');
+                    savedLead = await db.updateLeadMessage(canonicalPhone, messageContent, whatsappId, contactName, tenantId, isFromMe ? 'out' : 'in', accountId);
                     if (!savedLead) savedLead = existingLead;
                 } else {
                     savedLead = await db.createLead({
@@ -777,16 +814,17 @@ async function processMessage(tenantId, msg, isFromMe) {
                         last_message: messageContent,
                         whatsapp_id: whatsappId,
                         source: 'whatsapp',
-                        status: 'new'
+                        status: 'new',
+                        whatsapp_account_id: accountId || null
                     }, tenantId);
                     // Ensure unread counter & last_inbound_at are updated for the first inbound message too
                     if (savedLead && savedLead.phone) {
                         try {
-                            const updatedFirst = await db.updateLeadMessage(savedLead.phone, messageContent, whatsappId, contactName, tenantId, isFromMe ? 'out' : 'in');
+                            const updatedFirst = await db.updateLeadMessage(savedLead.phone, messageContent, whatsappId, contactName, tenantId, isFromMe ? 'out' : 'in', accountId);
                             if (updatedFirst) savedLead = updatedFirst;
                         } catch { }
                     }
-                    console.log('✨ New lead [' + tenantId + ']: ' + rawNumber);
+                    console.log('✨ New lead [' + tenantId + (accountId ? ':' + String(accountId).slice(0, 8) : '') + ']: ' + rawNumber);
                 }
 
                 if (savedLead && savedLead.id) {
@@ -801,7 +839,8 @@ async function processMessage(tenantId, msg, isFromMe) {
                             whatsappId: 'greeting-' + whatsappId,
                             metadata: { type: 'ad_greeting', ad: externalAd },
                             createdAt: msg.messageTimestamp || null,
-                            tenantId: tenantId
+                            tenantId: tenantId,
+                            whatsappAccountId: accountId || null
                         });
                     }
 
@@ -813,7 +852,8 @@ async function processMessage(tenantId, msg, isFromMe) {
                         whatsappId: whatsappId,
                         metadata: metadata,
                         createdAt: msg.messageTimestamp || null,
-                        tenantId: tenantId
+                        tenantId: tenantId,
+                        whatsappAccountId: accountId || null
                     });
 
                     // If this message contains ad attribution, persist it on the lead as well (extra_data.ad)
@@ -836,7 +876,8 @@ async function processMessage(tenantId, msg, isFromMe) {
                             whatsappId: whatsappId,
                             metadata: metadata,
                             createdAt: msg.messageTimestamp || null,
-                            tenantId: tenantId
+                            tenantId: tenantId,
+                            whatsappAccountId: accountId || null
                         });
                     } catch (appendErr) {
                         console.error('❌ appendMessage recovery also failed:', appendErr.message);
@@ -855,12 +896,14 @@ async function processMessage(tenantId, msg, isFromMe) {
             name: displayName,
             message: messageContent,
             whatsapp_id: whatsappId,
+            whatsapp_account_id: accountId || null,
             fromMe: isFromMe,
             was_closed: wasClosedBefore,
             status_before: statusBefore,
             timestamp: new Date().toISOString(),
-            source: 'whatsapp'
-        });
+            source: 'whatsapp',
+            lead_id: (typeof savedLead !== 'undefined' && savedLead) ? savedLead.id : null
+        }, accountId);
 
     } catch (error) {
         console.error('❌ processMessage error:', error.message);
@@ -871,9 +914,10 @@ async function processMessage(tenantId, msg, isFromMe) {
 // 🟢 WHATSAPP CLIENT INITIALIZER (Baileys)
 // ═══════════════════════════════════════════════════════════════
 
-async function startWhatsAppClient(tenantId) {
-    console.log('\n🚀 STARTING WHATSAPP CLIENT [' + tenantId + ']...');
-    var session = getSession(tenantId);
+async function startWhatsAppClient(tenantId, accountId) {
+    var tag = tenantId + (accountId ? ':' + String(accountId).slice(0, 8) : '');
+    console.log('\n🚀 STARTING WHATSAPP CLIENT [' + tag + ']...');
+    var session = getSession(tenantId, accountId);
 
     if (session.isInitializing || session.isReady) return;
     var now = Date.now();
@@ -885,11 +929,11 @@ async function startWhatsAppClient(tenantId) {
     try {
         session.lastInitError = null;
         if (HAS_DATABASE) {
-            console.log('📦 PostgreSQL Auth State [' + tenantId + ']...');
+            console.log('📦 PostgreSQL Auth State [' + tag + ']...');
         } else {
-            console.log('📦 File Auth State [' + tenantId + ']...');
+            console.log('📦 File Auth State [' + tag + ']...');
         }
-        var auth = await getAuthState(tenantId);
+        var auth = await getAuthState(tenantId, accountId);
         // Keep a reference to keys for LID ↔ PN mapping repairs
         try {
             session.keys = auth && auth.state ? auth.state.keys : null;
@@ -898,7 +942,7 @@ async function startWhatsAppClient(tenantId) {
         }
 
         var versionInfo = await fetchLatestBaileysVersion();
-        console.log('[' + tenantId + '] WA v' + versionInfo.version.join('.'));
+        console.log('[' + tag + '] WA v' + versionInfo.version.join('.'));
 
         session.sock = makeWASocket({
             version: versionInfo.version,
@@ -914,11 +958,14 @@ async function startWhatsAppClient(tenantId) {
 
         session.sock.ev.on('connection.update', async function (update) {
             if (update.qr) {
-                console.log('📱 QR RECEIVED [' + tenantId + ']');
+                console.log('📱 QR RECEIVED [' + tag + ']');
                 session.qrCodeData = update.qr;
                 session.isReady = false;
                 session.isAuthenticated = false;
-                notifyApiServer(tenantId, 'qr_code', update.qr);
+                if (HAS_DATABASE && db && accountId) {
+                    try { await db.updateWhatsAppAccountStatus(accountId, tenantId, { status: 'qr', last_qr_at: new Date() }); } catch { }
+                }
+                notifyApiServer(tenantId, 'qr_code', { qr: update.qr, account_id: accountId || null }, accountId);
             }
 
             if (update.connection === 'close') {
@@ -927,28 +974,40 @@ async function startWhatsAppClient(tenantId) {
                     statusCode = update.lastDisconnect.error.output.statusCode;
                 }
                 var shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-                console.log('⚠️ Closed [' + tenantId + '] Status:' + statusCode + ' reconnect:' + shouldReconnect);
+                console.log('⚠️ Closed [' + tag + '] Status:' + statusCode + ' reconnect:' + shouldReconnect);
                 session.isReady = false;
                 session.isInitializing = false;
                 session.sock = null;
+                if (HAS_DATABASE && db && accountId) {
+                    try {
+                        await db.updateWhatsAppAccountStatus(accountId, tenantId, {
+                            status: shouldReconnect ? 'disconnected' : 'logged_out',
+                            last_disconnected_at: new Date(),
+                            last_error: statusCode ? ('disconnect_status_' + statusCode) : null
+                        });
+                    } catch { }
+                }
 
                 if (shouldReconnect) {
                     session.reconnectAttempts = (session.reconnectAttempts || 0) + 1;
                     var baseDelay = (session.qrCodeData || !session.isAuthenticated) ? 15000 : 5000;
                     var delay = Math.min(60000, baseDelay * Math.max(1, session.reconnectAttempts));
-                    scheduleSessionRestart(tenantId, session, delay);
+                    scheduleSessionRestart(tenantId, accountId, session, delay);
                 } else {
                     session.isAuthenticated = false;
                     session.qrCodeData = null;
-                    notifyApiServer(tenantId, 'auth_failure', 'Logged out.');
+                    notifyApiServer(tenantId, 'auth_failure', { message: 'Logged out.', account_id: accountId || null }, accountId);
                     if (auth.clearState) await auth.clearState();
                     session.reconnectAttempts = 0;
-                    scheduleSessionRestart(tenantId, session, 3000);
+                    scheduleSessionRestart(tenantId, accountId, session, 3000);
                 }
             } else if (update.connection === 'connecting') {
                 session.isInitializing = true;
+                if (HAS_DATABASE && db && accountId) {
+                    try { await db.updateWhatsAppAccountStatus(accountId, tenantId, { status: 'connecting' }); } catch { }
+                }
             } else if (update.connection === 'open') {
-                console.log('✅ CLIENT READY [' + tenantId + ']');
+                console.log('✅ CLIENT READY [' + tag + ']');
                 session.isReady = true;
                 session.isAuthenticated = true;
                 session.isInitializing = false;
@@ -956,15 +1015,54 @@ async function startWhatsAppClient(tenantId) {
                 session.reconnectAttempts = 0;
                 clearReconnectTimer(session);
 
+                var phoneNumber = null;
                 if (session.sock && session.sock.user && session.sock.user.id) {
-                    session.connectedNumber = '+' + session.sock.user.id.split(':')[0].split('@')[0];
+                    phoneNumber = session.sock.user.id.split(':')[0].split('@')[0];
+                    session.connectedNumber = '+' + phoneNumber;
                 }
 
-                notifyApiServer(tenantId, 'ready', { status: 'connected' });
-                notifyApiServer(tenantId, 'authenticated', { status: 'authenticated' });
+                if (HAS_DATABASE && db && accountId) {
+                    try {
+                        await db.updateWhatsAppAccountStatus(accountId, tenantId, {
+                            status: 'connected',
+                            phone_number: phoneNumber,
+                            last_connected_at: new Date(),
+                            last_error: null
+                        });
+
+                        // Restore-by-phone: if a soft-deleted account exists with the same phone,
+                        // merge into that one so the user's old leads get reattached automatically.
+                        if (phoneNumber) {
+                            try {
+                                var archived = await db.findArchivedAccountByPhone(tenantId, phoneNumber);
+                                if (archived && archived.id && archived.id !== accountId) {
+                                    console.log('♻️ [' + tag + '] Restoring archived account ' + String(archived.id).slice(0, 8) + ' for phone ' + phoneNumber);
+                                    await db.restoreWhatsAppAccount(archived.id, tenantId);
+                                    // Move auth state from new account_id to the archived one
+                                    await db.pool.query(
+                                        'UPDATE baileys_auth_multi SET account_id = $1 WHERE tenant_id = $2 AND account_id = $3',
+                                        [archived.id, tenantId, accountId]
+                                    );
+                                    // Soft-delete the just-created placeholder account
+                                    await db.softDeleteWhatsAppAccount(accountId, tenantId);
+                                    // Re-key our in-memory session under the archived id and restart
+                                    sessions.delete(makeSessionKey(tenantId, accountId));
+                                    notifyApiServer(tenantId, 'account_restored', { from_account_id: accountId, to_account_id: archived.id }, archived.id);
+                                    setTimeout(function () { startWhatsAppClient(tenantId, archived.id); }, 500);
+                                    return;
+                                }
+                            } catch (restoreErr) {
+                                console.warn('⚠️ Restore-by-phone check failed:', restoreErr.message);
+                            }
+                        }
+                    } catch { }
+                }
+
+                notifyApiServer(tenantId, 'ready', { status: 'connected', account_id: accountId || null, phone_number: phoneNumber || null }, accountId);
+                notifyApiServer(tenantId, 'authenticated', { status: 'authenticated', account_id: accountId || null }, accountId);
 
                 // Opportunistic repair: if we previously stored LID codes as phones, convert them now.
-                maybeRepairMappedLeads(tenantId);
+                maybeRepairMappedLeads(tenantId, accountId);
             }
         });
 
@@ -972,7 +1070,7 @@ async function startWhatsAppClient(tenantId) {
             for (var i = 0; i < m.messages.length; i++) {
                 var msg = m.messages[i];
                 if (msg.message && msg.message.protocolMessage) continue;
-                processMessage(tenantId, msg, msg.key.fromMe);
+                processMessage(tenantId, accountId, msg, msg.key.fromMe);
             }
         });
 
@@ -985,22 +1083,25 @@ async function startWhatsAppClient(tenantId) {
                     var msg = h.messages[i];
                     if (!msg || !msg.key) continue;
                     if (msg.message && msg.message.protocolMessage) continue;
-                    processMessage(tenantId, msg, msg.key.fromMe);
+                    processMessage(tenantId, accountId, msg, msg.key.fromMe);
                 }
 
                 // Run repair after history import (mappings often arrive around this time)
-                maybeRepairMappedLeads(tenantId);
+                maybeRepairMappedLeads(tenantId, accountId);
             } catch (e) {
                 console.error('⚠️ messaging-history.set handler error:', e.message);
             }
         });
 
     } catch (err) {
-        console.error('❌ Init FAILED [' + tenantId + ']: ' + err.message);
+        console.error('❌ Init FAILED [' + tag + ']: ' + err.message);
         session.lastInitError = err && (err.stack || err.message) ? String(err.stack || err.message) : 'init_failed';
         session.isInitializing = false;
         session.reconnectAttempts = (session.reconnectAttempts || 0) + 1;
-        scheduleSessionRestart(tenantId, session, Math.min(60000, 5000 * session.reconnectAttempts));
+        if (HAS_DATABASE && db && accountId) {
+            try { await db.updateWhatsAppAccountStatus(accountId, tenantId, { status: 'error', last_error: session.lastInitError }); } catch { }
+        }
+        scheduleSessionRestart(tenantId, accountId, session, Math.min(60000, 5000 * session.reconnectAttempts));
     }
 }
 
@@ -1035,15 +1136,22 @@ async function pollOutgoingMessages() {
                 last_error = NULL
             FROM candidates c
             WHERE m.id = c.id
-            RETURNING m.id, m.tenant_id, m.phone, m.body, COALESCE(m.attempts, 0) AS attempts`,
+            RETURNING m.id, m.tenant_id, m.phone, m.body, m.whatsapp_account_id, COALESCE(m.attempts, 0) AS attempts`,
             [OUTGOING_CLAIM_OWNER, String(OUTGOING_CLAIM_TTL_MINUTES), OUTGOING_BATCH]
         );
 
         for (var i = 0; i < result.rows.length; i++) {
             var msg = result.rows[i];
-            var session = sessions.get(msg.tenant_id);
+            // Multi-account: route to the specific WA account that the message belongs to.
+            // Fallback: legacy rows without whatsapp_account_id → tenant default.
+            var sendAccountId = msg.whatsapp_account_id || null;
+            if (!sendAccountId) {
+                try { sendAccountId = await db.getDefaultWhatsAppAccountId(msg.tenant_id); } catch { }
+            }
+            var session = sessions.get(makeSessionKey(msg.tenant_id, sendAccountId));
             if (session && session.isReady && session.sock) {
-                console.log('[' + msg.tenant_id + '] 🤖 Sending → ' + msg.phone);
+                var sendTag = msg.tenant_id + (sendAccountId ? ':' + String(sendAccountId).slice(0, 8) : '');
+                console.log('[' + sendTag + '] 🤖 Sending → ' + msg.phone);
                 try {
                     var jid = msg.phone + '@s.whatsapp.net';
                     var sentMsg = await session.sock.sendMessage(jid, { text: msg.body });
@@ -1053,7 +1161,7 @@ async function pollOutgoingMessages() {
                             "UPDATE messages SET status = 'sent', whatsapp_id = $1, claimed_at = NULL, claim_owner = NULL, next_attempt_at = NULL, last_error = NULL WHERE id = $2",
                             [sentMsg.key.id, msg.id]
                         );
-                        notifyApiServer(msg.tenant_id, 'message_sent', { id: msg.id, status: 'sent', whatsapp_id: sentMsg.key.id });
+                        notifyApiServer(msg.tenant_id, 'message_sent', { id: msg.id, status: 'sent', whatsapp_id: sentMsg.key.id, whatsapp_account_id: sendAccountId || null }, sendAccountId);
                     }
                 } catch (sendErr) {
                     console.error('⚠️ Send failed ' + msg.id + ': ' + sendErr.message);
@@ -1116,29 +1224,123 @@ if (HAS_DATABASE) {
 // 🌐 INTERNAL WORKER API (Port 4001)
 // ═══════════════════════════════════════════════════════════════
 
-workerApp.post('/api/internal/start/:tenantId', function (req, res) {
+// Legacy endpoint: start the tenant's DEFAULT whatsapp account.
+// Backward compatible — old API server code paths still call this.
+workerApp.post('/api/internal/start/:tenantId', async function (req, res) {
     var tenantId = req.params.tenantId;
-    var session = getSession(tenantId);
-
-    if (session.isReady) {
-        return res.json({ success: true, status: 'already_connected' });
-    } else if (session.qrCodeData) {
-        return res.json({ success: true, status: 'qr_ready', qr: session.qrCodeData });
-    } else {
-        startWhatsAppClient(tenantId);
-        res.json({ success: true, status: 'starting' });
+    try {
+        var accountId = null;
+        if (HAS_DATABASE && db) {
+            accountId = await db.getDefaultWhatsAppAccountId(tenantId);
+            // Auto-provision a default account if none exists yet (legacy tenants).
+            if (!accountId) {
+                var created = await db.createWhatsAppAccount(tenantId, 'Əsas WhatsApp');
+                if (created && created.account) accountId = created.account.id;
+            }
+        }
+        var session = getSession(tenantId, accountId);
+        if (session.isReady) {
+            return res.json({ success: true, status: 'already_connected', account_id: accountId });
+        } else if (session.qrCodeData) {
+            return res.json({ success: true, status: 'qr_ready', qr: session.qrCodeData, account_id: accountId });
+        }
+        startWhatsAppClient(tenantId, accountId);
+        res.json({ success: true, status: 'starting', account_id: accountId });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
     }
 });
 
-workerApp.get('/api/internal/status/:tenantId', function (req, res) {
+// New: explicit (tenantId, accountId) start endpoint.
+workerApp.post('/api/internal/start/:tenantId/:accountId', function (req, res) {
     var tenantId = req.params.tenantId;
-    var session = getSession(tenantId);
+    var accountId = req.params.accountId;
+    var session = getSession(tenantId, accountId);
+
+    if (session.isReady) {
+        return res.json({ success: true, status: 'already_connected', account_id: accountId });
+    } else if (session.qrCodeData) {
+        return res.json({ success: true, status: 'qr_ready', qr: session.qrCodeData, account_id: accountId });
+    }
+    startWhatsAppClient(tenantId, accountId);
+    res.json({ success: true, status: 'starting', account_id: accountId });
+});
+
+// Legacy: tenant-wide status (returns the default account's status for backward compat,
+// plus a `accounts` array for new clients that want all sessions at once).
+workerApp.get('/api/internal/status/:tenantId', async function (req, res) {
+    var tenantId = req.params.tenantId;
+    var defaultAccountId = null;
+    if (HAS_DATABASE && db) {
+        try { defaultAccountId = await db.getDefaultWhatsAppAccountId(tenantId); } catch { }
+    }
+    var defaultSession = getSession(tenantId, defaultAccountId);
+    var allSessions = getSessionsForTenant(tenantId).map(function (s) {
+        return {
+            account_id: s.accountId,
+            isReady: s.isReady,
+            qr: s.qrCodeData ? true : false,
+            number: s.connectedNumber,
+            error: s.lastInitError
+        };
+    });
     res.json({
+        isReady: defaultSession.isReady,
+        qr: defaultSession.qrCodeData ? true : false,
+        number: defaultSession.connectedNumber,
+        error: defaultSession.lastInitError,
+        account_id: defaultAccountId,
+        accounts: allSessions
+    });
+});
+
+// Per-account status
+workerApp.get('/api/internal/status/:tenantId/:accountId', function (req, res) {
+    var session = getSession(req.params.tenantId, req.params.accountId);
+    res.json({
+        account_id: req.params.accountId,
         isReady: session.isReady,
         qr: session.qrCodeData ? true : false,
         number: session.connectedNumber,
         error: session.lastInitError
     });
+});
+
+// Logout a single account: clear auth state, kill the sock, mark account as logged_out.
+workerApp.post('/api/internal/logout/:tenantId/:accountId', async function (req, res) {
+    var tenantId = req.params.tenantId;
+    var accountId = req.params.accountId;
+    try {
+        var key = makeSessionKey(tenantId, accountId);
+        var session = sessions.get(key);
+        if (session) {
+            try { if (session.sock) session.sock.end(); } catch { }
+            try { clearReconnectTimer(session); } catch { }
+            sessions.delete(key);
+        }
+        if (HAS_DATABASE && db) {
+            try { await db.pool.query('DELETE FROM baileys_auth_multi WHERE tenant_id = $1 AND account_id = $2', [tenantId, accountId]); } catch { }
+            try { await db.updateWhatsAppAccountStatus(accountId, tenantId, { status: 'logged_out', last_disconnected_at: new Date() }); } catch { }
+        }
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Restart (force reconnect) an account
+workerApp.post('/api/internal/restart/:tenantId/:accountId', function (req, res) {
+    var tenantId = req.params.tenantId;
+    var accountId = req.params.accountId;
+    var key = makeSessionKey(tenantId, accountId);
+    var session = sessions.get(key);
+    if (session) {
+        try { if (session.sock) session.sock.end(); } catch { }
+        try { clearReconnectTimer(session); } catch { }
+        sessions.delete(key);
+    }
+    setTimeout(function () { startWhatsAppClient(tenantId, accountId); }, 200);
+    res.json({ success: true, status: 'restarting' });
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -1168,14 +1370,14 @@ async function bootWorker() {
         }
 
         try {
-            var activeTenants = await getAllAuthenticatedTenants(db.pool);
-            console.log('🤖 Found ' + activeTenants.length + ' active tenants. Booting...');
-            for (var i = 0; i < activeTenants.length; i++) {
-                startWhatsAppClient(activeTenants[i]);
+            var activeAccounts = await getAllAuthenticatedAccounts(db.pool);
+            console.log('🤖 Found ' + activeAccounts.length + ' active WhatsApp accounts. Booting...');
+            for (var i = 0; i < activeAccounts.length; i++) {
+                startWhatsAppClient(activeAccounts[i].tenantId, activeAccounts[i].accountId);
                 await new Promise(function (resolve) { setTimeout(resolve, 2000); });
             }
         } catch (err) {
-            console.error('Boot tenants failed:', err.message);
+            console.error('Boot WhatsApp accounts failed:', err.message);
         }
     } else {
         console.log('ℹ️ Worker started without database. Sessions start on-demand per tenant.');

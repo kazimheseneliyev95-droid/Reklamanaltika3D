@@ -1,4 +1,4 @@
-import { Lead, LeadStatus, DateRange } from '../types/crm';
+import { Lead, LeadStatus, DateRange, WhatsAppAccount, DuplicateLead } from '../types/crm';
 import { io, Socket } from 'socket.io-client';
 import { toNumberSafe } from '../lib/utils';
 
@@ -24,8 +24,10 @@ function randomItem<T>(items: T[]): T {
 class CrmServiceImpl {
   private socket: Socket | null = null;
   private serverUrl: string = '';
-  private qrCallback: ((qr: string) => void) | null = null;
+  // Multi-WhatsApp aware QR callback. accountId is null for legacy single-account flow.
+  private qrCallback: ((qr: string, accountId: string | null) => void) | null = null;
   private authCallback: (() => void) | null = null;
+  private accountStatusListeners: Map<string, (payload: { accountId: string | null; status: string; phone_number?: string | null }) => void> = new Map();
 
   // Improved listener arrays with unique IDs for cleanup
   private messageListeners: Map<string, (lead: Lead) => void> = new Map();
@@ -299,6 +301,121 @@ class CrmServiceImpl {
     }
   }
 
+  // ─── 📱 MULTI-WHATSAPP ACCOUNTS ─────────────────────────────────────
+  async listWhatsAppAccounts(): Promise<{ accounts: WhatsAppAccount[]; limit: number; used: number }> {
+    const url = this.getServerUrl();
+    if (!url) return { accounts: [], limit: 1, used: 0 };
+    try {
+      const res = await this.authFetch(`${url}/api/whatsapp/accounts`);
+      if (!res.ok) return { accounts: [], limit: 1, used: 0 };
+      const data = await res.json();
+      return {
+        accounts: Array.isArray(data?.accounts) ? data.accounts : [],
+        limit: Number.isFinite(Number(data?.limit)) ? Number(data.limit) : 1,
+        used: Number.isFinite(Number(data?.used)) ? Number(data.used) : 0,
+      };
+    } catch {
+      return { accounts: [], limit: 1, used: 0 };
+    }
+  }
+
+  async createWhatsAppAccount(label: string): Promise<{ account: WhatsAppAccount | null; error?: string; limit?: number }> {
+    const url = this.getServerUrl();
+    if (!url) return { account: null, error: 'no_server' };
+    try {
+      const res = await this.authFetch(`${url}/api/whatsapp/accounts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        return { account: null, error: data?.error || data?.code || 'create_failed', limit: data?.limit };
+      }
+      return { account: data?.account || null };
+    } catch (e: any) {
+      return { account: null, error: e?.message || 'network_error' };
+    }
+  }
+
+  async startWhatsAppAccount(accountId: string): Promise<boolean> {
+    const url = this.getServerUrl();
+    if (!url) return false;
+    try {
+      const res = await this.authFetch(`${url}/api/whatsapp/accounts/${encodeURIComponent(accountId)}/start`, {
+        method: 'POST'
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  async restartWhatsAppAccount(accountId: string): Promise<boolean> {
+    const url = this.getServerUrl();
+    if (!url) return false;
+    try {
+      const res = await this.authFetch(`${url}/api/whatsapp/accounts/${encodeURIComponent(accountId)}/restart`, {
+        method: 'POST'
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  async logoutWhatsAppAccount(accountId: string): Promise<boolean> {
+    const url = this.getServerUrl();
+    if (!url) return false;
+    try {
+      const res = await this.authFetch(`${url}/api/whatsapp/accounts/${encodeURIComponent(accountId)}/logout`, {
+        method: 'POST'
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  async setDefaultWhatsAppAccount(accountId: string): Promise<boolean> {
+    const url = this.getServerUrl();
+    if (!url) return false;
+    try {
+      const res = await this.authFetch(`${url}/api/whatsapp/accounts/${encodeURIComponent(accountId)}/default`, {
+        method: 'POST'
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  async deleteWhatsAppAccount(accountId: string): Promise<boolean> {
+    const url = this.getServerUrl();
+    if (!url) return false;
+    try {
+      const res = await this.authFetch(`${url}/api/whatsapp/accounts/${encodeURIComponent(accountId)}`, {
+        method: 'DELETE'
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  async fetchDuplicateLeads(leadId: string): Promise<DuplicateLead[]> {
+    const url = this.getServerUrl();
+    if (!url || !leadId) return [];
+    try {
+      const res = await this.authFetch(`${url}/api/leads/${encodeURIComponent(leadId)}/duplicates`);
+      if (!res.ok) return [];
+      const data = await res.json();
+      return Array.isArray(data?.duplicates) ? data.duplicates : [];
+    } catch {
+      return [];
+    }
+  }
+
   // Lightweight connection info for settings UI
   getConnectionInfo() {
     return {
@@ -393,7 +510,7 @@ class CrmServiceImpl {
     console.log("Starting Demo Simulation...");
 
     setTimeout(() => {
-      if (this.qrCallback) this.qrCallback('DEMO_QR_CODE_DATA');
+      if (this.qrCallback) this.qrCallback('DEMO_QR_CODE_DATA', null);
 
       setTimeout(() => {
         if (this.authCallback) this.authCallback();
@@ -422,14 +539,40 @@ class CrmServiceImpl {
   private setupSocketListeners() {
     if (!this.socket) return;
 
-    this.socket.on('qr_code', (qr) => {
-      debugLog('📱 QR RECEIVED');
-      if (this.qrCallback) this.qrCallback(qr);
+    this.socket.on('qr_code', (data: any) => {
+      // Multi-WhatsApp aware payload: { qr, account_id } | legacy: plain string
+      let qrString: string | null = null;
+      let accountId: string | null = null;
+      if (typeof data === 'string') {
+        qrString = data;
+      } else if (data && typeof data === 'object') {
+        qrString = data.qr || null;
+        accountId = data.account_id || null;
+      }
+      debugLog('📱 QR RECEIVED', accountId ? `(account ${String(accountId).slice(0, 8)})` : '');
+      if (this.qrCallback && qrString) this.qrCallback(qrString, accountId);
     });
 
-    this.socket.on('authenticated', () => {
+    this.socket.on('authenticated', (data: any) => {
       debugLog('🔑 AUTHENTICATED');
       if (this.authCallback) this.authCallback();
+      const accountId = (data && typeof data === 'object') ? (data.account_id || null) : null;
+      this.accountStatusListeners.forEach((cb) => cb({ accountId, status: 'connected', phone_number: data?.phone_number || null }));
+    });
+
+    this.socket.on('ready', (data: any) => {
+      const accountId = (data && typeof data === 'object') ? (data.account_id || null) : null;
+      this.accountStatusListeners.forEach((cb) => cb({ accountId, status: 'connected', phone_number: data?.phone_number || null }));
+    });
+
+    this.socket.on('auth_failure', (data: any) => {
+      const accountId = (data && typeof data === 'object') ? (data.account_id || null) : null;
+      this.accountStatusListeners.forEach((cb) => cb({ accountId, status: 'logged_out' }));
+    });
+
+    this.socket.on('account_restored', (data: any) => {
+      const accountId = (data && typeof data === 'object') ? (data.to_account_id || data.account_id || null) : null;
+      this.accountStatusListeners.forEach((cb) => cb({ accountId, status: 'restored' }));
     });
 
     this.socket.on('crm:test_incoming_message', (data: any) => {
@@ -666,11 +809,20 @@ class CrmServiceImpl {
   }
 
   // --- EVENT LISTENERS ---
-  onQrCode(cb: (qr: string) => void): () => void {
-    this.qrCallback = cb;
+  // Multi-WhatsApp aware: cb gets (qr, accountId). Old call sites that ignore the
+  // 2nd arg keep working unchanged.
+  onQrCode(cb: (qr: string, accountId?: string | null) => void): () => void {
+    const wrapped: (qr: string, accountId: string | null) => void = (qr, accountId) => cb(qr, accountId);
+    this.qrCallback = wrapped;
     return () => {
-      if (this.qrCallback === cb) this.qrCallback = null;
+      if (this.qrCallback === wrapped) this.qrCallback = null;
     };
+  }
+
+  onAccountStatus(cb: (payload: { accountId: string | null; status: string; phone_number?: string | null }) => void): () => void {
+    const id = `wa-acct-${this.listenerIdCounter++}`;
+    this.accountStatusListeners.set(id, cb);
+    return () => this.accountStatusListeners.delete(id);
   }
 
   onAuthenticated(cb: () => void): () => void {

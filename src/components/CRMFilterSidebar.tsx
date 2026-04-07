@@ -1,13 +1,15 @@
-import React, { useEffect, useMemo } from 'react';
-import { X, Filter, Calendar, CheckSquare, Square, Users, Database, DollarSign, Tag, MessageSquare, ShoppingBag } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { X, Filter, Calendar, CheckSquare, Square, Users, Database, DollarSign, Tag, MessageSquare, ShoppingBag, Smartphone } from 'lucide-react';
 import { cn } from '../lib/utils';
-import type { DateRange, User } from '../types/crm';
+import type { DateRange, User, WhatsAppAccount } from '../types/crm';
 import type { CustomField, PipelineStage } from '../lib/crmSettings';
+import { CrmService } from '../services/CrmService';
 
 export type CRMFilters = {
   query: string;
   product: string;
   source: 'all' | 'whatsapp' | 'facebook' | 'instagram' | 'manual';
+  whatsappAccountId: string; // '' = all accounts
   stageIds: string[];
   assigneeIds: string[]; // empty = all
   valueMin: string;
@@ -38,6 +40,7 @@ export function countActiveFilters(filters: CRMFilters, pipelineStages: Pipeline
   if (isNonEmpty(filters.query)) n++;
   if (isNonEmpty(filters.product)) n++;
   if (filters.source !== 'all') n++;
+  if (isNonEmpty(filters.whatsappAccountId)) n++;
   if (filters.assigneeIds.length > 0) n++;
   if (isNonEmpty(filters.valueMin) || isNonEmpty(filters.valueMax)) n++;
   if (filters.stageIds.length !== pipelineStages.length) n++;
@@ -76,6 +79,7 @@ export function makeDefaultCRMFilters(pipelineStages: PipelineStage[]): CRMFilte
     query: '',
     product: '',
     source: 'all',
+    whatsappAccountId: '',
     stageIds: pipelineStages.map(s => s.id),
     assigneeIds: [],
     valueMin: '',
@@ -118,6 +122,19 @@ export function CRMFilterSidebar({
   const textFields = useMemo(() => (customFields || []).filter(f => f.type === 'text'), [customFields]);
   const numberFields = useMemo(() => (customFields || []).filter(f => f.type === 'number'), [customFields]);
   const dateFields = useMemo(() => (customFields || []).filter(f => f.type === 'datetime'), [customFields]);
+
+  // Multi-WhatsApp accounts list (for filter dropdown)
+  const [waAccounts, setWaAccounts] = useState<WhatsAppAccount[]>([]);
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    CrmService.listWhatsAppAccounts().then((data) => {
+      if (!cancelled) setWaAccounts(data.accounts || []);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
   const activeCount = useMemo(() => countActiveFilters(filters, pipelineStages), [filters, pipelineStages]);
 
@@ -326,6 +343,29 @@ export function CRMFilterSidebar({
                 ))}
               </div>
             </div>
+
+            {/* Multi-WhatsApp account filter — only relevant when source is 'all' or 'whatsapp' */}
+            {(filters.source === 'all' || filters.source === 'whatsapp') && waAccounts.length > 0 ? (
+              <div className="mt-3 rounded-xl border border-slate-800 bg-slate-950/30 p-2">
+                <div className="flex items-center gap-2 text-[11px] font-bold text-slate-300">
+                  <Smartphone className="w-3.5 h-3.5 text-emerald-400" />
+                  WhatsApp Hesabı
+                </div>
+                <select
+                  value={filters.whatsappAccountId}
+                  onChange={(e) => setFilters((p) => ({ ...p, whatsappAccountId: e.target.value }))}
+                  className="mt-2 w-full h-9 rounded-lg bg-slate-950 border border-slate-800 px-2 text-[12px] text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-600/50"
+                >
+                  <option value="">Bütün hesablar</option>
+                  {waAccounts.map((acc) => (
+                    <option key={acc.id} value={acc.id}>
+                      {acc.label}{acc.phone_number ? ` (+${String(acc.phone_number).replace(/\D/g, '')})` : ''}
+                      {acc.is_default ? ' ⭐' : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : null}
 
             <div className="mt-3 grid grid-cols-2 gap-2">
               <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-2">

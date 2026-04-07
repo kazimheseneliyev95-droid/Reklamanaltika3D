@@ -25,6 +25,57 @@ export interface Lead {
   next_followup_due_at?: string | null;
   conversation_closed?: boolean;
   conversation_closed_at?: string | null;
+  // Multi-WhatsApp metadata (joined from whatsapp_accounts on read)
+  whatsapp_account_id?: string | null;
+  whatsapp_account_label?: string | null;
+  whatsapp_account_phone?: string | null;
+  whatsapp_account_status?: string | null;
+  duplicate_lead_count?: number; // # other leads with same (phone, tenant) but different account
+}
+
+export type WhatsAppAccountStatus =
+  | 'pending'
+  | 'qr'
+  | 'connecting'
+  | 'connected'
+  | 'disconnected'
+  | 'logged_out'
+  | 'error';
+
+export interface WhatsAppAccount {
+  id: string;
+  tenant_id: string;
+  label: string;
+  phone_number?: string | null;
+  phone_number_normalized?: string | null;
+  status: WhatsAppAccountStatus;
+  is_default: boolean;
+  last_qr_at?: string | null;
+  last_connected_at?: string | null;
+  last_disconnected_at?: string | null;
+  last_error?: string | null;
+  deleted_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  live?: {
+    isReady: boolean;
+    qr: boolean;
+    number?: string | null;
+    error?: string | null;
+  } | null;
+}
+
+export interface DuplicateLead {
+  id: string;
+  phone: string;
+  name?: string | null;
+  status?: string | null;
+  whatsapp_account_id?: string | null;
+  whatsapp_account_label?: string | null;
+  whatsapp_account_phone?: string | null;
+  last_inbound_at?: string | null;
+  created_at?: string | null;
+  message_count?: number;
 }
 
 export interface UserPermissions {

@@ -156,6 +156,9 @@ export default function CRMPage() {
       // source
       if (filters.source !== 'all' && l.source !== filters.source) return false;
 
+      // multi-WhatsApp account
+      if (filters.whatsappAccountId && (l as any).whatsapp_account_id !== filters.whatsappAccountId) return false;
+
       // assignee
       if (assigneeSet.size > 0) {
         const k = l.assignee_id ? String(l.assignee_id) : 'unassigned';

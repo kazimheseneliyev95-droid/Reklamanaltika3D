@@ -810,6 +810,157 @@ async function initDb() {
             console.warn('⚠️ Constraint migration warning:', e.message);
         }
 
+        // ═══════════════════════════════════════════════════════════════
+        // MULTI-WHATSAPP ACCOUNTS (per tenant) — backward compatible
+        // ═══════════════════════════════════════════════════════════════
+        try {
+            // 1) Per-tenant max accounts limit (superadmin-controlled)
+            await client.query("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS max_whatsapp_accounts INTEGER NOT NULL DEFAULT 1;");
+
+            // 2) WhatsApp accounts catalog
+            await client.query(`
+                CREATE TABLE IF NOT EXISTS whatsapp_accounts (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    tenant_id VARCHAR(50) NOT NULL,
+                    label VARCHAR(120) NOT NULL,
+                    phone_number VARCHAR(40),
+                    phone_number_normalized VARCHAR(32),
+                    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+                    is_default BOOLEAN NOT NULL DEFAULT false,
+                    last_qr_at TIMESTAMP,
+                    last_connected_at TIMESTAMP,
+                    last_disconnected_at TIMESTAMP,
+                    last_error TEXT,
+                    deleted_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW()
+                );
+            `);
+            await client.query("CREATE INDEX IF NOT EXISTS idx_wa_accounts_tenant ON whatsapp_accounts(tenant_id) WHERE deleted_at IS NULL;");
+            // One default per tenant (only among active rows)
+            await client.query("CREATE UNIQUE INDEX IF NOT EXISTS idx_wa_accounts_default ON whatsapp_accounts(tenant_id) WHERE is_default = true AND deleted_at IS NULL;");
+            // Phone number lookup for soft-delete restore: only one active row per (tenant, normalized phone)
+            await client.query("CREATE UNIQUE INDEX IF NOT EXISTS idx_wa_accounts_phone_active ON whatsapp_accounts(tenant_id, phone_number_normalized) WHERE deleted_at IS NULL AND phone_number_normalized IS NOT NULL;");
+
+            // 3) Add account_id to baileys_auth_multi (nullable for backward compat).
+            //    Existing rows for tenants will be migrated to a default account_id below.
+            //    NOTE: postgresAuthState.cjs creates the table itself if missing — we just ensure
+            //    the column exists here too in case the worker process hasn't booted yet.
+            await client.query("CREATE TABLE IF NOT EXISTS baileys_auth_multi (tenant_id VARCHAR(255) NOT NULL, id VARCHAR(255) NOT NULL, data JSONB NOT NULL);");
+            await client.query("ALTER TABLE baileys_auth_multi ADD COLUMN IF NOT EXISTS account_id UUID;");
+            await client.query("CREATE INDEX IF NOT EXISTS idx_baileys_auth_multi_tenant_account ON baileys_auth_multi(tenant_id, account_id);");
+
+            // 4) Add whatsapp_account_id to leads/messages (nullable, ON DELETE SET NULL via app logic)
+            await client.query("ALTER TABLE leads ADD COLUMN IF NOT EXISTS whatsapp_account_id UUID;");
+            await client.query("CREATE INDEX IF NOT EXISTS idx_leads_tenant_account ON leads(tenant_id, whatsapp_account_id);");
+            await client.query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS whatsapp_account_id UUID;");
+            await client.query("CREATE INDEX IF NOT EXISTS idx_messages_tenant_account_created ON messages(tenant_id, whatsapp_account_id, created_at DESC);");
+
+            // 5) Auto-create a "Default" whatsapp_accounts row for every tenant that already has
+            //    active baileys creds OR any whatsapp leads — guarantees backward compatibility.
+            await client.query(`
+                INSERT INTO whatsapp_accounts (id, tenant_id, label, status, is_default, last_connected_at)
+                SELECT gen_random_uuid(), src.tenant_id, 'Əsas WhatsApp', 'connected', true, NOW()
+                FROM (
+                    SELECT DISTINCT tenant_id FROM baileys_auth_multi WHERE id = 'creds'
+                    UNION
+                    SELECT DISTINCT tenant_id FROM leads WHERE source = 'whatsapp'
+                ) src
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM whatsapp_accounts wa
+                    WHERE wa.tenant_id = src.tenant_id AND wa.deleted_at IS NULL
+                );
+            `);
+
+            // 6) Backfill baileys_auth_multi.account_id to the tenant's default account.
+            await client.query(`
+                UPDATE baileys_auth_multi b
+                SET account_id = wa.id
+                FROM whatsapp_accounts wa
+                WHERE wa.tenant_id = b.tenant_id
+                  AND wa.is_default = true
+                  AND wa.deleted_at IS NULL
+                  AND b.account_id IS NULL;
+            `);
+
+            // 6b) Replace the legacy primary key (tenant_id, id) — which only allowed ONE row
+            //    per tenant per id — with partial unique indexes that allow multiple WhatsApp
+            //    accounts per tenant. Two indexes:
+            //      - non-null account_id rows are unique on (tenant_id, account_id, id)
+            //      - legacy null account_id rows are unique on (tenant_id, id)  [pre-migration only]
+            //    The legacy index is a safety net during migration; after backfill all rows have
+            //    account_id and the legacy index stays empty.
+            await client.query(`
+                DO $$
+                DECLARE pk_name text;
+                BEGIN
+                    SELECT conname INTO pk_name
+                    FROM pg_constraint
+                    WHERE conrelid = 'baileys_auth_multi'::regclass AND contype = 'p'
+                    LIMIT 1;
+                    IF pk_name IS NOT NULL THEN
+                        EXECUTE 'ALTER TABLE baileys_auth_multi DROP CONSTRAINT ' || quote_ident(pk_name);
+                    END IF;
+                END $$;
+            `);
+            await client.query(`
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_baileys_auth_multi_account_unique
+                    ON baileys_auth_multi(tenant_id, account_id, id)
+                    WHERE account_id IS NOT NULL;
+            `);
+            await client.query(`
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_baileys_auth_multi_legacy_unique
+                    ON baileys_auth_multi(tenant_id, id)
+                    WHERE account_id IS NULL;
+            `);
+
+            // 7) Backfill leads.whatsapp_account_id to the tenant's default account (only whatsapp source).
+            await client.query(`
+                UPDATE leads l
+                SET whatsapp_account_id = wa.id
+                FROM whatsapp_accounts wa
+                WHERE wa.tenant_id = l.tenant_id
+                  AND wa.is_default = true
+                  AND wa.deleted_at IS NULL
+                  AND l.whatsapp_account_id IS NULL
+                  AND l.source = 'whatsapp';
+            `);
+
+            // 8) Backfill messages.whatsapp_account_id from their parent lead.
+            await client.query(`
+                UPDATE messages m
+                SET whatsapp_account_id = l.whatsapp_account_id
+                FROM leads l
+                WHERE l.id = m.lead_id
+                  AND l.tenant_id = m.tenant_id
+                  AND m.whatsapp_account_id IS NULL
+                  AND l.whatsapp_account_id IS NOT NULL;
+            `);
+
+            // 9) Replace the old (phone, tenant_id) unique constraint with one that includes account_id.
+            //    This is the multi-account uniqueness rule: same phone may exist as separate leads
+            //    across different WhatsApp accounts of the same tenant.
+            //    Done as a partial unique index so legacy rows with NULL account_id (non-WhatsApp) keep working.
+            await client.query("DROP INDEX IF EXISTS idx_leads_phone_tenant_unique;");
+            await client.query("ALTER TABLE leads DROP CONSTRAINT IF EXISTS leads_phone_tenant_unique;");
+            // New: per-account uniqueness (covers WA leads with non-null account_id)
+            await client.query(`
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_phone_tenant_account_unique
+                    ON leads(phone, tenant_id, whatsapp_account_id)
+                    WHERE whatsapp_account_id IS NOT NULL;
+            `);
+            // Fallback: legacy uniqueness for non-WA leads (facebook/instagram/manual) where account_id is NULL
+            await client.query(`
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_phone_tenant_noaccount_unique
+                    ON leads(phone, tenant_id)
+                    WHERE whatsapp_account_id IS NULL;
+            `);
+
+            console.log('✅ Multi-WhatsApp accounts schema ready');
+        } catch (e) {
+            console.warn('⚠️ Migration warning (whatsapp_accounts):', e.message);
+        }
+
         try {
             await client.query(`
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_meta_pages_page_unique
@@ -939,7 +1090,8 @@ async function createLead(data, tenantId = 'admin') {
             source = 'whatsapp',
             product_name,
             extra_data,
-            assignee_id
+            assignee_id,
+            whatsapp_account_id
         } = data;
 
         // Default assignee: tenant's first admin (only if not provided)
@@ -976,9 +1128,11 @@ async function createLead(data, tenantId = 'admin') {
             extraDataObj = {};
         }
 
-        // 1. Check for fuzzy match first before inserting
-        // This prevents duplicate leads when the phone format differs slightly (e.g. +994 vs 055...)
-        const existingLead = await findLeadByPhone(cleanedPhone, tenantId);
+        // 1. Check for fuzzy match first before inserting.
+        // For WhatsApp leads with an explicit account_id, we scope the match to that account,
+        // so the same phone writing to a DIFFERENT WhatsApp account becomes a new lead.
+        const accountIdForLookup = whatsapp_account_id || null;
+        const existingLead = await findLeadByPhone(cleanedPhone, tenantId, accountIdForLookup);
 
         if (existingLead) {
             // Update the canonical lead
@@ -995,6 +1149,7 @@ async function createLead(data, tenantId = 'admin') {
                     status = COALESCE($8, status),
                     extra_data = COALESCE(extra_data, '{}'::jsonb) || COALESCE($9::jsonb, '{}'::jsonb),
                     assignee_id = COALESCE(assignee_id, $10),
+                    whatsapp_account_id = COALESCE(whatsapp_account_id, $13),
                     updated_at = NOW()
                 WHERE id = $11 AND tenant_id = $12
                 RETURNING *;
@@ -1011,7 +1166,8 @@ async function createLead(data, tenantId = 'admin') {
                 extraDataObj,
                 finalAssigneeId,
                 existingLead.id,
-                tenantId
+                tenantId,
+                accountIdForLookup
             ];
 
             const result = await client.query(query, values);
@@ -1020,14 +1176,21 @@ async function createLead(data, tenantId = 'admin') {
             return result.rows[0];
         }
 
-        // 2. Insert new lead since no fuzzy match was found
+        // 2. Insert new lead since no fuzzy match was found.
+        // ON CONFLICT target depends on whether this is a WA lead with account_id or not,
+        // because we have two partial unique indexes: one on (phone, tenant_id, account_id)
+        // and one on (phone, tenant_id) where account_id is NULL.
+        const conflictTarget = accountIdForLookup
+            ? '(phone, tenant_id, whatsapp_account_id) WHERE whatsapp_account_id IS NOT NULL'
+            : '(phone, tenant_id) WHERE whatsapp_account_id IS NULL';
+
         const query = `
         INSERT INTO leads (
           phone, name, last_message, source_message, source_contact_name,
-          whatsapp_id, status, source, value, product_name, extra_data, tenant_id, assignee_id
+          whatsapp_id, status, source, value, product_name, extra_data, tenant_id, assignee_id, whatsapp_account_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-        ON CONFLICT (phone, tenant_id) 
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        ON CONFLICT ${conflictTarget}
         DO UPDATE SET
           name = COALESCE(EXCLUDED.name, leads.name),
           last_message = COALESCE(EXCLUDED.last_message, leads.last_message),
@@ -1039,6 +1202,7 @@ async function createLead(data, tenantId = 'admin') {
           status = COALESCE(EXCLUDED.status, leads.status),
           extra_data = COALESCE(leads.extra_data, '{}'::jsonb) || COALESCE(EXCLUDED.extra_data, '{}'::jsonb),
           assignee_id = COALESCE(leads.assignee_id, EXCLUDED.assignee_id),
+          whatsapp_account_id = COALESCE(leads.whatsapp_account_id, EXCLUDED.whatsapp_account_id),
           updated_at = NOW()
         RETURNING *;
       `;
@@ -1056,7 +1220,8 @@ async function createLead(data, tenantId = 'admin') {
             product_name || null,
             extraDataObj,
             tenantId,
-            finalAssigneeId
+            finalAssigneeId,
+            accountIdForLookup
         ];
 
         const result = await client.query(query, values);
@@ -1074,14 +1239,22 @@ async function createLead(data, tenantId = 'admin') {
 }
 
 /**
- * Find lead by phone number with fuzzy suffix matching
+ * Find lead by phone number with fuzzy suffix matching.
+ * Multi-WhatsApp aware: when whatsappAccountId is provided, only matches leads
+ * belonging to that account (so messages from different accounts to the same
+ * phone create separate leads).
  */
-async function findLeadByPhone(phone, tenantId = 'admin') {
+async function findLeadByPhone(phone, tenantId = 'admin', whatsappAccountId = null) {
     try {
         const cleanedPhone = normalizePhone(phone);
+        const accountFilterSql = whatsappAccountId ? ' AND whatsapp_account_id = $3' : '';
+        const accountParams = whatsappAccountId ? [whatsappAccountId] : [];
 
         // 1. Exact match first
-        const exact = await pool.query('SELECT * FROM leads WHERE phone = $1 AND tenant_id = $2', [cleanedPhone, tenantId]);
+        const exact = await pool.query(
+            `SELECT * FROM leads WHERE phone = $1 AND tenant_id = $2${accountFilterSql}`,
+            [cleanedPhone, tenantId, ...accountParams]
+        );
         if (exact.rows[0]) return exact.rows[0];
 
         // Non-numeric keys (fb:/ig:) should not use fuzzy matching
@@ -1093,8 +1266,8 @@ async function findLeadByPhone(phone, tenantId = 'admin') {
         if (cleanedPhone.length >= 9) {
             const suffix = cleanedPhone.slice(-9);
             const fuzzy = await pool.query(
-                "SELECT * FROM leads WHERE phone LIKE $1 AND tenant_id = $2 ORDER BY created_at DESC LIMIT 1",
-                [`%${suffix}`, tenantId]
+                `SELECT * FROM leads WHERE phone LIKE $1 AND tenant_id = $2${accountFilterSql} ORDER BY created_at DESC LIMIT 1`,
+                [`%${suffix}`, tenantId, ...accountParams]
             );
             if (fuzzy.rows[0]) {
                 console.log(`Fuzzy phone match: ${cleanedPhone} found as ${fuzzy.rows[0].phone}`);
@@ -1125,9 +1298,11 @@ async function findLeadByWhatsAppId(whatsappId, tenantId = 'admin') {
 }
 
 /**
- * Update lead message and metadata (with transaction)
+ * Update lead message and metadata (with transaction).
+ * Multi-WhatsApp aware: when whatsappAccountId is provided, only updates the lead
+ * tied to that account.
  */
-async function updateLeadMessage(phone, message, whatsappId, name = null, tenantId = 'admin', direction = 'in') {
+async function updateLeadMessage(phone, message, whatsappId, name = null, tenantId = 'admin', direction = 'in', whatsappAccountId = null) {
     const client = await pool.connect();
 
     try {
@@ -1147,6 +1322,9 @@ async function updateLeadMessage(phone, message, whatsappId, name = null, tenant
             defaultAssigneeId = null;
         }
 
+        const accountFilterSql = whatsappAccountId ? ' AND whatsapp_account_id = $8' : '';
+        const accountParams = whatsappAccountId ? [whatsappAccountId] : [];
+
         const query = `
         UPDATE leads
         SET last_message = $1,
@@ -1159,7 +1337,7 @@ async function updateLeadMessage(phone, message, whatsappId, name = null, tenant
             conversation_closed = CASE WHEN $7 = 'in' THEN false ELSE conversation_closed END,
             conversation_closed_at = CASE WHEN $7 = 'in' THEN NULL ELSE conversation_closed_at END,
             updated_at = NOW()
-        WHERE phone = $4 AND tenant_id = $5
+        WHERE phone = $4 AND tenant_id = $5${accountFilterSql}
         RETURNING *;
       `;
 
@@ -1170,7 +1348,8 @@ async function updateLeadMessage(phone, message, whatsappId, name = null, tenant
             cleanedPhone,
             tenantId,
             defaultAssigneeId,
-            direction === 'out' ? 'out' : 'in'
+            direction === 'out' ? 'out' : 'in',
+            ...accountParams
         ]);
         await client.query('COMMIT');
 
@@ -1384,6 +1563,10 @@ async function getLeads(filters = {}, tenantId = 'admin', existingClient = null)
                  ${viewerUserId ? 'COALESCE(msg_unread.unread_count, 0) AS unread_count,' : 'l.unread_count,'}
                  ${viewerUserId ? 'lr.last_read_at AS last_read_at,' : 'l.last_read_at,'}
                  fu.next_due_at AS next_followup_due_at,
+                 wa.label AS whatsapp_account_label,
+                 wa.phone_number AS whatsapp_account_phone,
+                 wa.status AS whatsapp_account_status,
+                 COALESCE(dup.cnt, 0) AS duplicate_lead_count,
                  CASE WHEN l.last_inbound_at IS NOT NULL THEN (EXTRACT(EPOCH FROM l.last_inbound_at) * 1000)::bigint ELSE NULL END AS last_inbound_ms,
                  CASE WHEN l.last_outbound_at IS NOT NULL THEN (EXTRACT(EPOCH FROM l.last_outbound_at) * 1000)::bigint ELSE NULL END AS last_outbound_ms,
                  CASE WHEN fu.next_due_at IS NOT NULL THEN (EXTRACT(EPOCH FROM fu.next_due_at) * 1000)::bigint ELSE NULL END AS next_followup_due_ms
@@ -1405,6 +1588,15 @@ async function getLeads(filters = {}, tenantId = 'admin', existingClient = null)
               AND f.lead_id = l.id
               AND f.status = 'open'
           ) fu ON true
+          LEFT JOIN whatsapp_accounts wa
+            ON wa.id = l.whatsapp_account_id AND wa.tenant_id = l.tenant_id
+          LEFT JOIN LATERAL (
+            SELECT COUNT(*)::int AS cnt
+            FROM leads l2
+            WHERE l2.tenant_id = l.tenant_id
+              AND l2.phone = l.phone
+              AND l2.id <> l.id
+          ) dup ON true
           WHERE l.tenant_id = $1
         `;
         const values = [tenantId];
@@ -1462,6 +1654,12 @@ async function getLeads(filters = {}, tenantId = 'admin', existingClient = null)
         if (filters.assigneeId) {
             query += ` AND l.assignee_id = $${paramCount}`;
             values.push(filters.assigneeId);
+            paramCount++;
+        }
+
+        if (filters.whatsappAccountId) {
+            query += ` AND l.whatsapp_account_id = $${paramCount}`;
+            values.push(filters.whatsappAccountId);
             paramCount++;
         }
 
@@ -1582,7 +1780,7 @@ async function healthCheck() {
 /**
  * Append a single message to the messages table (idempotent via whatsapp_id without relying on constraints)
  */
-async function appendMessage({ leadId, phone, body, direction, whatsappId, metadata, createdAt, tenantId = 'admin', senderUserId = null }) {
+async function appendMessage({ leadId, phone, body, direction, whatsappId, metadata, createdAt, tenantId = 'admin', senderUserId = null, whatsappAccountId = null }) {
     const ts = createdAt ? new Date(createdAt * 1000) : new Date();
 
     let meta = metadata;
@@ -1605,9 +1803,9 @@ async function appendMessage({ leadId, phone, body, direction, whatsappId, metad
 
             // 2. Insert message
             await pool.query(`
-                INSERT INTO messages (lead_id, phone, body, direction, whatsapp_id, metadata, created_at, tenant_id, sender_user_id)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            `, [leadId, phone, body || '', direction, whatsappId || null, meta, ts, tenantId, senderUserId || null]);
+                INSERT INTO messages (lead_id, phone, body, direction, whatsapp_id, metadata, created_at, tenant_id, sender_user_id, whatsapp_account_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            `, [leadId, phone, body || '', direction, whatsappId || null, meta, ts, tenantId, senderUserId || null, whatsappAccountId || null]);
             return; // success
         } catch (error) {
             const isUnique = error.code === '23505'; // unique_violation — message already exists
@@ -2244,7 +2442,7 @@ async function getSuperAdminTenants(options = {}) {
         }
 
         const query = `
-            SELECT 
+            SELECT
                 t.tenant_id,
                 COALESCE(t.display_name, admins.admin_display_name, t.tenant_id) AS display_name,
                 t.status,
@@ -2252,6 +2450,8 @@ async function getSuperAdminTenants(options = {}) {
                 COALESCE(t.created_at, admins.first_created_at) as created_at,
                 COALESCE((SELECT COUNT(*) FROM users WHERE tenant_id = t.tenant_id), 0) as user_count,
                 COALESCE((SELECT COUNT(*) FROM leads WHERE tenant_id = t.tenant_id), 0) as lead_count,
+                COALESCE(t.max_whatsapp_accounts, 1) AS max_whatsapp_accounts,
+                COALESCE((SELECT COUNT(*) FROM whatsapp_accounts WHERE tenant_id = t.tenant_id AND deleted_at IS NULL), 0) AS whatsapp_account_count,
                 admins.admin_username,
                 admins.admin_display_name,
                 t.import_source
@@ -2697,6 +2897,361 @@ async function deleteMetaPage(tenantId, pageId) {
     return res.rowCount > 0;
 }
 
+// ═══════════════════════════════════════════════════════════════
+// WHATSAPP ACCOUNTS (multi-account per tenant)
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Normalize a phone number for restore-by-phone matching.
+ * Strips all non-digit characters; returns null if too short.
+ */
+function normalizeWhatsAppPhone(raw) {
+    if (!raw) return null;
+    const digits = String(raw).replace(/\D/g, '');
+    if (!digits || digits.length < 7 || digits.length > 15) return null;
+    return digits;
+}
+
+/**
+ * List all active (non-deleted) WhatsApp accounts for a tenant.
+ */
+async function listWhatsAppAccounts(tenantId, { includeDeleted = false } = {}) {
+    if (!tenantId) return [];
+    const where = ['tenant_id = $1'];
+    if (!includeDeleted) where.push('deleted_at IS NULL');
+    const res = await pool.query(
+        `SELECT id, tenant_id, label, phone_number, phone_number_normalized, status,
+                is_default, last_qr_at, last_connected_at, last_disconnected_at,
+                last_error, deleted_at, created_at, updated_at
+         FROM whatsapp_accounts
+         WHERE ${where.join(' AND ')}
+         ORDER BY is_default DESC, created_at ASC`,
+        [tenantId]
+    );
+    return res.rows;
+}
+
+async function getWhatsAppAccountById(accountId, tenantId) {
+    if (!accountId || !tenantId) return null;
+    const res = await pool.query(
+        `SELECT id, tenant_id, label, phone_number, phone_number_normalized, status,
+                is_default, last_qr_at, last_connected_at, last_disconnected_at,
+                last_error, deleted_at, created_at, updated_at
+         FROM whatsapp_accounts
+         WHERE id = $1 AND tenant_id = $2
+         LIMIT 1`,
+        [accountId, tenantId]
+    );
+    return res.rows[0] || null;
+}
+
+/**
+ * Create a new WhatsApp account row for a tenant.
+ * Enforces the tenant's max_whatsapp_accounts limit.
+ * Returns { account, error }: error is non-null on limit / validation failures.
+ */
+async function createWhatsAppAccount(tenantId, label) {
+    if (!tenantId) return { account: null, error: 'tenant_required' };
+    const cleanLabel = String(label || '').trim().slice(0, 120);
+    if (!cleanLabel) return { account: null, error: 'label_required' };
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        // Read tenant max-accounts
+        const tenantRes = await client.query(
+            'SELECT COALESCE(max_whatsapp_accounts, 1) AS max FROM tenants WHERE tenant_id = $1',
+            [tenantId]
+        );
+        const maxAllowed = tenantRes.rows[0]?.max ?? 1;
+
+        const countRes = await client.query(
+            'SELECT COUNT(*)::int AS cnt FROM whatsapp_accounts WHERE tenant_id = $1 AND deleted_at IS NULL',
+            [tenantId]
+        );
+        const activeCount = countRes.rows[0]?.cnt ?? 0;
+        if (activeCount >= maxAllowed) {
+            await client.query('ROLLBACK');
+            return { account: null, error: 'limit_exceeded', limit: maxAllowed, current: activeCount };
+        }
+
+        // First account becomes default
+        const isDefault = activeCount === 0;
+        const insRes = await client.query(
+            `INSERT INTO whatsapp_accounts (tenant_id, label, status, is_default)
+             VALUES ($1, $2, 'pending', $3)
+             RETURNING id, tenant_id, label, phone_number, phone_number_normalized, status,
+                       is_default, last_qr_at, last_connected_at, last_disconnected_at,
+                       last_error, deleted_at, created_at, updated_at`,
+            [tenantId, cleanLabel, isDefault]
+        );
+        await client.query('COMMIT');
+        return { account: insRes.rows[0], error: null };
+    } catch (e) {
+        try { await client.query('ROLLBACK'); } catch { }
+        console.error('❌ createWhatsAppAccount error:', e.message);
+        return { account: null, error: e.message || 'create_failed' };
+    } finally {
+        client.release();
+    }
+}
+
+/**
+ * Soft-delete a WhatsApp account. Leads/messages remain bound to the same UUID
+ * so that re-binding the same phone number can later restore them.
+ */
+async function softDeleteWhatsAppAccount(accountId, tenantId) {
+    if (!accountId || !tenantId) return false;
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        // Mark as deleted
+        const upd = await client.query(
+            `UPDATE whatsapp_accounts
+             SET deleted_at = NOW(),
+                 is_default = false,
+                 status = 'logged_out',
+                 updated_at = NOW()
+             WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+             RETURNING id, phone_number_normalized`,
+            [accountId, tenantId]
+        );
+        if (upd.rowCount === 0) {
+            await client.query('ROLLBACK');
+            return false;
+        }
+
+        // Clear baileys auth state for this account so a fresh QR is required next time.
+        await client.query(
+            'DELETE FROM baileys_auth_multi WHERE tenant_id = $1 AND account_id = $2',
+            [tenantId, accountId]
+        );
+
+        // If we removed the default, promote the most recently active account to default.
+        const promote = await client.query(
+            `UPDATE whatsapp_accounts
+             SET is_default = true, updated_at = NOW()
+             WHERE id = (
+                SELECT id FROM whatsapp_accounts
+                WHERE tenant_id = $1 AND deleted_at IS NULL AND is_default = false
+                ORDER BY last_connected_at DESC NULLS LAST, created_at ASC
+                LIMIT 1
+             )
+             RETURNING id`,
+            [tenantId]
+        );
+        // promote may have 0 rows if there are no other accounts — that's fine
+
+        await client.query('COMMIT');
+        return true;
+    } catch (e) {
+        try { await client.query('ROLLBACK'); } catch { }
+        console.error('❌ softDeleteWhatsAppAccount error:', e.message);
+        return false;
+    } finally {
+        client.release();
+    }
+}
+
+/**
+ * Restore a previously soft-deleted WhatsApp account.
+ * Used when a brand-new QR scan binds a phone that matches an archived account.
+ */
+async function restoreWhatsAppAccount(accountId, tenantId) {
+    if (!accountId || !tenantId) return null;
+    const res = await pool.query(
+        `UPDATE whatsapp_accounts
+         SET deleted_at = NULL,
+             status = 'connected',
+             updated_at = NOW()
+         WHERE id = $1 AND tenant_id = $2
+         RETURNING id, tenant_id, label, phone_number, phone_number_normalized, status,
+                   is_default, deleted_at, created_at, updated_at`,
+        [accountId, tenantId]
+    );
+    return res.rows[0] || null;
+}
+
+/**
+ * Find a soft-deleted account whose normalized phone matches.
+ * Used for the auto-restore flow on QR rebind.
+ */
+async function findArchivedAccountByPhone(tenantId, phoneNumber) {
+    if (!tenantId) return null;
+    const normalized = normalizeWhatsAppPhone(phoneNumber);
+    if (!normalized) return null;
+    const res = await pool.query(
+        `SELECT id, tenant_id, label, phone_number, phone_number_normalized, status,
+                is_default, deleted_at, created_at
+         FROM whatsapp_accounts
+         WHERE tenant_id = $1 AND phone_number_normalized = $2 AND deleted_at IS NOT NULL
+         ORDER BY deleted_at DESC
+         LIMIT 1`,
+        [tenantId, normalized]
+    );
+    return res.rows[0] || null;
+}
+
+async function setDefaultWhatsAppAccount(accountId, tenantId) {
+    if (!accountId || !tenantId) return false;
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        await client.query(
+            'UPDATE whatsapp_accounts SET is_default = false, updated_at = NOW() WHERE tenant_id = $1 AND deleted_at IS NULL',
+            [tenantId]
+        );
+        const upd = await client.query(
+            `UPDATE whatsapp_accounts
+             SET is_default = true, updated_at = NOW()
+             WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+             RETURNING id`,
+            [accountId, tenantId]
+        );
+        await client.query('COMMIT');
+        return upd.rowCount > 0;
+    } catch (e) {
+        try { await client.query('ROLLBACK'); } catch { }
+        console.error('❌ setDefaultWhatsAppAccount error:', e.message);
+        return false;
+    } finally {
+        client.release();
+    }
+}
+
+/**
+ * Update connection status / metadata for a WhatsApp account.
+ * Called by the worker when QR/connection events fire.
+ */
+async function updateWhatsAppAccountStatus(accountId, tenantId, fields) {
+    if (!accountId || !tenantId || !fields || typeof fields !== 'object') return null;
+    const sets = [];
+    const values = [];
+    let i = 1;
+
+    if (fields.status !== undefined) {
+        sets.push(`status = $${i++}`);
+        values.push(String(fields.status));
+    }
+    if (fields.phone_number !== undefined) {
+        const raw = fields.phone_number ? String(fields.phone_number) : null;
+        const norm = raw ? normalizeWhatsAppPhone(raw) : null;
+        sets.push(`phone_number = $${i++}`);
+        values.push(raw);
+        sets.push(`phone_number_normalized = $${i++}`);
+        values.push(norm);
+    }
+    if (fields.last_qr_at !== undefined) {
+        sets.push(`last_qr_at = $${i++}`);
+        values.push(fields.last_qr_at ? new Date(fields.last_qr_at) : null);
+    }
+    if (fields.last_connected_at !== undefined) {
+        sets.push(`last_connected_at = $${i++}`);
+        values.push(fields.last_connected_at ? new Date(fields.last_connected_at) : null);
+    }
+    if (fields.last_disconnected_at !== undefined) {
+        sets.push(`last_disconnected_at = $${i++}`);
+        values.push(fields.last_disconnected_at ? new Date(fields.last_disconnected_at) : null);
+    }
+    if (fields.last_error !== undefined) {
+        sets.push(`last_error = $${i++}`);
+        values.push(fields.last_error ? String(fields.last_error).slice(0, 1200) : null);
+    }
+    if (sets.length === 0) return null;
+
+    sets.push('updated_at = NOW()');
+    values.push(accountId);
+    values.push(tenantId);
+
+    const res = await pool.query(
+        `UPDATE whatsapp_accounts
+         SET ${sets.join(', ')}
+         WHERE id = $${i++} AND tenant_id = $${i++}
+         RETURNING id, tenant_id, label, phone_number, phone_number_normalized, status,
+                   is_default, last_qr_at, last_connected_at, last_disconnected_at,
+                   last_error, deleted_at, updated_at`,
+        values
+    );
+    return res.rows[0] || null;
+}
+
+/**
+ * Returns the default account id for a tenant, or null if none exists.
+ */
+async function getDefaultWhatsAppAccountId(tenantId) {
+    if (!tenantId) return null;
+    const res = await pool.query(
+        `SELECT id FROM whatsapp_accounts
+         WHERE tenant_id = $1 AND is_default = true AND deleted_at IS NULL
+         LIMIT 1`,
+        [tenantId]
+    );
+    return res.rows[0]?.id || null;
+}
+
+/**
+ * Returns the (tenantId, accountId) pairs for all accounts that have credentials saved
+ * in baileys_auth_multi. Used by the worker on boot to start every active session.
+ */
+async function getAllAuthenticatedWhatsAppAccounts() {
+    const res = await pool.query(`
+        SELECT DISTINCT b.tenant_id, b.account_id
+        FROM baileys_auth_multi b
+        JOIN whatsapp_accounts wa ON wa.id = b.account_id AND wa.tenant_id = b.tenant_id
+        WHERE b.id = 'creds' AND b.account_id IS NOT NULL AND wa.deleted_at IS NULL
+    `);
+    return res.rows.map(r => ({ tenantId: r.tenant_id, accountId: r.account_id }));
+}
+
+/**
+ * For a given lead, return the list of "duplicate" leads — same phone in same tenant
+ * but a different lead row (i.e. tied to another WhatsApp account).
+ * Returns minimal fields the UI needs to render the cross-link banner.
+ */
+async function getDuplicateLeadsForLead(leadId, tenantId) {
+    if (!leadId || !tenantId) return [];
+    const res = await pool.query(
+        `SELECT l2.id, l2.phone, l2.name, l2.status, l2.whatsapp_account_id,
+                wa.label AS whatsapp_account_label,
+                wa.phone_number AS whatsapp_account_phone,
+                l2.last_inbound_at, l2.created_at,
+                (SELECT COUNT(*)::int FROM messages m WHERE m.lead_id = l2.id AND m.tenant_id = l2.tenant_id) AS message_count
+         FROM leads l1
+         JOIN leads l2 ON l2.tenant_id = l1.tenant_id AND l2.phone = l1.phone AND l2.id <> l1.id
+         LEFT JOIN whatsapp_accounts wa ON wa.id = l2.whatsapp_account_id AND wa.tenant_id = l2.tenant_id
+         WHERE l1.id = $1 AND l1.tenant_id = $2
+         ORDER BY l2.created_at DESC
+         LIMIT 10`,
+        [leadId, tenantId]
+    );
+    return res.rows;
+}
+
+/**
+ * Get the per-tenant max WhatsApp accounts limit.
+ */
+async function getTenantWhatsAppLimit(tenantId) {
+    if (!tenantId) return 1;
+    const res = await pool.query(
+        'SELECT COALESCE(max_whatsapp_accounts, 1) AS max FROM tenants WHERE tenant_id = $1',
+        [tenantId]
+    );
+    return res.rows[0]?.max ?? 1;
+}
+
+async function setTenantWhatsAppLimit(tenantId, limit) {
+    if (!tenantId) return false;
+    const n = Math.max(0, Math.min(50, parseInt(String(limit), 10) || 1));
+    await ensureTenantRecord(tenantId, {});
+    const res = await pool.query(
+        `UPDATE tenants SET max_whatsapp_accounts = $1, updated_at = NOW() WHERE tenant_id = $2 RETURNING max_whatsapp_accounts`,
+        [n, tenantId]
+    );
+    return res.rowCount > 0;
+}
+
 // NOTE: SIGINT/SIGTERM handlers are NOT registered here.
 // The main entry point (index.cjs) owns the graceful shutdown sequence
 // and calls db.closePool() itself. Having duplicate handlers caused
@@ -2767,6 +3322,21 @@ module.exports = {
     claimDueFacebookAutoSyncConfigs,
     finishFacebookAutoSync,
     closePool,
+    // Multi-WhatsApp accounts
+    listWhatsAppAccounts,
+    getWhatsAppAccountById,
+    createWhatsAppAccount,
+    softDeleteWhatsAppAccount,
+    restoreWhatsAppAccount,
+    findArchivedAccountByPhone,
+    setDefaultWhatsAppAccount,
+    updateWhatsAppAccountStatus,
+    getDefaultWhatsAppAccountId,
+    getAllAuthenticatedWhatsAppAccounts,
+    getDuplicateLeadsForLead,
+    getTenantWhatsAppLimit,
+    setTenantWhatsAppLimit,
+    normalizeWhatsAppPhone,
     // BUG 6 FIX: index.cjs'deki duplikasyonu kaldırmak için export ediliyor
     toUtcBoundaryFromLocalDate,
     parseTzOffsetMinutes
