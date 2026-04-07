@@ -1948,16 +1948,23 @@ function socketCanAccessLead(socket, lead) {
 async function emitLeadUpdatedScoped(tenantId, lead) {
   if (!lead) return;
   const sockets = await io.in(tenantId).fetchSockets().catch(() => []);
-  for (const socket of sockets) {
-    if (socketCanAccessLead(socket, lead)) {
-      const decorated = (process.env.DATABASE_URL && typeof db.getLeadById === 'function')
-        ? await db.getLeadById(lead.id, tenantId, socket.userId).catch(() => lead)
-        : lead;
-      socket.emit('lead_updated', decorated || lead);
-    } else if (lead.id) {
-      socket.emit('lead_deleted', lead.id);
+  if (sockets.length === 0) return;
+
+  const canDecorate = process.env.DATABASE_URL && typeof db.getLeadById === 'function';
+
+  // Run per-socket decoration in parallel — used to be a sequential for-loop,
+  // which serialized N database queries on every lead update and made
+  // mark-read look laggy when multiple operators were online.
+  await Promise.all(sockets.map(async (socket) => {
+    if (!socketCanAccessLead(socket, lead)) {
+      if (lead.id) socket.emit('lead_deleted', lead.id);
+      return;
     }
-  }
+    const decorated = canDecorate
+      ? await db.getLeadById(lead.id, tenantId, socket.userId).catch(() => lead)
+      : lead;
+    socket.emit('lead_updated', decorated || lead);
+  }));
 }
 
 async function emitLeadDeletedScoped(tenantId, lead) {
@@ -3762,14 +3769,29 @@ app.post('/api/leads/:id/read', requireTenantAuth, asyncHandler(async (req, res)
   if (!visibleLead) return res.status(404).json({ error: 'Lead not found' });
   const lead = await db.markLeadRead(req.params.id, req.tenantId, req.userId || null);
   if (!lead) return res.status(404).json({ error: 'Lead not found' });
-  const room = req.userId ? `${req.tenantId}:user:${req.userId}` : req.tenantId;
-  io.to(room).emit('lead_read', {
-    leadId: req.params.id,
-    timestamp: lead.last_read_at || new Date().toISOString(),
-    unread_count: lead.unread_count ?? 0,
-  });
-  await emitLeadUpdatedScoped(req.tenantId, lead);
+
+  // Respond IMMEDIATELY — the broadcasts run in the background.
+  // This used to await emitLeadUpdatedScoped which serialized N db.getLeadById
+  // queries (one per connected socket) before returning the HTTP response,
+  // adding 100-500ms of perceived lag for the user who opened the lead.
   res.json({ success: true, lead });
+
+  // Fire-and-forget broadcast to other clients (and to this user's other tabs).
+  setImmediate(() => {
+    try {
+      const room = req.userId ? `${req.tenantId}:user:${req.userId}` : req.tenantId;
+      io.to(room).emit('lead_read', {
+        leadId: req.params.id,
+        timestamp: lead.last_read_at || new Date().toISOString(),
+        unread_count: lead.unread_count ?? 0,
+      });
+    } catch (err) {
+      console.warn('lead_read broadcast failed:', err && err.message);
+    }
+    emitLeadUpdatedScoped(req.tenantId, lead).catch((err) => {
+      console.warn('emitLeadUpdatedScoped failed:', err && err.message);
+    });
+  });
 }));
 
 // Close/reopen conversation (pauses delay/SLA until next inbound message)

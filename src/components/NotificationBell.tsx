@@ -26,10 +26,45 @@ export function NotificationBell({ className }: { className?: string }) {
   const btnRef = useRef<HTMLButtonElement>(null);
   const [panelPos, setPanelPos] = useState<{ top: number; left: number; width: number }>({ top: 0, left: 0, width: 360 });
 
+  // Tracks notification IDs marked read optimistically. We merge these into
+  // refresh() results so a stale poll between an optimistic update and the
+  // server's confirmation can't bring the badge back. Cleared after 60s.
+  const recentlyReadRef = useRef<Map<string, number>>(new Map());
+  const recentlyReadAllAtRef = useRef<number>(0);
+
+  const cleanupRecentlyRead = () => {
+    const now = Date.now();
+    for (const [id, ts] of recentlyReadRef.current.entries()) {
+      if (now - ts > 60_000) recentlyReadRef.current.delete(id);
+    }
+  };
+
   const refresh = async (opts?: { unreadOnly?: boolean }) => {
     const res = await CrmService.fetchNotifications({ unreadOnly: Boolean(opts?.unreadOnly), limit: 80 });
-    setItems(Array.isArray(res.notifications) ? (res.notifications as any) : []);
-    setUnreadCount(Number.isFinite(Number(res.unread_count)) ? Number(res.unread_count) : 0);
+    cleanupRecentlyRead();
+    const recentlyRead = recentlyReadRef.current;
+    const allReadAt = recentlyReadAllAtRef.current;
+    const allReadStillFresh = allReadAt > 0 && (Date.now() - allReadAt) < 60_000;
+
+    const incoming = Array.isArray(res.notifications) ? (res.notifications as NotifRow[]) : [];
+    const merged = incoming.map((row) => {
+      if (!row || row.read_at) return row;
+      const localTs = recentlyRead.get(String(row.id));
+      if (localTs) return { ...row, read_at: new Date(localTs).toISOString() };
+      if (allReadStillFresh) return { ...row, read_at: new Date(allReadAt).toISOString() };
+      return row;
+    });
+
+    // If we have pending optimistic reads, recompute the unread count from the
+    // merged list rather than trusting the server's number — otherwise the
+    // badge would briefly bounce back up.
+    let finalUnread = Number.isFinite(Number(res.unread_count)) ? Number(res.unread_count) : 0;
+    if (recentlyRead.size > 0 || allReadStillFresh) {
+      finalUnread = merged.reduce((sum, row) => sum + (row?.read_at ? 0 : 1), 0);
+    }
+
+    setItems(merged);
+    setUnreadCount(finalUnread);
   };
 
   useEffect(() => {
@@ -133,7 +168,8 @@ export function NotificationBell({ className }: { className?: string }) {
 
   useEffect(() => {
     if (!toast) return;
-    const t = setTimeout(() => setToast(null), 6500);
+    // Auto-dismiss toast after 3s — used to be 6.5s which felt sluggish.
+    const t = setTimeout(() => setToast(null), 3000);
     return () => clearTimeout(t);
   }, [toast]);
 
@@ -173,18 +209,34 @@ export function NotificationBell({ className }: { className?: string }) {
     return (items || []).slice(0, 30);
   }, [items]);
 
-  const markRead = async (id: string) => {
-    const ok = await CrmService.markNotificationRead(id);
-    if (!ok) return;
+  const markRead = (id: string) => {
+    // Optimistic: clear UI immediately, server confirmation runs in the background.
+    const target = items.find((x) => x.id === id);
+    if (!target || target.read_at) return;
+    recentlyReadRef.current.set(String(id), Date.now());
     setItems((prev) => prev.map((x) => (x.id === id ? { ...x, read_at: new Date().toISOString() } : x)));
     setUnreadCount((c) => Math.max(0, Number(c || 0) - 1));
+    CrmService.markNotificationRead(id).catch(() => {
+      // Revert on failure
+      recentlyReadRef.current.delete(String(id));
+      setItems((prev) => prev.map((x) => (x.id === id ? { ...x, read_at: null } : x)));
+      setUnreadCount((c) => Number(c || 0) + 1);
+    });
   };
 
-  const markAllRead = async () => {
-    const ok = await CrmService.markAllNotificationsRead();
-    if (!ok) return;
+  const markAllRead = () => {
+    // Optimistic: clear all unread badges immediately.
+    const prevItems = items;
+    const prevUnread = unreadCount;
+    if (prevUnread === 0) return;
+    recentlyReadAllAtRef.current = Date.now();
     setUnreadCount(0);
     setItems((prev) => prev.map((x) => ({ ...x, read_at: x.read_at || new Date().toISOString() })));
+    CrmService.markAllNotificationsRead().catch(() => {
+      recentlyReadAllAtRef.current = 0;
+      setItems(prevItems);
+      setUnreadCount(prevUnread);
+    });
   };
 
   const toastLeadName = toast?.payload?.lead?.name || toast?.lead_name || toast?.payload?.lead?.phone || toast?.lead_phone || null;
@@ -225,9 +277,14 @@ export function NotificationBell({ className }: { className?: string }) {
         ref={btnRef}
         type="button"
         onClick={() => {
+          // Open instantly with cached items; background-refresh in parallel.
+          // We never await refresh here because that adds 100-300ms before the
+          // panel becomes visible.
           const next = !open;
           setOpen(next);
-          if (next) refresh({ unreadOnly: false }).catch(() => { });
+          if (next) {
+            void refresh({ unreadOnly: false });
+          }
         }}
         className="relative p-2 rounded-lg hover:bg-slate-800/60 transition-colors"
         title="Bildirisler"

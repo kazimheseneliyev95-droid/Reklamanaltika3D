@@ -969,17 +969,13 @@ class CrmServiceImpl {
     if (!url) return false;
     const nid = String(id || '').trim();
     if (!nid) return false;
+    // Notify listeners IMMEDIATELY so other components (e.g. the bell badge)
+    // update before the network round-trip completes.
+    this.notifyNotificationsMeta({ action: 'notification_read', id: nid, read_at: new Date().toISOString() });
     try {
-      const res = await fetch(`${url}/api/notifications/${encodeURIComponent(nid)}/read`, {
-        method: 'POST',
-        headers: this.getAuthHeaders()
+      const res = await this.authFetch(`${url}/api/notifications/${encodeURIComponent(nid)}/read`, {
+        method: 'POST'
       });
-      if (res.ok) {
-        try {
-          const data = await res.json().catch(() => ({}));
-          this.notifyNotificationsMeta({ action: 'notification_read', id: nid, read_at: data?.read_at || new Date().toISOString() });
-        } catch { }
-      }
       return res.ok;
     } catch {
       return false;
@@ -989,14 +985,12 @@ class CrmServiceImpl {
   async markAllNotificationsRead(): Promise<boolean> {
     const url = this.getServerUrl();
     if (!url) return false;
+    // Optimistic broadcast — listeners clear instantly.
+    this.notifyNotificationsMeta({ action: 'notifications_read_all', unread_count: 0, read_at: new Date().toISOString() });
     try {
-      const res = await fetch(`${url}/api/notifications/read-all`, {
-        method: 'POST',
-        headers: this.getAuthHeaders()
+      const res = await this.authFetch(`${url}/api/notifications/read-all`, {
+        method: 'POST'
       });
-      if (res.ok) {
-        this.notifyNotificationsMeta({ action: 'notifications_read_all', unread_count: 0, read_at: new Date().toISOString() });
-      }
       return res.ok;
     } catch {
       return false;
