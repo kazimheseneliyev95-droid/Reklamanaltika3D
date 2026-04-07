@@ -1145,6 +1145,18 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
         return () => document.removeEventListener('mousedown', handleClickOutside);
     }, [showStatusMenu]);
 
+    // When the status dropdown opens, scroll it into view so the absolutely-positioned
+    // panel doesn't get clipped by the parent's overflow-y-auto container.
+    useEffect(() => {
+        if (!showStatusMenu) return;
+        const t = setTimeout(() => {
+            try {
+                statusMenuRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            } catch { }
+        }, 30);
+        return () => clearTimeout(t);
+    }, [showStatusMenu]);
+
     // ─── Handlers ──────────────────────────────────────────────────────────────
 
     const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
@@ -1253,53 +1265,56 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
     if (typeof document === 'undefined') return null;
 
     return createPortal(
-        // OVERLAY
+        // OVERLAY — full-screen workspace (amocrm style: 3-column lead workspace)
         <div
-            className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-[2px] flex justify-end overflow-hidden"
+            className="fixed inset-0 z-[100] bg-[#0d1117] overflow-hidden"
             onClick={onClose}
         >
-            {/* DRAWER — stops propagation so clicks inside don't close */}
+            {/* WORKSPACE — full viewport, click to close only on outer overlay */}
             <div
                 ref={drawerRef}
-                className="relative h-screen h-[100dvh] w-full sm:w-[96%] md:w-[88%] lg:w-[78%] xl:w-[72%] max-w-5xl bg-[#0d1117] border-l border-white/5 shadow-2xl flex flex-col overflow-hidden"
+                className="relative h-screen h-[100dvh] w-full bg-[#0d1117] flex flex-col overflow-hidden"
                 style={{ paddingTop: 'env(safe-area-inset-top)', animation: 'slideInRight 0.22s cubic-bezier(0.22,1,0.36,1)' }}
                 onClick={e => e.stopPropagation()}
             >
 
-                {/* ════════════════════ TOP PIPELINE BAR ════════════════════ */}
-                <div className="flex items-start justify-between px-2 sm:px-4 py-2 border-b border-white/5 bg-[#111827] shrink-0 gap-3">
+                {/* ════════════════════ TOP BAR ════════════════════ */}
+                <div className="flex items-center justify-between px-3 sm:px-4 py-2.5 border-b border-white/5 bg-[#111827] shrink-0 gap-3">
 
-                    {/* Back Button (Mobile) & Lead ID badge */}
-                    <div className="flex items-start gap-2 min-w-0 flex-1">
-                        <button onClick={onClose} className="md:hidden p-1.5 text-slate-400 hover:text-white transition-colors shrink-0">
-                            <span className="text-xl leading-none">&larr;</span>
+                    {/* LEFT: Back button + Lead title + Code badge */}
+                    <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
+                        <button
+                            onClick={onClose}
+                            className="shrink-0 inline-flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors text-[12px] font-semibold"
+                            title="Geri qayıt (CRM)"
+                        >
+                            <span className="text-base leading-none">&larr;</span>
+                            <span className="hidden sm:inline">Geri</span>
                         </button>
-                        <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-1 sm:gap-2 min-w-0">
-                                <div className="flex items-center gap-1.5 bg-slate-800/80 px-2 sm:px-2.5 py-1 rounded-md border border-slate-700/50 shrink-0" title="Sistem Tərəfindən Verilmiş Müştəri Kodu">
-                                    <span className="hidden sm:inline text-slate-500 text-[10px] uppercase font-bold tracking-wider">Kod:</span>
-                                    <span className="text-[10px] sm:text-sm font-mono text-slate-300 font-semibold">{leadIdShort}</span>
-                                </div>
-                                <span className="text-slate-300 text-[11px] sm:text-sm font-semibold truncate">
-                                    {lead.name || lead.phone}
-                                </span>
+
+                        <div className="hidden sm:block w-px h-6 bg-slate-800 shrink-0" />
+
+                        <div className="flex items-center gap-2 min-w-0">
+                            <div className="flex items-center gap-1.5 bg-slate-800/80 px-2 sm:px-2.5 py-1 rounded-md border border-slate-700/50 shrink-0" title="Sistem Tərəfindən Verilmiş Müştəri Kodu">
+                                <span className="hidden sm:inline text-slate-500 text-[10px] uppercase font-bold tracking-wider">Kod:</span>
+                                <span className="text-[10px] sm:text-sm font-mono text-slate-300 font-semibold">{leadIdShort}</span>
                             </div>
+                            <span className="text-slate-200 text-[12px] sm:text-base font-bold truncate">
+                                {lead.name || lead.phone}
+                            </span>
+                            {/* Status pill — quick visual */}
+                            <span className="hidden md:inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold border border-slate-700/50 bg-slate-900/40 text-slate-200">
+                                <span className={cn('w-1.5 h-1.5 rounded-full', activeStatus.bg)} />
+                                {activeStatus.label}
+                            </span>
                         </div>
                     </div>
 
-                    {/* Close (Mobile) */}
+                    {/* Close (X) */}
                     <button
                         onClick={onClose}
-                        className="md:hidden shrink-0 p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+                        className="shrink-0 p-2 rounded-lg text-slate-500 hover:text-white hover:bg-slate-800 transition-colors"
                         aria-label="Close"
-                    >
-                        <span className="text-xl leading-none">&times;</span>
-                    </button>
-
-                    {/* Close (Desktop) */}
-                    <button
-                        onClick={onClose}
-                        className="hidden md:flex shrink-0 p-2 rounded-lg text-slate-500 hover:text-white hover:bg-slate-800 transition-colors"
                     >
                         <span className="text-xl leading-none">&times;</span>
                     </button>
@@ -1331,12 +1346,12 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                     </div>
                 </div>
 
-                {/* ════════════════════ BODY (2-column on md+) ════════════════════ */}
+                {/* ════════════════════ BODY (3-column on lg+) ════════════════════ */}
                 <div className="flex-1 min-h-0 flex flex-col md:flex-row overflow-hidden relative">
 
-                    {/* ───── LEFT SIDEBAR ───── */}
+                    {/* ───── LEFT SIDEBAR (lead fields) ───── */}
                     <aside className={cn(
-                        "w-full md:w-72 lg:w-80 shrink-0 min-h-0 border-r border-white/5 bg-[#111827]/60 flex flex-col overflow-hidden overscroll-contain relative",
+                        "w-full md:w-72 lg:w-[300px] xl:w-[320px] shrink-0 min-h-0 border-r border-white/5 bg-[#111827]/60 flex flex-col overflow-hidden overscroll-contain relative",
                         ['feed', 'chat', 'follow', 'stats'].includes(activeTab) ? "hidden md:flex" : "flex"
                     )}>
 
@@ -2024,6 +2039,73 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                         </div>
 
                     </main>
+
+                    {/* ───── RIGHT SIDEBAR (integrations / add-ons / quick info) ───── */}
+                    <aside className={cn(
+                        "hidden xl:flex w-[300px] shrink-0 min-h-0 border-l border-white/5 bg-[#111827]/60 flex-col overflow-hidden"
+                    )}>
+                        <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
+                            {/* Add-ons section header */}
+                            <div className="flex items-center justify-between">
+                                <h3 className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400">Inteqrasiyalar</h3>
+                            </div>
+
+                            {/* Connected channels card */}
+                            {(lead as any).whatsapp_account_label || (lead as any).whatsapp_account_phone ? (
+                                <div className="rounded-xl border border-emerald-900/40 bg-emerald-950/15 p-3">
+                                    <div className="flex items-center gap-2 mb-2">
+                                        <span
+                                            className="w-7 h-7 rounded-full flex items-center justify-center shadow-sm ring-1 ring-white/10"
+                                            style={{ background: '#25D366' }}
+                                        >
+                                            <Smartphone className="w-3.5 h-3.5 text-white" />
+                                        </span>
+                                        <div className="min-w-0">
+                                            <p className="text-[11px] font-extrabold text-emerald-200 truncate">
+                                                {(lead as any).whatsapp_account_label || 'WhatsApp'}
+                                            </p>
+                                            <p className="text-[10px] text-emerald-300/70 font-mono truncate">
+                                                {(lead as any).whatsapp_account_phone || '—'}
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <div className="text-[10px] text-emerald-300/60 uppercase font-bold">
+                                        Bu hesabdan mesajlaşılır
+                                    </div>
+                                </div>
+                            ) : null}
+
+                            {/* Lead summary card */}
+                            <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3 space-y-2">
+                                <h4 className="text-[10px] font-extrabold uppercase text-slate-500">Lead xülasəsi</h4>
+                                <div className="flex items-center justify-between text-[11px]">
+                                    <span className="text-slate-400">Status</span>
+                                    <span className="font-semibold text-slate-200">{activeStatus.label}</span>
+                                </div>
+                                <div className="flex items-center justify-between text-[11px]">
+                                    <span className="text-slate-400">Yaranma</span>
+                                    <span className="font-mono text-slate-300 text-[10px]">{dateStr}</span>
+                                </div>
+                                <div className="flex items-center justify-between text-[11px]">
+                                    <span className="text-slate-400">Mənbə</span>
+                                    <span className="font-semibold text-slate-200 capitalize">{lead.source}</span>
+                                </div>
+                                {(lead as any).duplicate_lead_count > 0 ? (
+                                    <div className="flex items-center justify-between text-[11px]">
+                                        <span className="text-slate-400">Dublikat</span>
+                                        <span className="font-bold text-amber-300">{(lead as any).duplicate_lead_count}</span>
+                                    </div>
+                                ) : null}
+                            </div>
+
+                            {/* Tags / future add-ons placeholder */}
+                            <div className="rounded-xl border border-dashed border-slate-800 bg-slate-950/20 p-4 text-center">
+                                <p className="text-[10px] text-slate-600 leading-relaxed">
+                                    Əlavə inteqrasiyalar burada görünəcək
+                                </p>
+                            </div>
+                        </div>
+                    </aside>
                 </div>
             </div>
         </div>
