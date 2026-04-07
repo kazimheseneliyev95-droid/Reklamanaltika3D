@@ -1256,8 +1256,8 @@ const LeadCard = memo(function LeadCard({
                 ? cn(
                     'border px-2 py-1.5',
                     unread > 0
-                      ? 'border-rose-500/30 bg-rose-950/15 hover:bg-rose-950/25'
-                      : 'border-slate-700/40 bg-slate-800/30 hover:bg-slate-800/50'
+                      ? 'border-rose-500/40 bg-rose-950/25 hover:bg-rose-950/35'
+                      : 'border-slate-600/60 bg-slate-700/40 hover:bg-slate-700/55'
                   )
                 : cn(
                     'border-y border-r border-l-2 rounded-r-md px-2 py-1',
@@ -1275,7 +1275,7 @@ const LeadCard = memo(function LeadCard({
             ) : null}
             <p className={cn(
               'text-[11px] line-clamp-2 leading-snug flex-1 min-w-0',
-              customerLast ? 'text-slate-300' : 'text-slate-200'
+              customerLast ? 'text-slate-100' : 'text-slate-200'
             )}>
               {lead.last_message}
             </p>
