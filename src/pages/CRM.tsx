@@ -386,23 +386,20 @@ export default function CRMPage() {
                 type="button"
                 onClick={() => setShowNotif(v => !v)}
                 className={cn(
-                  'relative inline-flex items-center gap-1.5 sm:gap-2 p-1.5 sm:px-3 sm:py-2 rounded-lg border text-xs sm:text-sm font-semibold transition-colors',
+                  'relative inline-flex items-center justify-center w-9 h-9 sm:w-10 sm:h-10 rounded-lg border transition-colors',
                   unreadTotal > 0
-                    ? 'bg-amber-950/20 border-amber-900/40 text-amber-200 hover:bg-amber-950/30'
-                    : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700'
+                    ? 'bg-amber-950/20 border-amber-900/40 hover:bg-amber-950/30'
+                    : 'bg-slate-800 hover:bg-slate-700 border border-slate-700'
                 )}
-                title="Unread messages"
+                title={unreadTotal > 0 ? `${unreadTotal} oxunmamış mesaj` : 'Oxunmamış mesaj yoxdur'}
+                aria-label="Unread messages"
               >
-                <Bell className={cn('w-3.5 h-3.5 sm:w-4 sm:h-4', unreadTotal > 0 ? 'text-amber-300' : 'text-slate-300')} />
-                <span className="hidden sm:inline">Unread</span>
-                <span className={cn(
-                  'inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-extrabold border tabular-nums',
-                  unreadTotal > 0
-                    ? 'bg-amber-500/20 text-amber-200 border-amber-500/20'
-                    : 'bg-slate-900/40 text-slate-300 border-slate-600/40'
-                )}>
-                  {unreadTotal > 99 ? '99+' : unreadTotal}
-                </span>
+                <Bell className={cn('w-4 h-4 sm:w-[18px] sm:h-[18px]', unreadTotal > 0 ? 'text-amber-300' : 'text-slate-300')} />
+                {unreadTotal > 0 ? (
+                  <span className="absolute -top-1 -right-1 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-rose-500 text-white text-[10px] font-extrabold tabular-nums shadow-md ring-2 ring-[#0d1117]">
+                    {unreadTotal > 99 ? '99+' : unreadTotal}
+                  </span>
+                ) : null}
               </button>
 
               {showNotif ? (
