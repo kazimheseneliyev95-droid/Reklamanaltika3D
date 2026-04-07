@@ -810,156 +810,11 @@ async function initDb() {
             console.warn('⚠️ Constraint migration warning:', e.message);
         }
 
-        // ═══════════════════════════════════════════════════════════════
-        // MULTI-WHATSAPP ACCOUNTS (per tenant) — backward compatible
-        // ═══════════════════════════════════════════════════════════════
-        try {
-            // 1) Per-tenant max accounts limit (superadmin-controlled)
-            await client.query("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS max_whatsapp_accounts INTEGER NOT NULL DEFAULT 1;");
-
-            // 2) WhatsApp accounts catalog
-            await client.query(`
-                CREATE TABLE IF NOT EXISTS whatsapp_accounts (
-                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    tenant_id VARCHAR(50) NOT NULL,
-                    label VARCHAR(120) NOT NULL,
-                    phone_number VARCHAR(40),
-                    phone_number_normalized VARCHAR(32),
-                    status VARCHAR(20) NOT NULL DEFAULT 'pending',
-                    is_default BOOLEAN NOT NULL DEFAULT false,
-                    last_qr_at TIMESTAMP,
-                    last_connected_at TIMESTAMP,
-                    last_disconnected_at TIMESTAMP,
-                    last_error TEXT,
-                    deleted_at TIMESTAMP,
-                    created_at TIMESTAMP DEFAULT NOW(),
-                    updated_at TIMESTAMP DEFAULT NOW()
-                );
-            `);
-            await client.query("CREATE INDEX IF NOT EXISTS idx_wa_accounts_tenant ON whatsapp_accounts(tenant_id) WHERE deleted_at IS NULL;");
-            // One default per tenant (only among active rows)
-            await client.query("CREATE UNIQUE INDEX IF NOT EXISTS idx_wa_accounts_default ON whatsapp_accounts(tenant_id) WHERE is_default = true AND deleted_at IS NULL;");
-            // Phone number lookup for soft-delete restore: only one active row per (tenant, normalized phone)
-            await client.query("CREATE UNIQUE INDEX IF NOT EXISTS idx_wa_accounts_phone_active ON whatsapp_accounts(tenant_id, phone_number_normalized) WHERE deleted_at IS NULL AND phone_number_normalized IS NOT NULL;");
-
-            // 3) Add account_id to baileys_auth_multi (nullable for backward compat).
-            //    Existing rows for tenants will be migrated to a default account_id below.
-            //    NOTE: postgresAuthState.cjs creates the table itself if missing — we just ensure
-            //    the column exists here too in case the worker process hasn't booted yet.
-            await client.query("CREATE TABLE IF NOT EXISTS baileys_auth_multi (tenant_id VARCHAR(255) NOT NULL, id VARCHAR(255) NOT NULL, data JSONB NOT NULL);");
-            await client.query("ALTER TABLE baileys_auth_multi ADD COLUMN IF NOT EXISTS account_id UUID;");
-            await client.query("CREATE INDEX IF NOT EXISTS idx_baileys_auth_multi_tenant_account ON baileys_auth_multi(tenant_id, account_id);");
-
-            // 4) Add whatsapp_account_id to leads/messages (nullable, ON DELETE SET NULL via app logic)
-            await client.query("ALTER TABLE leads ADD COLUMN IF NOT EXISTS whatsapp_account_id UUID;");
-            await client.query("CREATE INDEX IF NOT EXISTS idx_leads_tenant_account ON leads(tenant_id, whatsapp_account_id);");
-            await client.query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS whatsapp_account_id UUID;");
-            await client.query("CREATE INDEX IF NOT EXISTS idx_messages_tenant_account_created ON messages(tenant_id, whatsapp_account_id, created_at DESC);");
-
-            // 5) Auto-create a "Default" whatsapp_accounts row for every tenant that already has
-            //    active baileys creds OR any whatsapp leads — guarantees backward compatibility.
-            await client.query(`
-                INSERT INTO whatsapp_accounts (id, tenant_id, label, status, is_default, last_connected_at)
-                SELECT gen_random_uuid(), src.tenant_id, 'Əsas WhatsApp', 'connected', true, NOW()
-                FROM (
-                    SELECT DISTINCT tenant_id FROM baileys_auth_multi WHERE id = 'creds'
-                    UNION
-                    SELECT DISTINCT tenant_id FROM leads WHERE source = 'whatsapp'
-                ) src
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM whatsapp_accounts wa
-                    WHERE wa.tenant_id = src.tenant_id AND wa.deleted_at IS NULL
-                );
-            `);
-
-            // 6) Backfill baileys_auth_multi.account_id to the tenant's default account.
-            await client.query(`
-                UPDATE baileys_auth_multi b
-                SET account_id = wa.id
-                FROM whatsapp_accounts wa
-                WHERE wa.tenant_id = b.tenant_id
-                  AND wa.is_default = true
-                  AND wa.deleted_at IS NULL
-                  AND b.account_id IS NULL;
-            `);
-
-            // 6b) Replace the legacy primary key (tenant_id, id) — which only allowed ONE row
-            //    per tenant per id — with partial unique indexes that allow multiple WhatsApp
-            //    accounts per tenant. Two indexes:
-            //      - non-null account_id rows are unique on (tenant_id, account_id, id)
-            //      - legacy null account_id rows are unique on (tenant_id, id)  [pre-migration only]
-            //    The legacy index is a safety net during migration; after backfill all rows have
-            //    account_id and the legacy index stays empty.
-            await client.query(`
-                DO $$
-                DECLARE pk_name text;
-                BEGIN
-                    SELECT conname INTO pk_name
-                    FROM pg_constraint
-                    WHERE conrelid = 'baileys_auth_multi'::regclass AND contype = 'p'
-                    LIMIT 1;
-                    IF pk_name IS NOT NULL THEN
-                        EXECUTE 'ALTER TABLE baileys_auth_multi DROP CONSTRAINT ' || quote_ident(pk_name);
-                    END IF;
-                END $$;
-            `);
-            await client.query(`
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_baileys_auth_multi_account_unique
-                    ON baileys_auth_multi(tenant_id, account_id, id)
-                    WHERE account_id IS NOT NULL;
-            `);
-            await client.query(`
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_baileys_auth_multi_legacy_unique
-                    ON baileys_auth_multi(tenant_id, id)
-                    WHERE account_id IS NULL;
-            `);
-
-            // 7) Backfill leads.whatsapp_account_id to the tenant's default account (only whatsapp source).
-            await client.query(`
-                UPDATE leads l
-                SET whatsapp_account_id = wa.id
-                FROM whatsapp_accounts wa
-                WHERE wa.tenant_id = l.tenant_id
-                  AND wa.is_default = true
-                  AND wa.deleted_at IS NULL
-                  AND l.whatsapp_account_id IS NULL
-                  AND l.source = 'whatsapp';
-            `);
-
-            // 8) Backfill messages.whatsapp_account_id from their parent lead.
-            await client.query(`
-                UPDATE messages m
-                SET whatsapp_account_id = l.whatsapp_account_id
-                FROM leads l
-                WHERE l.id = m.lead_id
-                  AND l.tenant_id = m.tenant_id
-                  AND m.whatsapp_account_id IS NULL
-                  AND l.whatsapp_account_id IS NOT NULL;
-            `);
-
-            // 9) Replace the old (phone, tenant_id) unique constraint with one that includes account_id.
-            //    This is the multi-account uniqueness rule: same phone may exist as separate leads
-            //    across different WhatsApp accounts of the same tenant.
-            //    Done as a partial unique index so legacy rows with NULL account_id (non-WhatsApp) keep working.
-            await client.query("DROP INDEX IF EXISTS idx_leads_phone_tenant_unique;");
-            await client.query("ALTER TABLE leads DROP CONSTRAINT IF EXISTS leads_phone_tenant_unique;");
-            // New: per-account uniqueness (covers WA leads with non-null account_id)
-            await client.query(`
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_phone_tenant_account_unique
-                    ON leads(phone, tenant_id, whatsapp_account_id)
-                    WHERE whatsapp_account_id IS NOT NULL;
-            `);
-            // Fallback: legacy uniqueness for non-WA leads (facebook/instagram/manual) where account_id is NULL
-            await client.query(`
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_phone_tenant_noaccount_unique
-                    ON leads(phone, tenant_id)
-                    WHERE whatsapp_account_id IS NULL;
-            `);
-
-            console.log('✅ Multi-WhatsApp accounts schema ready');
-        } catch (e) {
-            console.warn('⚠️ Migration warning (whatsapp_accounts):', e.message);
-        }
+        // NOTE: The multi-WhatsApp migration runs OUTSIDE this main transaction
+        // (via migrateMultiWhatsAppAccounts() called from initDb after COMMIT).
+        // Putting it here would be unsafe: if any prior statement in this transaction
+        // aborts (e.g. duplicate-row index creation), Postgres marks the entire
+        // transaction as failed and silently skips every subsequent migration step.
 
         try {
             await client.query(`
@@ -981,6 +836,225 @@ async function initDb() {
         throw error;
     } finally {
         client.release();
+    }
+
+    // Multi-WhatsApp migration runs OUTSIDE the main transaction so a single
+    // failed step (or an unrelated earlier failure that aborted the main
+    // transaction) cannot poison the rest of the migration. Each step runs
+    // in its own implicit transaction via pool.query() — failures are logged
+    // but never abort the next step.
+    try {
+        await migrateMultiWhatsAppAccounts();
+    } catch (e) {
+        console.error('❌ Multi-WhatsApp migration failed:', e && e.message ? e.message : e);
+        // Don't rethrow — server should still start even if this migration fails
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MULTI-WHATSAPP STANDALONE MIGRATION
+// ═══════════════════════════════════════════════════════════════
+// Each step is independent: if one fails, the next still runs. This is
+// critical because Postgres aborts the entire transaction on the first
+// error, and a single migration block sharing a transaction with the rest
+// of initDb means an unrelated failure could silently skip these steps.
+async function migrateMultiWhatsAppAccounts() {
+    const steps = [
+        {
+            name: 'tenants.max_whatsapp_accounts column',
+            sql: "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS max_whatsapp_accounts INTEGER NOT NULL DEFAULT 1;"
+        },
+        {
+            name: 'whatsapp_accounts table',
+            sql: `
+                CREATE TABLE IF NOT EXISTS whatsapp_accounts (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    tenant_id VARCHAR(50) NOT NULL,
+                    label VARCHAR(120) NOT NULL,
+                    phone_number VARCHAR(40),
+                    phone_number_normalized VARCHAR(32),
+                    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+                    is_default BOOLEAN NOT NULL DEFAULT false,
+                    last_qr_at TIMESTAMP,
+                    last_connected_at TIMESTAMP,
+                    last_disconnected_at TIMESTAMP,
+                    last_error TEXT,
+                    deleted_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW()
+                );
+            `
+        },
+        {
+            name: 'idx_wa_accounts_tenant',
+            sql: "CREATE INDEX IF NOT EXISTS idx_wa_accounts_tenant ON whatsapp_accounts(tenant_id) WHERE deleted_at IS NULL;"
+        },
+        {
+            name: 'idx_wa_accounts_default',
+            sql: "CREATE UNIQUE INDEX IF NOT EXISTS idx_wa_accounts_default ON whatsapp_accounts(tenant_id) WHERE is_default = true AND deleted_at IS NULL;"
+        },
+        {
+            name: 'idx_wa_accounts_phone_active',
+            sql: "CREATE UNIQUE INDEX IF NOT EXISTS idx_wa_accounts_phone_active ON whatsapp_accounts(tenant_id, phone_number_normalized) WHERE deleted_at IS NULL AND phone_number_normalized IS NOT NULL;"
+        },
+        {
+            name: 'baileys_auth_multi table baseline',
+            sql: "CREATE TABLE IF NOT EXISTS baileys_auth_multi (tenant_id VARCHAR(255) NOT NULL, id VARCHAR(255) NOT NULL, data JSONB NOT NULL);"
+        },
+        {
+            name: 'baileys_auth_multi.account_id column',
+            sql: "ALTER TABLE baileys_auth_multi ADD COLUMN IF NOT EXISTS account_id UUID;"
+        },
+        {
+            name: 'idx_baileys_auth_multi_tenant_account',
+            sql: "CREATE INDEX IF NOT EXISTS idx_baileys_auth_multi_tenant_account ON baileys_auth_multi(tenant_id, account_id);"
+        },
+        {
+            name: 'leads.whatsapp_account_id column',
+            sql: "ALTER TABLE leads ADD COLUMN IF NOT EXISTS whatsapp_account_id UUID;"
+        },
+        {
+            name: 'idx_leads_tenant_account',
+            sql: "CREATE INDEX IF NOT EXISTS idx_leads_tenant_account ON leads(tenant_id, whatsapp_account_id);"
+        },
+        {
+            name: 'messages.whatsapp_account_id column',
+            sql: "ALTER TABLE messages ADD COLUMN IF NOT EXISTS whatsapp_account_id UUID;"
+        },
+        {
+            name: 'idx_messages_tenant_account_created',
+            sql: "CREATE INDEX IF NOT EXISTS idx_messages_tenant_account_created ON messages(tenant_id, whatsapp_account_id, created_at DESC);"
+        },
+        {
+            name: 'auto-create default whatsapp_accounts row for legacy tenants',
+            sql: `
+                INSERT INTO whatsapp_accounts (id, tenant_id, label, status, is_default, last_connected_at)
+                SELECT gen_random_uuid(), src.tenant_id, 'Əsas WhatsApp', 'connected', true, NOW()
+                FROM (
+                    SELECT DISTINCT tenant_id FROM baileys_auth_multi
+                    UNION
+                    SELECT DISTINCT tenant_id FROM leads WHERE source = 'whatsapp'
+                    UNION
+                    SELECT DISTINCT tenant_id FROM tenants WHERE COALESCE(status, 'active') = 'active' AND tenant_id <> 'admin'
+                ) src
+                WHERE src.tenant_id IS NOT NULL
+                  AND NOT EXISTS (
+                    SELECT 1 FROM whatsapp_accounts wa
+                    WHERE wa.tenant_id = src.tenant_id AND wa.deleted_at IS NULL
+                  );
+            `
+        },
+        {
+            name: 'backfill baileys_auth_multi.account_id',
+            sql: `
+                UPDATE baileys_auth_multi b
+                SET account_id = wa.id
+                FROM whatsapp_accounts wa
+                WHERE wa.tenant_id = b.tenant_id
+                  AND wa.is_default = true
+                  AND wa.deleted_at IS NULL
+                  AND b.account_id IS NULL;
+            `
+        },
+        {
+            name: 'drop legacy baileys_auth_multi PK',
+            sql: `
+                DO $$
+                DECLARE pk_name text;
+                BEGIN
+                    SELECT conname INTO pk_name
+                    FROM pg_constraint
+                    WHERE conrelid = 'baileys_auth_multi'::regclass AND contype = 'p'
+                    LIMIT 1;
+                    IF pk_name IS NOT NULL THEN
+                        EXECUTE 'ALTER TABLE baileys_auth_multi DROP CONSTRAINT ' || quote_ident(pk_name);
+                    END IF;
+                END $$;
+            `
+        },
+        {
+            name: 'idx_baileys_auth_multi_account_unique',
+            sql: `
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_baileys_auth_multi_account_unique
+                    ON baileys_auth_multi(tenant_id, account_id, id)
+                    WHERE account_id IS NOT NULL;
+            `
+        },
+        {
+            name: 'idx_baileys_auth_multi_legacy_unique',
+            sql: `
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_baileys_auth_multi_legacy_unique
+                    ON baileys_auth_multi(tenant_id, id)
+                    WHERE account_id IS NULL;
+            `
+        },
+        {
+            name: 'backfill leads.whatsapp_account_id',
+            sql: `
+                UPDATE leads l
+                SET whatsapp_account_id = wa.id
+                FROM whatsapp_accounts wa
+                WHERE wa.tenant_id = l.tenant_id
+                  AND wa.is_default = true
+                  AND wa.deleted_at IS NULL
+                  AND l.whatsapp_account_id IS NULL
+                  AND l.source = 'whatsapp';
+            `
+        },
+        {
+            name: 'backfill messages.whatsapp_account_id',
+            sql: `
+                UPDATE messages m
+                SET whatsapp_account_id = l.whatsapp_account_id
+                FROM leads l
+                WHERE l.id = m.lead_id
+                  AND l.tenant_id = m.tenant_id
+                  AND m.whatsapp_account_id IS NULL
+                  AND l.whatsapp_account_id IS NOT NULL;
+            `
+        },
+        {
+            name: 'drop legacy idx_leads_phone_tenant_unique',
+            sql: "DROP INDEX IF EXISTS idx_leads_phone_tenant_unique;"
+        },
+        {
+            name: 'drop legacy leads_phone_tenant_unique constraint',
+            sql: "ALTER TABLE leads DROP CONSTRAINT IF EXISTS leads_phone_tenant_unique;"
+        },
+        {
+            name: 'idx_leads_phone_tenant_account_unique',
+            sql: `
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_phone_tenant_account_unique
+                    ON leads(phone, tenant_id, whatsapp_account_id)
+                    WHERE whatsapp_account_id IS NOT NULL;
+            `
+        },
+        {
+            name: 'idx_leads_phone_tenant_noaccount_unique',
+            sql: `
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_phone_tenant_noaccount_unique
+                    ON leads(phone, tenant_id)
+                    WHERE whatsapp_account_id IS NULL;
+            `
+        }
+    ];
+
+    let succeeded = 0;
+    let failed = 0;
+    for (const step of steps) {
+        try {
+            await pool.query(step.sql);
+            succeeded++;
+        } catch (e) {
+            failed++;
+            const msg = e && e.message ? e.message : String(e);
+            console.warn(`⚠️ [multi-wa migration] ${step.name} — ${msg}`);
+        }
+    }
+    if (failed === 0) {
+        console.log(`✅ Multi-WhatsApp accounts schema ready (${succeeded} steps)`);
+    } else {
+        console.warn(`⚠️ Multi-WhatsApp migration finished with ${failed} warnings (${succeeded} steps OK)`);
     }
 }
 
@@ -2441,6 +2515,28 @@ async function getSuperAdminTenants(options = {}) {
             )`);
         }
 
+        // Defensive: max_whatsapp_accounts and whatsapp_accounts table may not exist yet
+        // on installs where the multi-WA migration hasn't run. Detect and use fallbacks.
+        let hasMaxCol = false;
+        let hasWaTable = false;
+        try {
+            const colCheck = await pool.query(
+                "SELECT 1 FROM information_schema.columns WHERE table_name = 'tenants' AND column_name = 'max_whatsapp_accounts'"
+            );
+            hasMaxCol = colCheck.rowCount > 0;
+        } catch { }
+        try {
+            const tableCheck = await pool.query(
+                "SELECT 1 FROM information_schema.tables WHERE table_name = 'whatsapp_accounts'"
+            );
+            hasWaTable = tableCheck.rowCount > 0;
+        } catch { }
+
+        const maxColExpr = hasMaxCol ? 'COALESCE(t.max_whatsapp_accounts, 1)' : '1';
+        const waCountExpr = hasWaTable
+            ? "COALESCE((SELECT COUNT(*) FROM whatsapp_accounts WHERE tenant_id = t.tenant_id AND deleted_at IS NULL), 0)"
+            : '0';
+
         const query = `
             SELECT
                 t.tenant_id,
@@ -2450,8 +2546,8 @@ async function getSuperAdminTenants(options = {}) {
                 COALESCE(t.created_at, admins.first_created_at) as created_at,
                 COALESCE((SELECT COUNT(*) FROM users WHERE tenant_id = t.tenant_id), 0) as user_count,
                 COALESCE((SELECT COUNT(*) FROM leads WHERE tenant_id = t.tenant_id), 0) as lead_count,
-                COALESCE(t.max_whatsapp_accounts, 1) AS max_whatsapp_accounts,
-                COALESCE((SELECT COUNT(*) FROM whatsapp_accounts WHERE tenant_id = t.tenant_id AND deleted_at IS NULL), 0) AS whatsapp_account_count,
+                ${maxColExpr} AS max_whatsapp_accounts,
+                ${waCountExpr} AS whatsapp_account_count,
                 admins.admin_username,
                 admins.admin_display_name,
                 t.import_source
@@ -2959,12 +3055,26 @@ async function createWhatsAppAccount(tenantId, label) {
     try {
         await client.query('BEGIN');
 
-        // Read tenant max-accounts
-        const tenantRes = await client.query(
-            'SELECT COALESCE(max_whatsapp_accounts, 1) AS max FROM tenants WHERE tenant_id = $1',
-            [tenantId]
-        );
-        const maxAllowed = tenantRes.rows[0]?.max ?? 1;
+        // Read tenant max-accounts. Defensive: if the column hasn't been migrated yet
+        // (or the tenants row doesn't exist), fall back to 1 — better to allow at least
+        // one account than to block the whole feature.
+        let maxAllowed = 1;
+        try {
+            const tenantRes = await client.query(
+                'SELECT COALESCE(max_whatsapp_accounts, 1) AS max FROM tenants WHERE tenant_id = $1',
+                [tenantId]
+            );
+            maxAllowed = tenantRes.rows[0]?.max ?? 1;
+        } catch (colErr) {
+            console.warn(`⚠️ tenants.max_whatsapp_accounts unreadable, falling back to 1: ${colErr.message}`);
+            // The query may have aborted the transaction — recover before continuing.
+            try { await client.query('ROLLBACK'); } catch { }
+            await client.query('BEGIN');
+            // Best-effort: try to add the column right now so future calls succeed.
+            try {
+                await client.query('ALTER TABLE tenants ADD COLUMN IF NOT EXISTS max_whatsapp_accounts INTEGER NOT NULL DEFAULT 1;');
+            } catch { }
+        }
 
         const countRes = await client.query(
             'SELECT COUNT(*)::int AS cnt FROM whatsapp_accounts WHERE tenant_id = $1 AND deleted_at IS NULL',
@@ -3234,17 +3344,32 @@ async function getDuplicateLeadsForLead(leadId, tenantId) {
  */
 async function getTenantWhatsAppLimit(tenantId) {
     if (!tenantId) return 1;
-    const res = await pool.query(
-        'SELECT COALESCE(max_whatsapp_accounts, 1) AS max FROM tenants WHERE tenant_id = $1',
-        [tenantId]
-    );
-    return res.rows[0]?.max ?? 1;
+    try {
+        const res = await pool.query(
+            'SELECT COALESCE(max_whatsapp_accounts, 1) AS max FROM tenants WHERE tenant_id = $1',
+            [tenantId]
+        );
+        return res.rows[0]?.max ?? 1;
+    } catch (e) {
+        // Column might not exist yet on installs where the migration hasn't run.
+        // Try to add it on the fly so the next call succeeds, then return the default.
+        if (String(e.message || '').includes('max_whatsapp_accounts')) {
+            try {
+                await pool.query('ALTER TABLE tenants ADD COLUMN IF NOT EXISTS max_whatsapp_accounts INTEGER NOT NULL DEFAULT 1;');
+            } catch { }
+        }
+        return 1;
+    }
 }
 
 async function setTenantWhatsAppLimit(tenantId, limit) {
     if (!tenantId) return false;
     const n = Math.max(0, Math.min(50, parseInt(String(limit), 10) || 1));
     await ensureTenantRecord(tenantId, {});
+    // Defensive: ensure the column exists before trying to update it.
+    try {
+        await pool.query('ALTER TABLE tenants ADD COLUMN IF NOT EXISTS max_whatsapp_accounts INTEGER NOT NULL DEFAULT 1;');
+    } catch { }
     const res = await pool.query(
         `UPDATE tenants SET max_whatsapp_accounts = $1, updated_at = NOW() WHERE tenant_id = $2 RETURNING max_whatsapp_accounts`,
         [n, tenantId]
