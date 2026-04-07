@@ -929,33 +929,39 @@ const LeadCard = memo(function LeadCard({
   const sourceLabel = lead.source === 'manual' ? 'Manual' : 'WhatsApp';
 
   // Channel banner config — minimal: just the channel name (no account label).
-  // Account-level detail is shown in the chat header inside LeadDetailsPanel.
+  // Round badge in the channel's official brand color (WhatsApp #25D366,
+  // Facebook #1877F2, Instagram official gradient).
   const channelBanner = (() => {
     if (lead.source === 'whatsapp') {
       return {
-        icon: <Smartphone className="w-3 h-3 text-emerald-300" />,
+        icon: <Smartphone className="w-2.5 h-2.5 text-white" />,
         text: 'WhatsApp',
         bg: 'bg-emerald-950/25',
         border: 'border-emerald-900/40',
-        textColor: 'text-emerald-200'
+        textColor: 'text-emerald-200',
+        iconStyle: { background: '#25D366' } as React.CSSProperties,
       };
     }
     if (lead.source === 'instagram') {
       return {
-        icon: <Instagram className="w-3 h-3 text-pink-300" />,
+        icon: <Instagram className="w-2.5 h-2.5 text-white" />,
         text: 'Instagram',
         bg: 'bg-pink-950/25',
         border: 'border-pink-900/40',
-        textColor: 'text-pink-200'
+        textColor: 'text-pink-200',
+        iconStyle: {
+          background: 'linear-gradient(45deg, #f09433 0%, #e6683c 25%, #dc2743 50%, #cc2366 75%, #bc1888 100%)',
+        } as React.CSSProperties,
       };
     }
     if (lead.source === 'facebook') {
       return {
-        icon: <Facebook className="w-3 h-3 text-blue-300" />,
+        icon: <Facebook className="w-2.5 h-2.5 text-white" />,
         text: 'Facebook',
         bg: 'bg-blue-950/25',
         border: 'border-blue-900/40',
-        textColor: 'text-blue-200'
+        textColor: 'text-blue-200',
+        iconStyle: { background: '#1877F2' } as React.CSSProperties,
       };
     }
     return null; // manual leads — no banner
@@ -1059,14 +1065,20 @@ const LeadCard = memo(function LeadCard({
         style={{ background: leadAccent || '#94a3b8', opacity: unread > 0 ? 0.9 : 0.55 }}
       />
 
-      {/* Channel banner — which account/source the lead came in from */}
+      {/* Channel banner — which channel the lead came in from.
+          Round brand-colored badge + channel name. */}
       {channelBanner ? (
         <div className={cn(
-          'mb-1.5 -mx-0.5 px-1.5 py-0.5 rounded-md border flex items-center gap-1 min-w-0',
+          'mb-1.5 -mx-0.5 pl-0.5 pr-1.5 py-0.5 rounded-full border flex items-center gap-1 min-w-0 w-fit',
           channelBanner.bg,
           channelBanner.border
         )}>
-          <span className="shrink-0">{channelBanner.icon}</span>
+          <span
+            className="shrink-0 w-4 h-4 rounded-full flex items-center justify-center ring-1 ring-white/10"
+            style={channelBanner.iconStyle}
+          >
+            {channelBanner.icon}
+          </span>
           <span className={cn('text-[10px] font-bold truncate', channelBanner.textColor)} title={channelBanner.text}>
             {channelBanner.text}
           </span>

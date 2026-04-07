@@ -272,6 +272,10 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
 
     // Channel/account info — shown as a header banner above the message list
     // and as a small icon next to the user's outgoing message bubbles.
+    // Brand colors:
+    //   WhatsApp #25D366
+    //   Facebook #1877F2
+    //   Instagram official gradient (purple → pink → orange → yellow)
     const channel = (() => {
         const accountLabel = (lead as any).whatsapp_account_label || (lead as any).whatsapp_account_phone;
         if (lead.source === 'whatsapp') {
@@ -283,8 +287,7 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                 bg: 'bg-emerald-950/30',
                 border: 'border-emerald-900/50',
                 text: 'text-emerald-200',
-                iconBg: 'bg-emerald-600',
-                iconColor: 'text-white',
+                iconStyle: { background: '#25D366', color: '#ffffff' },
             };
         }
         if (lead.source === 'instagram') {
@@ -296,8 +299,10 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                 bg: 'bg-pink-950/30',
                 border: 'border-pink-900/50',
                 text: 'text-pink-200',
-                iconBg: 'bg-pink-600',
-                iconColor: 'text-white',
+                iconStyle: {
+                    background: 'linear-gradient(45deg, #f09433 0%, #e6683c 25%, #dc2743 50%, #cc2366 75%, #bc1888 100%)',
+                    color: '#ffffff',
+                },
             };
         }
         if (lead.source === 'facebook') {
@@ -309,8 +314,7 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                 bg: 'bg-blue-950/30',
                 border: 'border-blue-900/50',
                 text: 'text-blue-200',
-                iconBg: 'bg-blue-600',
-                iconColor: 'text-white',
+                iconStyle: { background: '#1877F2', color: '#ffffff' },
             };
         }
         return null;
@@ -338,11 +342,16 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                 Same pattern as the older Empire CRMs' "IG Direct comments" header. */}
             {channel ? (
                 <div className={cn(
-                    'mx-4 mt-3 mb-1 px-3 py-1.5 rounded-full border flex items-center justify-center gap-2 self-center',
+                    'mx-4 mt-3 mb-1 pl-1 pr-3 py-1 rounded-full border flex items-center justify-center gap-2 self-center',
                     channel.bg,
                     channel.border
                 )}>
-                    <span className={channel.text}>{channel.icon}</span>
+                    <span
+                        className="w-6 h-6 rounded-full flex items-center justify-center shadow-sm ring-1 ring-white/10"
+                        style={channel.iconStyle}
+                    >
+                        <span className="scale-75">{channel.icon}</span>
+                    </span>
                     <span className={cn('text-[11px] font-bold', channel.text)}>{channel.label}</span>
                 </div>
             ) : null}
@@ -379,14 +388,12 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                         return (
                             <div key={msg.id} className={cn('flex items-end gap-1.5', isOut ? 'justify-end' : 'justify-start')}>
                                 {/* Channel badge on the LEFT of outgoing bubbles — shows
-                                    which channel this user-sent message went out through */}
+                                    which channel this user-sent message went out through.
+                                    Round, in the channel's official brand color. */}
                                 {isOut && channel ? (
                                     <div
-                                        className={cn(
-                                            'shrink-0 w-5 h-5 rounded-full flex items-center justify-center mb-1',
-                                            channel.iconBg,
-                                            channel.iconColor
-                                        )}
+                                        className="shrink-0 w-6 h-6 rounded-full flex items-center justify-center mb-1 shadow-md ring-1 ring-white/10"
+                                        style={channel.iconStyle}
                                         title={`Göndərildi: ${channel.label}`}
                                     >
                                         <span className="scale-75">{channel.icon}</span>
