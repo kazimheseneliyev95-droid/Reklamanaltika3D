@@ -928,14 +928,13 @@ const LeadCard = memo(function LeadCard({
 
   const sourceLabel = lead.source === 'manual' ? 'Manual' : 'WhatsApp';
 
-  // Channel banner config — shows where the message came from at the top of the card.
-  // For WhatsApp, includes the specific account label so users know which number it came in on.
+  // Channel banner config — minimal: just the channel name (no account label).
+  // Account-level detail is shown in the chat header inside LeadDetailsPanel.
   const channelBanner = (() => {
     if (lead.source === 'whatsapp') {
-      const accountLabel = (lead as any).whatsapp_account_label || (lead as any).whatsapp_account_phone;
       return {
         icon: <Smartphone className="w-3 h-3 text-emerald-300" />,
-        text: accountLabel ? `WhatsApp · ${accountLabel}` : 'WhatsApp',
+        text: 'WhatsApp',
         bg: 'bg-emerald-950/25',
         border: 'border-emerald-900/40',
         textColor: 'text-emerald-200'
@@ -944,7 +943,7 @@ const LeadCard = memo(function LeadCard({
     if (lead.source === 'instagram') {
       return {
         icon: <Instagram className="w-3 h-3 text-pink-300" />,
-        text: 'Instagram Direct',
+        text: 'Instagram',
         bg: 'bg-pink-950/25',
         border: 'border-pink-900/40',
         textColor: 'text-pink-200'
@@ -953,7 +952,7 @@ const LeadCard = memo(function LeadCard({
     if (lead.source === 'facebook') {
       return {
         icon: <Facebook className="w-3 h-3 text-blue-300" />,
-        text: 'Facebook Messenger',
+        text: 'Facebook',
         bg: 'bg-blue-950/25',
         border: 'border-blue-900/40',
         textColor: 'text-blue-200'

@@ -4,7 +4,7 @@ import { Lead, LeadStatus, DuplicateLead } from '../types/crm';
 import {
     User, Phone, Package, MessageSquare, Clock, Hash,
     Save, CheckCircle2, TrendingUp, BarChart2, Edit3, Check, Route, ChevronDown,
-    Smartphone, Users, AlertTriangle
+    Smartphone, Users, AlertTriangle, Instagram, Facebook
 } from 'lucide-react';
 import { cn, toNumberSafe } from '../lib/utils';
 import { loadCRMSettings } from '../lib/crmSettings';
@@ -270,6 +270,52 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
         </div>
     );
 
+    // Channel/account info — shown as a header banner above the message list
+    // and as a small icon next to the user's outgoing message bubbles.
+    const channel = (() => {
+        const accountLabel = (lead as any).whatsapp_account_label || (lead as any).whatsapp_account_phone;
+        if (lead.source === 'whatsapp') {
+            return {
+                key: 'whatsapp',
+                icon: <Smartphone className="w-3.5 h-3.5" />,
+                label: accountLabel ? `WhatsApp · ${accountLabel}` : 'WhatsApp',
+                shortLabel: 'WhatsApp',
+                bg: 'bg-emerald-950/30',
+                border: 'border-emerald-900/50',
+                text: 'text-emerald-200',
+                iconBg: 'bg-emerald-600',
+                iconColor: 'text-white',
+            };
+        }
+        if (lead.source === 'instagram') {
+            return {
+                key: 'instagram',
+                icon: <Instagram className="w-3.5 h-3.5" />,
+                label: accountLabel ? `Instagram · ${accountLabel}` : 'Instagram Direct',
+                shortLabel: 'Instagram',
+                bg: 'bg-pink-950/30',
+                border: 'border-pink-900/50',
+                text: 'text-pink-200',
+                iconBg: 'bg-pink-600',
+                iconColor: 'text-white',
+            };
+        }
+        if (lead.source === 'facebook') {
+            return {
+                key: 'facebook',
+                icon: <Facebook className="w-3.5 h-3.5" />,
+                label: accountLabel ? `Facebook · ${accountLabel}` : 'Facebook Messenger',
+                shortLabel: 'Facebook',
+                bg: 'bg-blue-950/30',
+                border: 'border-blue-900/50',
+                text: 'text-blue-200',
+                iconBg: 'bg-blue-600',
+                iconColor: 'text-white',
+            };
+        }
+        return null;
+    })();
+
     return (
         <div className="relative flex flex-col flex-1 min-h-0 bg-[#0d1117]">
             {/* Header */}
@@ -287,6 +333,19 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                     {refreshing ? '↻ Yenilənir…' : '↺ Yenilə'}
                 </button>
             </div>
+
+            {/* Channel banner — shows which account/channel this conversation is on.
+                Same pattern as the older Empire CRMs' "IG Direct comments" header. */}
+            {channel ? (
+                <div className={cn(
+                    'mx-4 mt-3 mb-1 px-3 py-1.5 rounded-full border flex items-center justify-center gap-2 self-center',
+                    channel.bg,
+                    channel.border
+                )}>
+                    <span className={channel.text}>{channel.icon}</span>
+                    <span className={cn('text-[11px] font-bold', channel.text)}>{channel.label}</span>
+                </div>
+            ) : null}
 
             {/* Message list */}
             <div
@@ -318,7 +377,21 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                         const hideBody = Boolean(mediaSrc) && isWorkerPlaceholder(msg.body);
 
                         return (
-                            <div key={msg.id} className={cn('flex', isOut ? 'justify-end' : 'justify-start')}>
+                            <div key={msg.id} className={cn('flex items-end gap-1.5', isOut ? 'justify-end' : 'justify-start')}>
+                                {/* Channel badge on the LEFT of outgoing bubbles — shows
+                                    which channel this user-sent message went out through */}
+                                {isOut && channel ? (
+                                    <div
+                                        className={cn(
+                                            'shrink-0 w-5 h-5 rounded-full flex items-center justify-center mb-1',
+                                            channel.iconBg,
+                                            channel.iconColor
+                                        )}
+                                        title={`Göndərildi: ${channel.label}`}
+                                    >
+                                        <span className="scale-75">{channel.icon}</span>
+                                    </div>
+                                ) : null}
                                 <div className={cn(
                                     'max-w-[85%] px-3 py-2 rounded-2xl text-sm leading-relaxed',
                                     isOut
