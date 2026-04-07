@@ -996,10 +996,11 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
         CrmService.markLeadFullyRead(lead.id).catch(() => { });
     }, [lead?.id]);
 
-    // Mark as read when opened
-    useEffect(() => {
-        markRead();
-    }, [markRead]);
+    // NOTE: We intentionally do NOT call markRead() here on mount.
+    // openLead() in CRM.tsx already fires markLeadFullyRead BEFORE this panel
+    // mounts, and the optimistic update has already cleared the badge by the
+    // time we render. Calling it again here would issue a redundant API request
+    // and a second listener-notify cycle, slowing down the unread badge update.
 
     // If a new message arrives while this lead is open, keep it read (pro UX)
     useEffect(() => {

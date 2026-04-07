@@ -27,7 +27,10 @@ function isLeadVisualStateEqual(a?: Lead | null, b?: Lead | null) {
     && String(a.last_message || '') === String(b.last_message || '')
     && String((a as any).updated_at || '') === String((b as any).updated_at || '')
     && Number((a as any).unread_count || 0) === Number((b as any).unread_count || 0)
-    && Number((a as any).value || 0) === Number((b as any).value || 0);
+    && Number((a as any).value || 0) === Number((b as any).value || 0)
+    // Include last_read_at so a fresh server confirmation after an optimistic
+    // read doesn't get treated as a no-op when only the read timestamp moved.
+    && String((a as any).last_read_at || '') === String((b as any).last_read_at || '');
 }
 
 function hasNonEmptyKey(value: unknown) {
@@ -313,6 +316,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // Update UI state
       const existing = leadsRef.current.find(l => l.id === updatedLead.id || l.phone === updatedLead.phone);
       if (existing && isLeadVisualStateEqual(existing, updatedLead)) return;
+
+      // FAST PATH: read-state changes (unread → 0) bypass the rAF batching so the
+      // unread badge in the header clears IMMEDIATELY when the user opens a lead.
+      // The default scheduleLeadUpsert path waits one animation frame and competes
+      // with the heavy LeadDetailsPanel mount, which made the badge feel laggy.
+      const wasUnread = existing ? Number((existing as any).unread_count || 0) > 0 : false;
+      const isReadUpdate = wasUnread && Number((updatedLead as any).unread_count || 0) === 0;
+      if (isReadUpdate && existing) {
+        setLeads(prev => {
+          const idx = prev.findIndex((l) => leadsMatch(l, updatedLead));
+          if (idx === -1) return prev;
+          const next = [...prev];
+          next[idx] = {
+            ...next[idx],
+            unread_count: 0,
+            last_read_at: (updatedLead as any).last_read_at || new Date().toISOString(),
+          } as Lead;
+          leadsRef.current = next;
+          return next;
+        });
+        return;
+      }
+
       debugLog(existing ? '✅ Updating lead in UI:' : '⚠️ Lead not found in UI, adding:', updatedLead.phone);
       scheduleLeadUpsert(updatedLead);
     });
