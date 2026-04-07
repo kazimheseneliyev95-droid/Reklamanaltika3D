@@ -1237,23 +1237,51 @@ const LeadCard = memo(function LeadCard({
         </div>
       )}
 
-      {cfg.showLastMessagePreview !== false && lead.last_message && (
-        <button
-          type="button"
-          onClick={onViewMessage}
-          className={cn(
-            'mt-1.5 w-full text-left rounded-r-md border-y border-r border-l-2 px-2 py-1 transition-colors',
-            unread > 0
-              ? 'border-l-rose-500 border-rose-500/20 bg-rose-950/10 hover:bg-rose-950/20'
-              : 'border-l-blue-500 border-slate-800/80 bg-slate-950/35 hover:bg-slate-950/55 hover:border-slate-700'
-          )}
-          title="Mesajı aç"
-        >
-          <p className="text-[11px] text-slate-200 line-clamp-2 leading-snug">
-            {lead.last_message}
-          </p>
-        </button>
-      )}
+      {cfg.showLastMessagePreview !== false && lead.last_message && (() => {
+        // Detect who sent the LAST message — compare inbound vs outbound timestamps.
+        // If outbound is more recent → operator's reply (normal/dark style).
+        // If inbound is more recent → customer is waiting (lighter style + avatar dot).
+        const lastInMsPrev = lead.last_inbound_at ? new Date(String(lead.last_inbound_at)).getTime() : 0;
+        const lastOutMsPrev = (lead as any).last_outbound_at ? new Date(String((lead as any).last_outbound_at)).getTime() : 0;
+        const customerLast = lastInMsPrev >= lastOutMsPrev && lastInMsPrev > 0;
+        const customerInitial = (lead.name || lead.phone || '?').toString().trim().charAt(0).toUpperCase() || '?';
+
+        return (
+          <button
+            type="button"
+            onClick={onViewMessage}
+            className={cn(
+              'mt-1.5 w-full text-left rounded-md transition-colors flex items-start gap-1.5',
+              customerLast
+                ? cn(
+                    'border px-2 py-1.5',
+                    unread > 0
+                      ? 'border-rose-500/30 bg-rose-950/15 hover:bg-rose-950/25'
+                      : 'border-slate-700/40 bg-slate-800/30 hover:bg-slate-800/50'
+                  )
+                : cn(
+                    'border-y border-r border-l-2 rounded-r-md px-2 py-1',
+                    unread > 0
+                      ? 'border-l-rose-500 border-rose-500/20 bg-rose-950/10 hover:bg-rose-950/20'
+                      : 'border-l-blue-500 border-slate-800/80 bg-slate-950/35 hover:bg-slate-950/55 hover:border-slate-700'
+                  )
+            )}
+            title={customerLast ? 'Müştəri yazıb — cavab gözləyir' : 'Sizin sonuncu mesajınız'}
+          >
+            {customerLast ? (
+              <span className="shrink-0 mt-0.5 w-4 h-4 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 text-white text-[8px] font-extrabold flex items-center justify-center">
+                {customerInitial}
+              </span>
+            ) : null}
+            <p className={cn(
+              'text-[11px] line-clamp-2 leading-snug flex-1 min-w-0',
+              customerLast ? 'text-slate-300' : 'text-slate-200'
+            )}>
+              {lead.last_message}
+            </p>
+          </button>
+        );
+      })()}
 
       {/* Priority bar */}
       {priorityColor ? (
