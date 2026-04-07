@@ -2,7 +2,7 @@ import { memo, useState, useMemo, useEffect, useCallback, type UIEvent } from 'r
 import { useAppStore } from '../context/Store';
 import { Lead, LeadStatus } from '../types/crm';
 import { Badge } from '../components/ui/Badge';
-import { Trash2, Calendar, Filter, RefreshCcw, Pencil, ShoppingBag, DollarSign, TrendingUp, Users, MessageSquare, UserPlus, CheckCircle, XCircle, Phone, Bell, GripVertical } from 'lucide-react';
+import { Trash2, Calendar, Filter, RefreshCcw, Pencil, ShoppingBag, DollarSign, TrendingUp, Users, MessageSquare, UserPlus, CheckCircle, XCircle, Phone, Bell, GripVertical, Smartphone, Instagram, Facebook } from 'lucide-react';
 import { cn, formatCurrency, toNumberSafe } from '../lib/utils';
 import { businessMinutesBetween, type BusinessHoursCfg } from '../lib/businessHours';
 import { LeadDetailsPanel } from '../components/LeadDetailsPanel';
@@ -928,6 +928,40 @@ const LeadCard = memo(function LeadCard({
 
   const sourceLabel = lead.source === 'manual' ? 'Manual' : 'WhatsApp';
 
+  // Channel banner config — shows where the message came from at the top of the card.
+  // For WhatsApp, includes the specific account label so users know which number it came in on.
+  const channelBanner = (() => {
+    if (lead.source === 'whatsapp') {
+      const accountLabel = (lead as any).whatsapp_account_label || (lead as any).whatsapp_account_phone;
+      return {
+        icon: <Smartphone className="w-3 h-3 text-emerald-300" />,
+        text: accountLabel ? `WhatsApp · ${accountLabel}` : 'WhatsApp',
+        bg: 'bg-emerald-950/25',
+        border: 'border-emerald-900/40',
+        textColor: 'text-emerald-200'
+      };
+    }
+    if (lead.source === 'instagram') {
+      return {
+        icon: <Instagram className="w-3 h-3 text-pink-300" />,
+        text: 'Instagram Direct',
+        bg: 'bg-pink-950/25',
+        border: 'border-pink-900/40',
+        textColor: 'text-pink-200'
+      };
+    }
+    if (lead.source === 'facebook') {
+      return {
+        icon: <Facebook className="w-3 h-3 text-blue-300" />,
+        text: 'Facebook Messenger',
+        bg: 'bg-blue-950/25',
+        border: 'border-blue-900/40',
+        textColor: 'text-blue-200'
+      };
+    }
+    return null; // manual leads — no banner
+  })();
+
   const primaryTitle = (cfg.showNameBadge !== false && lead.name && lead.name !== 'Unknown') ? String(lead.name) : String(lead.phone);
   const secondary = (cfg.showNameBadge !== false && lead.name && lead.name !== 'Unknown') ? String(lead.phone) : '';
   const hasValue = cfg.showValue !== false;
@@ -1026,6 +1060,20 @@ const LeadCard = memo(function LeadCard({
         style={{ background: leadAccent || '#94a3b8', opacity: unread > 0 ? 0.9 : 0.55 }}
       />
 
+      {/* Channel banner — which account/source the lead came in from */}
+      {channelBanner ? (
+        <div className={cn(
+          'mb-1.5 -mx-0.5 px-1.5 py-0.5 rounded-md border flex items-center gap-1 min-w-0',
+          channelBanner.bg,
+          channelBanner.border
+        )}>
+          <span className="shrink-0">{channelBanner.icon}</span>
+          <span className={cn('text-[10px] font-bold truncate', channelBanner.textColor)} title={channelBanner.text}>
+            {channelBanner.text}
+          </span>
+        </div>
+      ) : null}
+
        <div className="flex items-start justify-between gap-1.5">
          <div className="min-w-0 flex-1">
            <div className="flex items-start gap-1.5 min-w-0">
@@ -1054,8 +1102,14 @@ const LeadCard = memo(function LeadCard({
                          <Phone className="w-2.5 h-2.5 text-green-500 shrink-0" />
                          <span className="font-mono tabular-nums truncate">{secondary}</span>
                        </span>
-                       <span className="text-slate-600">·</span>
-                       <span className="shrink-0">{sourceLabel}</span>
+                       {/* Source label moved into the channel banner above; only show it
+                           inline for manual leads which have no banner. */}
+                       {!channelBanner ? (
+                         <>
+                           <span className="text-slate-600">·</span>
+                           <span className="shrink-0">{sourceLabel}</span>
+                         </>
+                       ) : null}
                        {formatRelativeMessageTime(lead) ? (
                          <>
                            <span className="text-slate-600">·</span>
