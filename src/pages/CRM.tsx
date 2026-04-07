@@ -656,8 +656,8 @@ export default function CRMPage() {
       <div className="flex-1 overflow-x-auto pb-4">
         {/* Desktop */}
         <div
-          className="hidden sm:grid gap-3 lg:gap-4 h-full min-w-full w-max"
-          style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(264px, 264px))` }}
+          className="hidden sm:grid gap-2 lg:gap-2.5 h-full min-w-full w-max"
+          style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(220px, 220px))` }}
         >
           {columns.map((col) => (
             (() => {
@@ -674,7 +674,7 @@ export default function CRMPage() {
               return (
             <div
               key={col.id}
-              className="min-w-0 flex flex-col bg-slate-900/40 rounded-xl border border-slate-800 h-full max-h-[calc(100vh-300px)]"
+              className="min-w-0 flex flex-col bg-slate-900/40 rounded-lg border border-slate-800 h-full max-h-[calc(100vh-300px)]"
               onDragOver={(e) => e.preventDefault()}
               onDrop={(e) => {
                 e.preventDefault();
@@ -682,39 +682,39 @@ export default function CRMPage() {
                 if (leadId) updateLeadStatus(leadId, col.id);
               }}
             >
-              <div className="sticky top-0 z-10 p-2.5 border-b border-slate-800/70 bg-slate-950/60 backdrop-blur rounded-t-xl">
-                <div className="flex items-center justify-between gap-2 min-w-0">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <div className="p-1.5 rounded-lg bg-slate-950/50 border border-slate-800 shrink-0">
+              <div className="sticky top-0 z-10 p-2 border-b border-slate-800/70 bg-slate-950/60 backdrop-blur rounded-t-lg">
+                <div className="flex items-center justify-between gap-1.5 min-w-0">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <div className="p-1 rounded-md bg-slate-950/50 border border-slate-800 shrink-0">
                       {col.icon}
                     </div>
                     <div className="min-w-0">
-                      <div className="text-[12px] font-extrabold text-slate-100 truncate" title={col.title}>{col.title}</div>
+                      <div className="text-[11px] font-extrabold text-slate-100 truncate" title={col.title}>{col.title}</div>
                       {canViewBudget ? (
-                        <div className="mt-0.5 text-[10px] text-slate-500 tabular-nums truncate">Budce: <span className="text-slate-300 font-semibold">{formatCurrency(colValue, 'AZN')}</span></div>
+                        <div className="text-[9px] text-slate-500 tabular-nums truncate">Budce: <span className="text-slate-300 font-semibold">{formatCurrency(colValue, 'AZN')}</span></div>
                       ) : null}
                     </div>
                   </div>
 
-                  <div className="shrink-0 flex items-center gap-1.5">
+                  <div className="shrink-0 flex items-center gap-1">
                     {colUnread > 0 ? (
                       <span
-                        className="inline-flex items-center gap-1 rounded-full border border-amber-500/15 bg-amber-950/10 px-1.5 py-0.5 text-[9px] font-bold text-amber-200/90 tabular-nums"
+                        className="inline-flex items-center gap-0.5 rounded-full border border-amber-500/15 bg-amber-950/10 px-1 py-0 text-[9px] font-bold text-amber-200/90 tabular-nums"
                         title="Unread messages in this column"
                       >
-                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                        <span className="w-1 h-1 rounded-full bg-amber-400" />
                         {colUnread > 999 ? '999+' : colUnread}
                       </span>
                     ) : null}
 
-                    <Badge variant="secondary" className="bg-slate-950/50 text-slate-200 border border-slate-800 font-extrabold tabular-nums">
+                    <Badge variant="secondary" className="bg-slate-950/50 text-slate-200 border border-slate-800 font-extrabold tabular-nums text-[10px] px-1.5 py-0">
                       {colCount}
                     </Badge>
                   </div>
                 </div>
               </div>
 
-              <div className="p-2.5 space-y-2.5 overflow-y-auto flex-1 custom-scrollbar">
+              <div className="p-1.5 space-y-1.5 overflow-y-auto flex-1 custom-scrollbar">
                  {leadsInCol.map((lead) => (
                     <LeadCard
                       key={lead.id}
@@ -732,8 +732,8 @@ export default function CRMPage() {
                     />
                   ))}
                 {colCount === 0 && (
-                  <div className="text-center py-10 flex flex-col items-center gap-2 text-slate-600 text-xs border border-slate-800/70 bg-slate-950/10 rounded-xl">
-                    <div className="w-10 h-10 rounded-2xl border border-slate-800 bg-slate-950/40 flex items-center justify-center text-slate-500">0</div>
+                  <div className="text-center py-6 flex flex-col items-center gap-1 text-slate-600 text-[10px] border border-slate-800/70 bg-slate-950/10 rounded-lg">
+                    <div className="w-7 h-7 rounded-xl border border-slate-800 bg-slate-950/40 flex items-center justify-center text-slate-500 text-[10px]">0</div>
                     No leads
                   </div>
                 )}
@@ -1008,7 +1008,7 @@ const LeadCard = memo(function LeadCard({
   return (
     <div
       className={cn(
-        "group relative rounded-2xl border bg-slate-950/40 px-3 py-2.5 shadow-sm transition-all duration-200",
+        "group relative rounded-lg border bg-slate-950/40 px-2 py-1.5 shadow-sm transition-all duration-200",
         "hover:-translate-y-0.5 hover:shadow-md",
         unread > 0
           ? "border-rose-500/35 hover:border-rose-400/60 shadow-rose-900/10"
@@ -1022,13 +1022,13 @@ const LeadCard = memo(function LeadCard({
     >
       {/* lead accent */}
       <div
-        className="absolute left-0 top-0 bottom-0 w-1.5 rounded-l-2xl"
+        className="absolute left-0 top-0 bottom-0 w-1 rounded-l-lg"
         style={{ background: leadAccent || '#94a3b8', opacity: unread > 0 ? 0.9 : 0.55 }}
       />
 
-       <div className="flex items-start justify-between gap-2">
+       <div className="flex items-start justify-between gap-1.5">
          <div className="min-w-0 flex-1">
-           <div className="flex items-start gap-2 min-w-0">
+           <div className="flex items-start gap-1.5 min-w-0">
              <div
                draggable
                onDragStart={(e) => {
@@ -1037,21 +1037,21 @@ const LeadCard = memo(function LeadCard({
                    e.dataTransfer.effectAllowed = 'move';
                  } catch { }
                }}
-                className="shrink-0 w-6 h-6 rounded-lg border border-slate-800 bg-slate-950/50 flex items-center justify-center cursor-grab active:cursor-grabbing"
+                className="shrink-0 w-5 h-5 rounded-md border border-slate-800 bg-slate-950/50 flex items-center justify-center cursor-grab active:cursor-grabbing"
                 title="Drag"
               >
-                <GripVertical className="w-3.5 h-3.5 text-slate-600" />
+                <GripVertical className="w-3 h-3 text-slate-600" />
               </div>
 
              <div className="min-w-0 flex-1">
                {/* Title + indicators (never share row with value) */}
-               <div className="flex items-start justify-between gap-2 min-w-0">
+               <div className="flex items-start justify-between gap-1.5 min-w-0">
                  <div className="min-w-0">
-                   <div className="text-[13px] sm:text-[14px] font-extrabold text-slate-100 truncate" title={primaryTitle}>{primaryTitle}</div>
+                   <div className="text-[12px] font-extrabold text-slate-100 truncate" title={primaryTitle}>{primaryTitle}</div>
                    {secondary ? (
-                     <div className="mt-0.5 text-[11px] text-slate-400 flex items-center gap-1.5 min-w-0 flex-wrap">
-                       <span className="inline-flex items-center gap-1 min-w-0">
-                         <Phone className="w-3 h-3 text-green-500 shrink-0" />
+                     <div className="mt-0 text-[10px] text-slate-400 flex items-center gap-1 min-w-0 flex-wrap">
+                       <span className="inline-flex items-center gap-0.5 min-w-0">
+                         <Phone className="w-2.5 h-2.5 text-green-500 shrink-0" />
                          <span className="font-mono tabular-nums truncate">{secondary}</span>
                        </span>
                        <span className="text-slate-600">·</span>
@@ -1066,16 +1066,16 @@ const LeadCard = memo(function LeadCard({
                    ) : null}
                  </div>
 
-                 <div className="shrink-0 flex flex-col items-end gap-1">
+                 <div className="shrink-0 flex flex-col items-end gap-0.5">
                    <div className="flex items-center gap-1">
                      {labelValue ? (
-                       <span className={cn('inline-flex items-center px-2 py-0.5 rounded-full border text-[10px] font-bold whitespace-nowrap', getLabelStyle(labelValue))}>
+                       <span className={cn('inline-flex items-center px-1.5 py-0 rounded-full border text-[9px] font-bold whitespace-nowrap', getLabelStyle(labelValue))}>
                          {labelValue}
                        </span>
                      ) : null}
                      {unread > 0 ? (
-                       <span className="inline-flex items-center gap-1 rounded-full border border-rose-500/30 bg-rose-950/25 px-2 py-0.5 text-[10px] font-extrabold text-rose-200 tabular-nums whitespace-nowrap">
-                         <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />
+                       <span className="inline-flex items-center gap-0.5 rounded-full border border-rose-500/30 bg-rose-950/25 px-1.5 py-0 text-[9px] font-extrabold text-rose-200 tabular-nums whitespace-nowrap">
+                         <span className="w-1 h-1 rounded-full bg-rose-400" />
                          {unread > 99 ? '99+' : unread}
                        </span>
                      ) : null}
@@ -1084,10 +1084,10 @@ const LeadCard = memo(function LeadCard({
                    {followDot || responseDot ? (
                      <span className="inline-flex items-center gap-1">
                        {followDot ? (
-                         <span className="w-2.5 h-2.5 rounded-full border border-black/30" style={{ background: followDot.color }} title={followDot.title} />
+                         <span className="w-2 h-2 rounded-full border border-black/30" style={{ background: followDot.color }} title={followDot.title} />
                        ) : null}
                        {responseDot ? (
-                         <span className="w-2.5 h-2.5 rounded-full border border-black/30" style={{ background: responseDot.color }} title={responseDot.title} />
+                         <span className="w-2 h-2 rounded-full border border-black/30" style={{ background: responseDot.color }} title={responseDot.title} />
                        ) : null}
                      </span>
                    ) : null}
@@ -1096,24 +1096,24 @@ const LeadCard = memo(function LeadCard({
 
                 {/* Value — always visible when showValue is on */}
                 {hasValue ? (
-                  <div className="mt-1.5 flex items-center justify-end gap-2 min-w-0">
+                  <div className="mt-1 flex items-center justify-end gap-1.5 min-w-0">
                     {lead.value && lead.value > 0 ? (
-                      <span className="shrink-0 inline-flex items-center gap-1 rounded-full border border-emerald-900/30 bg-emerald-950/15 px-2 py-0.5 text-[10px] font-extrabold text-emerald-200 tabular-nums whitespace-nowrap">
-                        <DollarSign className="w-3 h-3" />
+                      <span className="shrink-0 inline-flex items-center gap-0.5 rounded-full border border-emerald-900/30 bg-emerald-950/15 px-1.5 py-0 text-[9px] font-extrabold text-emerald-200 tabular-nums whitespace-nowrap">
+                        <DollarSign className="w-2.5 h-2.5" />
                         {formatCurrency(Number(lead.value), 'AZN')}
                       </span>
                     ) : (
-                      <span className="shrink-0 inline-flex items-center gap-1 rounded-full border border-slate-800 bg-slate-950/30 px-2 py-0.5 text-[10px] font-semibold text-slate-500 tabular-nums whitespace-nowrap">
+                      <span className="shrink-0 inline-flex items-center gap-0.5 rounded-full border border-slate-800 bg-slate-950/30 px-1.5 py-0 text-[9px] font-semibold text-slate-500 tabular-nums whitespace-nowrap">
                         — ₼
                       </span>
                     )}
                   </div>
                 ) : null}
 
-                <div className="mt-1 text-[10px] text-slate-500 tabular-nums truncate text-left">{dateStr}</div>
+                <div className="mt-0.5 text-[9px] text-slate-500 tabular-nums truncate text-left">{dateStr}</div>
 
                 {cfg.showAssignee !== false ? (
-                  <div className="mt-1.5 min-w-0 text-[11px] font-semibold text-slate-300 truncate text-left" title={assigneeLabel}>
+                  <div className="mt-0.5 min-w-0 text-[10px] font-semibold text-slate-300 truncate text-left" title={assigneeLabel}>
                     {assigneeLabel}
                   </div>
                 ) : null}
@@ -1122,40 +1122,40 @@ const LeadCard = memo(function LeadCard({
           </div>
 
         <div className={cn(
-          'flex gap-1 transition-opacity',
+          'flex gap-0.5 transition-opacity',
           'opacity-100 sm:opacity-0 sm:group-hover:opacity-100'
         )}>
           <button
             type="button"
             onClick={() => onEdit(lead)}
-            className="text-slate-500 hover:text-blue-300 p-1.5 rounded-lg hover:bg-slate-900/50 border border-transparent hover:border-slate-800"
+            className="text-slate-500 hover:text-blue-300 p-1 rounded-md hover:bg-slate-900/50 border border-transparent hover:border-slate-800"
             title="Edit"
           >
-            <Pencil className="w-3.5 h-3.5" />
+            <Pencil className="w-3 h-3" />
           </button>
           <button
             type="button"
             onClick={() => onRemove(lead.id)}
-            className="text-slate-500 hover:text-red-300 p-1.5 rounded-lg hover:bg-slate-900/50 border border-transparent hover:border-slate-800"
+            className="text-slate-500 hover:text-red-300 p-1 rounded-md hover:bg-slate-900/50 border border-transparent hover:border-slate-800"
             title="Delete"
           >
-            <Trash2 className="w-3.5 h-3.5" />
+            <Trash2 className="w-3 h-3" />
           </button>
         </div>
       </div>
 
       {/* Product Name Badge */}
       {cfg.showProductBadge !== false && lead.product_name && (
-        <div className="mt-2">
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-slate-950/40 text-slate-200 border border-slate-800">
-            <ShoppingBag className="w-3.5 h-3.5 text-slate-400" />
-            <span className="truncate max-w-[260px]" title={lead.product_name}>{lead.product_name}</span>
+        <div className="mt-1">
+          <span className="inline-flex items-center gap-1 px-1.5 py-0 rounded-full text-[9px] font-bold bg-slate-950/40 text-slate-200 border border-slate-800">
+            <ShoppingBag className="w-2.5 h-2.5 text-slate-400" />
+            <span className="truncate max-w-[180px]" title={lead.product_name}>{lead.product_name}</span>
           </span>
         </div>
       )}
 
       {cfg.showCustomFieldBadges !== false && selectBadges.length > 0 && (
-        <div className="mt-1.5 flex flex-wrap gap-1">
+        <div className="mt-1 flex flex-wrap gap-0.5">
           {selectBadges.map(b => {
             const hue = hashHue(`${b.id}:${b.value}`);
             const dot: React.CSSProperties = { backgroundColor: `hsl(${hue}, 85%, 70%)` };
@@ -1163,10 +1163,10 @@ const LeadCard = memo(function LeadCard({
               <span
                 key={`${b.id}:${b.value}`}
                 title={`${b.label}: ${b.value}`}
-                 className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold border border-slate-800 bg-slate-950/35 text-slate-200 max-w-full"
+                 className="inline-flex items-center gap-1 px-1.5 py-0 rounded-full text-[9px] font-bold border border-slate-800 bg-slate-950/35 text-slate-200 max-w-full"
                >
-                <span className="w-2 h-2 rounded-full shrink-0" style={dot} />
-                <span className="max-w-[220px] truncate">
+                <span className="w-1.5 h-1.5 rounded-full shrink-0" style={dot} />
+                <span className="max-w-[160px] truncate">
                   {(cfg.customFieldBadgeMode || 'value') === 'label_value' ? `${b.label}: ${b.value}` : b.value}
                 </span>
               </span>
@@ -1180,14 +1180,14 @@ const LeadCard = memo(function LeadCard({
           type="button"
           onClick={onViewMessage}
           className={cn(
-            'mt-2 w-full text-left rounded-r-xl border-y border-r border-l-2 px-3 py-1.5 transition-colors',
+            'mt-1.5 w-full text-left rounded-r-md border-y border-r border-l-2 px-2 py-1 transition-colors',
             unread > 0
               ? 'border-l-rose-500 border-rose-500/20 bg-rose-950/10 hover:bg-rose-950/20'
               : 'border-l-blue-500 border-slate-800/80 bg-slate-950/35 hover:bg-slate-950/55 hover:border-slate-700'
           )}
           title="Mesajı aç"
         >
-          <p className="text-[12px] text-slate-200 line-clamp-2 leading-snug">
+          <p className="text-[11px] text-slate-200 line-clamp-2 leading-snug">
             {lead.last_message}
           </p>
         </button>
@@ -1196,7 +1196,7 @@ const LeadCard = memo(function LeadCard({
       {/* Priority bar */}
       {priorityColor ? (
         <div
-          className="mt-2 h-1 rounded-full opacity-80"
+          className="mt-1.5 h-0.5 rounded-full opacity-80"
           style={{ background: priorityColor }}
           title={`Prioritet: ${priorityValue}`}
         />
