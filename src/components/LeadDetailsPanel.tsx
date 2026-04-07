@@ -1126,6 +1126,31 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
         setCustomValues(extra ? (typeof extra === 'string' ? JSON.parse(extra) : extra) : {});
     }, [lead.id]); // Only reset when switching to a different lead, not on every real-time update
 
+    // Dirty state — Yadda Saxla button only appears when something actually changed.
+    // Compares formData + customValues + localStatus against the live lead props.
+    const isDirty = useMemo(() => {
+        if (formData.name !== (lead.name || '')) return true;
+        if (formData.value !== String(toNumberSafe((lead as any).value, 0))) return true;
+        if (formData.product_name !== (lead.product_name || '')) return true;
+        if ((formData.assignee_id || '') !== (lead.assignee_id || '')) return true;
+        if (localStatus !== lead.status) return true;
+        // Custom field values
+        const leadExtra = (() => {
+            const e = (lead as any).extra_data;
+            if (!e) return {};
+            try { return typeof e === 'string' ? JSON.parse(e) : e; } catch { return {}; }
+        })();
+        const allKeys = new Set([...Object.keys(customValues || {}), ...Object.keys(leadExtra || {})]);
+        for (const k of allKeys) {
+            // Skip system-managed extra_data subkeys (ad/ctwa metadata isn't user-editable)
+            if (k === 'ad' || k === 'quotedAd' || k === 'ctwa') continue;
+            const a = customValues?.[k] ?? '';
+            const b = leadExtra?.[k] ?? '';
+            if (String(a ?? '') !== String(b ?? '')) return true;
+        }
+        return false;
+    }, [formData, localStatus, customValues, lead]);
+
     // ESC to close
     useEffect(() => {
         const fn = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -1349,20 +1374,20 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                 {/* ════════════════════ BODY (3-column on lg+) ════════════════════ */}
                 <div className="flex-1 min-h-0 flex flex-col md:flex-row overflow-hidden relative">
 
-                    {/* ───── LEFT SIDEBAR (lead fields) ───── */}
+                    {/* ───── LEFT SIDEBAR (lead fields) — compact dense layout (amocrm-style) ───── */}
                     <aside className={cn(
-                        "w-full md:w-72 lg:w-[300px] xl:w-[320px] shrink-0 min-h-0 border-r border-white/5 bg-[#111827]/60 flex flex-col overflow-hidden overscroll-contain relative",
+                        "w-full md:w-60 lg:w-[240px] xl:w-[260px] shrink-0 min-h-0 border-r border-white/5 bg-[#111827]/60 flex flex-col overflow-hidden overscroll-contain relative",
                         ['feed', 'chat', 'follow', 'stats'].includes(activeTab) ? "hidden md:flex" : "flex"
                     )}>
 
-                        {/* Avatar / Name Block */}
-                        <div className="p-4 border-b border-white/5 flex items-center gap-3">
-                            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white font-bold text-sm shrink-0">
+                        {/* Avatar / Name Block — compact */}
+                        <div className="p-3 border-b border-white/5 flex items-center gap-2">
+                            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white font-bold text-[12px] shrink-0">
                                 {(lead.name || lead.phone || 'U')[0].toUpperCase()}
                             </div>
                             <div className="flex-1 min-w-0">
-                                <p className="text-white font-semibold text-sm truncate">{lead.name || 'Ad yoxdur'}</p>
-                                <p className="text-slate-500 text-xs flex items-center gap-1">
+                                <p className="text-white font-semibold text-[12px] truncate">{lead.name || 'Ad yoxdur'}</p>
+                                <p className="text-slate-500 text-[10px] flex items-center gap-1">
                                     <Phone className="w-2.5 h-2.5" /> {lead.phone}
                                 </p>
                             </div>
@@ -1372,34 +1397,32 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                         {/* Multi-WhatsApp duplicate banner: this customer is also writing
                             to one of your other WhatsApp accounts. */}
                         {duplicates.length > 0 ? (
-                            <div className="mx-3 mt-3 rounded-lg border border-amber-900/40 bg-amber-950/15 px-3 py-2">
-                                <div className="flex items-start gap-2">
-                                    <AlertTriangle className="w-3.5 h-3.5 text-amber-300 mt-0.5 shrink-0" />
+                            <div className="mx-2.5 mt-2 rounded-md border border-amber-900/40 bg-amber-950/15 px-2 py-1.5">
+                                <div className="flex items-start gap-1.5">
+                                    <AlertTriangle className="w-3 h-3 text-amber-300 mt-0.5 shrink-0" />
                                     <div className="min-w-0">
-                                        <p className="text-[11px] font-extrabold text-amber-200">
-                                            Bu müştəri başqa WhatsApp hesabınıza da yazır
+                                        <p className="text-[10px] font-extrabold text-amber-200">
+                                            Başqa hesaba da yazır
                                         </p>
-                                        <p className="text-[10px] text-amber-300/70 mt-0.5">
-                                            Eyni nömrə {duplicates.length} fərqli hesabda lead yaradıb:
+                                        <p className="text-[9px] text-amber-300/70">
+                                            {duplicates.length} fərqli hesabda lead var
                                         </p>
-                                        <div className="mt-2 space-y-1">
+                                        <div className="mt-1 space-y-0.5">
                                             {duplicates.slice(0, 5).map((d) => (
                                                 <button
                                                     key={d.id}
                                                     type="button"
                                                     onClick={() => {
-                                                        // Naive cross-link: emit a global event so the lead list can switch
                                                         const evt = new CustomEvent('crm:open-lead', { detail: { id: d.id } });
                                                         window.dispatchEvent(evt);
                                                     }}
-                                                    className="block w-full text-left rounded-md border border-amber-900/30 bg-amber-950/20 hover:bg-amber-950/30 px-2 py-1.5 text-[10px] text-amber-100"
+                                                    className="block w-full text-left rounded border border-amber-900/30 bg-amber-950/20 hover:bg-amber-950/30 px-1.5 py-1 text-[9px] text-amber-100"
                                                 >
-                                                    <div className="flex items-center gap-1.5 font-bold">
+                                                    <div className="flex items-center gap-1 font-bold">
                                                         <Smartphone className="w-2.5 h-2.5" />
-                                                        {d.whatsapp_account_label || 'Naməlum hesab'}
-                                                        {d.message_count ? <span className="text-amber-300/60">· {d.message_count} mesaj</span> : null}
+                                                        <span className="truncate">{d.whatsapp_account_label || 'Naməlum'}</span>
+                                                        {d.message_count ? <span className="text-amber-300/60">· {d.message_count}</span> : null}
                                                     </div>
-                                                    {d.name ? <div className="text-amber-200/60 truncate">{d.name}</div> : null}
                                                 </button>
                                             ))}
                                         </div>
@@ -1408,21 +1431,21 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                             </div>
                         ) : null}
 
-                        {/* Fields (scrollable) */}
+                        {/* Fields (scrollable) — compact dense layout */}
                         <div
                             className="flex-1 min-h-0 overflow-y-auto overscroll-contain touch-pan-y"
                             style={{ WebkitOverflowScrolling: 'touch' }}
                         >
-                            <div className="p-4 space-y-4">
+                            <div className="p-2.5 space-y-2">
 
                             {/* Məsul Şəxs (Assignee) */}
-                            <FieldGroup label="Məsul Şəxs" icon={<User className="w-3 h-3" />}>
-                                <div className="flex gap-2">
+                            <FieldGroup label="Məsul Şəxs" icon={<User className="w-2.5 h-2.5" />}>
+                                <div className="flex gap-1">
                                     <select
                                         name="assignee_id"
                                         value={formData.assignee_id}
                                         onChange={(e: any) => handleChange(e)}
-                                        className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 appearance-none"
+                                        className="w-full bg-slate-900 border border-slate-700 rounded-md px-2 py-1.5 text-white text-[12px] focus:outline-none focus:ring-1 focus:ring-blue-500 appearance-none"
                                     >
                                         <option value="">-- Təyin Edilməyib --</option>
                                         {teamMembers.map(tm => (
@@ -1433,10 +1456,10 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                     {currentUser && formData.assignee_id !== currentUser.id && (
                                         <button
                                             onClick={() => setFormData(prev => ({ ...prev, assignee_id: currentUser.id }))}
-                                            className="whitespace-nowrap px-3 py-2 bg-blue-600/20 hover:bg-blue-600/40 text-blue-400 border border-blue-500/30 rounded-lg text-[10px] font-bold uppercase shrink-0 transition-colors"
+                                            className="whitespace-nowrap px-1.5 py-1 bg-blue-600/20 hover:bg-blue-600/40 text-blue-400 border border-blue-500/30 rounded-md text-[9px] font-bold uppercase shrink-0 transition-colors"
                                             title="Özümə Təyin Et"
                                         >
-                                            Mən Baxıram
+                                            Mən
                                         </button>
                                     )}
                                 </div>
@@ -1444,54 +1467,54 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
 
                             {/* Büdcə */}
                             {currentUser?.permissions?.view_budget !== false && (
-                                <FieldGroup label="Büdcə (₼)" icon={<TrendingUp className="w-3 h-3" />}>
+                                <FieldGroup label="Büdcə (₼)" icon={<TrendingUp className="w-2.5 h-2.5" />}>
                                     <div className="relative">
-                                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm">₼</span>
+                                        <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-[11px]">₼</span>
                                         <input
                                             type="number"
                                             name="value"
                                             value={formData.value}
                                             onChange={handleChange}
-                                            className="w-full bg-slate-900 border border-slate-700 rounded-lg pl-8 pr-3 py-2 text-white text-sm font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                            className="w-full bg-slate-900 border border-slate-700 rounded-md pl-6 pr-2 py-1.5 text-white text-[12px] font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500"
                                             disabled={currentUser?.permissions?.edit_budget === false}
                                         />
                                     </div>
                                     {currentUser?.permissions?.edit_budget === false && (
-                                        <p className="text-[10px] text-amber-500/70 mt-1">Dəyişmək icazəniz yoxdur</p>
+                                        <p className="text-[9px] text-amber-500/70 mt-0.5">İcazəniz yoxdur</p>
                                     )}
                                 </FieldGroup>
                             )}
 
                             {/* Ad */}
-                            <FieldGroup label="Ad Soyad" icon={<User className="w-3 h-3" />}>
+                            <FieldGroup label="Ad Soyad" icon={<User className="w-2.5 h-2.5" />}>
                                 <input
                                     name="name"
                                     value={formData.name}
                                     onChange={handleChange}
                                     placeholder="Müştərinin adı"
-                                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                    className="w-full bg-slate-900 border border-slate-700 rounded-md px-2 py-1.5 text-white text-[12px] focus:outline-none focus:ring-1 focus:ring-blue-500"
                                 />
                             </FieldGroup>
 
                             {/* Telefon (readonly) */}
-                            <FieldGroup label="Telefon" icon={<Phone className="w-3 h-3" />}>
-                                <div className="w-full bg-slate-900/50 border border-slate-800 rounded-lg px-3 py-2 text-slate-300 text-sm font-mono select-all">
+                            <FieldGroup label="Telefon" icon={<Phone className="w-2.5 h-2.5" />}>
+                                <div className="w-full bg-slate-900/50 border border-slate-800 rounded-md px-2 py-1.5 text-slate-300 text-[12px] font-mono select-all">
                                     {lead.phone}
                                 </div>
                             </FieldGroup>
 
-                            <FieldGroup label="Status / Mərhələ" icon={<BarChart2 className="w-3 h-3" />}>
+                            <FieldGroup label="Status / Mərhələ" icon={<BarChart2 className="w-2.5 h-2.5" />}>
                                 <div ref={statusMenuRef} className="relative">
                                     <button
                                         type="button"
                                         onClick={() => setShowStatusMenu((v) => !v)}
-                                        className="flex items-center justify-between gap-2 w-full bg-slate-900 border border-slate-700 hover:border-slate-600 rounded-lg px-3 py-2 text-left transition-colors"
+                                        className="flex items-center justify-between gap-1.5 w-full bg-slate-900 border border-slate-700 hover:border-slate-600 rounded-md px-2 py-1.5 text-left transition-colors"
                                     >
-                                        <span className="flex items-center gap-2 min-w-0">
+                                        <span className="flex items-center gap-1.5 min-w-0">
                                             {activeStatus?.icon}
-                                            <span className="truncate text-sm font-semibold text-slate-100">{activeStatus?.label || 'Status seç'}</span>
+                                            <span className="truncate text-[12px] font-semibold text-slate-100">{activeStatus?.label || 'Status seç'}</span>
                                         </span>
-                                        <ChevronDown className={cn('w-4 h-4 text-slate-400 shrink-0 transition-transform', showStatusMenu && 'rotate-180')} />
+                                        <ChevronDown className={cn('w-3 h-3 text-slate-400 shrink-0 transition-transform', showStatusMenu && 'rotate-180')} />
                                     </button>
 
                                     {showStatusMenu ? (
@@ -1541,12 +1564,12 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                 };
 
                                  return (
-                                     <FieldGroup key={field.id} label={field.label} icon={<Package className="w-3 h-3" />}>
+                                     <FieldGroup key={field.id} label={field.label} icon={<Package className="w-2.5 h-2.5" />}>
                                          {field.type === 'select' ? (
                                              <select
                                                 value={value}
                                                 onChange={e => handleFieldChange(e.target.value)}
-                                                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 appearance-none"
+                                                className="w-full bg-slate-900 border border-slate-700 rounded-md px-2 py-1.5 text-white text-[12px] focus:outline-none focus:ring-1 focus:ring-blue-500 appearance-none"
                                             >
                                                 <option value="">-- Seçin --</option>
                                                 {(field.options || []).map(opt => (
@@ -1558,7 +1581,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                                 type="datetime-local"
                                                 value={toDatetimeLocal(value)}
                                                 onChange={e => handleFieldChange(e.target.value)}
-                                                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                                className="w-full bg-slate-900 border border-slate-700 rounded-md px-2 py-1.5 text-white text-[12px] focus:outline-none focus:ring-1 focus:ring-blue-500"
                                             />
                                         ) : (
                                              <input
@@ -1566,7 +1589,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                                  value={value}
                                                  onChange={e => handleFieldChange(e.target.value)}
                                                 placeholder={field.label}
-                                                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                                className="w-full bg-slate-900 border border-slate-700 rounded-md px-2 py-1.5 text-white text-[12px] focus:outline-none focus:ring-1 focus:ring-blue-500"
                                             />
                                         )}
                                     </FieldGroup>
@@ -1574,10 +1597,10 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                             })}
 
                             {/* Conversation close/reopen */}
-                            <FieldGroup label="Söhbət" icon={<MessageSquare className="w-3 h-3" />}>
-                                <div className="flex items-center justify-between gap-2">
+                            <FieldGroup label="Söhbət" icon={<MessageSquare className="w-2.5 h-2.5" />}>
+                                <div className="flex items-center justify-between gap-1.5">
                                     <span className={cn(
-                                        'text-[10px] font-extrabold uppercase tracking-wide',
+                                        'text-[9px] font-extrabold uppercase tracking-wide',
                                         convClosed ? 'text-amber-300' : 'text-emerald-300'
                                     )}>
                                         {convClosed ? 'Bağlı' : 'Açıq'}
@@ -1587,7 +1610,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                         onClick={toggleConversation}
                                         disabled={convBusy || currentUser?.role === 'viewer'}
                                         className={cn(
-                                            'px-3 py-2 rounded-lg text-[11px] font-extrabold border transition-colors disabled:opacity-60',
+                                            'px-2 py-1 rounded-md text-[10px] font-extrabold border transition-colors disabled:opacity-60',
                                             convClosed
                                                 ? 'border-emerald-800/40 bg-emerald-600/15 text-emerald-200 hover:bg-emerald-600/20'
                                                 : 'border-amber-800/40 bg-amber-600/15 text-amber-200 hover:bg-amber-600/20'
@@ -1597,20 +1620,17 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                         {convBusy ? '...' : (convClosed ? 'Aç' : 'Bağla')}
                                     </button>
                                 </div>
-                                <p className="mt-1 text-[10px] text-slate-500">
-                                    Close edəndə gecikmə/SLA dayanır, yeni inbound gələndə avtomatik açılır.
-                                </p>
                             </FieldGroup>
 
                             {/* Tarix */}
-                            <FieldGroup label="Yaranma Tarixi" icon={<Clock className="w-3 h-3" />}>
-                                <p className="text-slate-400 text-xs">{dateStr}</p>
+                            <FieldGroup label="Yaranma Tarixi" icon={<Clock className="w-2.5 h-2.5" />}>
+                                <p className="text-slate-400 text-[11px]">{dateStr}</p>
                             </FieldGroup>
 
                             {/* Mənbə */}
-                            <FieldGroup label="Mənbə" icon={<Hash className="w-3 h-3" />}>
+                            <FieldGroup label="Mənbə" icon={<Hash className="w-2.5 h-2.5" />}>
                                 <span className={cn(
-                                    'text-[10px] font-bold uppercase px-2 py-0.5 rounded',
+                                    'text-[9px] font-bold uppercase px-1.5 py-0.5 rounded',
                                     lead.source === 'whatsapp'
                                         ? 'bg-green-900/50 text-green-400 border border-green-900'
                                         : lead.source === 'facebook'
@@ -1629,55 +1649,39 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
                                 </span>
                             </FieldGroup>
 
-                            {/* WhatsApp hesabı — multi-account: hangi WhatsApp numarasından geldi */}
-                            {lead.source === 'whatsapp' && (lead.whatsapp_account_label || lead.whatsapp_account_phone) ? (
-                                <FieldGroup label="WhatsApp Hesabı" icon={<Smartphone className="w-3 h-3" />}>
-                                    <div className="rounded-lg border border-emerald-900/30 bg-emerald-950/15 px-2.5 py-2">
-                                        <div className="text-[11px] font-extrabold text-emerald-200 truncate">
-                                            {lead.whatsapp_account_label || 'WhatsApp'}
-                                        </div>
-                                        {lead.whatsapp_account_phone ? (
-                                            <div className="text-[10px] text-emerald-300/70 font-mono mt-0.5">
-                                                +{String(lead.whatsapp_account_phone).replace(/\D/g, '')}
-                                            </div>
-                                        ) : null}
-                                        <div className="text-[9px] text-emerald-400/60 uppercase font-bold mt-1">
-                                            Bu hesabdan mesajlaşıldı
-                                        </div>
-                                    </div>
-                                </FieldGroup>
-                            ) : null}
-
                             {(lead.duplicate_lead_count ?? 0) > 0 ? (
-                                <FieldGroup label="Dublikat Lead'lər" icon={<Users className="w-3 h-3" />}>
+                                <FieldGroup label="Dublikat" icon={<Users className="w-2.5 h-2.5" />}>
                                     <p className="text-[10px] text-amber-300">
-                                        Eyni nömrədən {(lead.duplicate_lead_count ?? 0)} başqa hesapda lead var. Yuxarıdakı bannerden keçid edə bilərsiniz.
+                                        {(lead.duplicate_lead_count ?? 0)} başqa hesapda lead var
                                     </p>
                                 </FieldGroup>
                             ) : null}
                         </div>
                         </div>
 
-                        {/* Save button */}
-                        <div className="p-4 border-t border-white/5 bg-[#0d1117]/80 shrink-0">
-                            <button
-                                onClick={handleSave}
-                                disabled={isSaving}
-                                className={cn(
-                                    'w-full py-2.5 rounded-lg font-semibold text-sm flex items-center justify-center gap-2 transition-all',
-                                    savedOk
-                                        ? 'bg-green-600 text-white'
-                                        : 'bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-60'
-                                )}
-                            >
-                                {isSaving
-                                    ? <><span className="animate-spin">↻</span> Saxlanır...</>
-                                    : savedOk
-                                        ? <><Check className="w-4 h-4" /> Saxlandı!</>
-                                        : <><Save className="w-4 h-4" /> Yadda Saxla</>
-                                }
-                            </button>
-                        </div>
+                        {/* Save button — only renders when there are unsaved changes,
+                            keeps showing for ~1.5s after a save so users see the success state. */}
+                        {(isDirty || isSaving || savedOk) ? (
+                            <div className="p-2.5 border-t border-white/5 bg-[#0d1117]/80 shrink-0">
+                                <button
+                                    onClick={handleSave}
+                                    disabled={isSaving || (!isDirty && !savedOk)}
+                                    className={cn(
+                                        'w-full py-2 rounded-lg font-bold text-[12px] flex items-center justify-center gap-2 transition-all',
+                                        savedOk
+                                            ? 'bg-green-600 text-white'
+                                            : 'bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-60'
+                                    )}
+                                >
+                                    {isSaving
+                                        ? <><span className="animate-spin">↻</span> Saxlanır...</>
+                                        : savedOk
+                                            ? <><Check className="w-3.5 h-3.5" /> Saxlandı!</>
+                                            : <><Save className="w-3.5 h-3.5" /> Yadda Saxla</>
+                                    }
+                                </button>
+                            </div>
+                        ) : null}
                     </aside>
 
                     {/* ───── RIGHT MAIN AREA ───── */}
@@ -2117,7 +2121,7 @@ export function LeadDetailsPanel({ lead, onSave, onClose, onUpdateStatus }: Lead
 function FieldGroup({ label, icon, children }: { label: string; icon: React.ReactNode; children: React.ReactNode }) {
     return (
         <div>
-            <label className="flex items-center gap-1.5 text-[10px] font-semibold uppercase text-slate-500 mb-1.5">
+            <label className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-wide text-slate-500 mb-0.5">
                 {icon} {label}
             </label>
             {children}
