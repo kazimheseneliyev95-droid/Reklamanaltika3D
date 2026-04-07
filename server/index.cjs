@@ -2219,134 +2219,151 @@ app.post('/api/internal/webhook', async (req, res) => requireInternalRequest(req
     || webhookAccountId
     || null;
 
-  // Apply routing rules server-side (both incoming and outgoing)
-  // This ensures first matching message assigns the field and won't change later.
-  if (event === 'new_message' && process.env.DATABASE_URL && payload && payload.phone && payload.message) {
-    let leadForAutomation = null;
-    let statusBefore = '';
-    try {
-      // Multi-account aware: scope lookup to the WA account that produced this message
-      // so we route the right lead even when the same phone exists across multiple accounts.
-      const lead = (db && typeof db.findLeadByPhone === 'function')
-        ? await db.findLeadByPhone(payload.phone, tenantId, messageAccountId)
-        : null;
-      if (lead) {
-        leadForAutomation = lead;
-        statusBefore = lead && lead.status ? String(lead.status).trim() : '';
-        if (payload && payload.status_before !== undefined && payload.status_before !== null) {
-          const sb = String(payload.status_before || '').trim();
-          if (sb) statusBefore = sb;
-        }
-        const updated = await maybeApplyRoutingRulesToLead(tenantId, lead, payload.message, payload);
-        if (updated) {
-          leadForAutomation = updated;
-          await emitLeadUpdatedScoped(tenantId, updated);
-        }
-      }
-    } catch (e) {
-      console.warn('⚠️ Routing apply failed (internal webhook):', e.message);
-    }
+  // Respond IMMEDIATELY so the worker isn't blocked waiting for our DB +
+  // socket fanout work. The previous version awaited 5+ DB queries +
+  // routing rules + automation + N×getLeadById per connected socket
+  // before responding, which made the worker time out (4s) and retry,
+  // creating 5-20 second delays for new messages reaching the UI.
+  res.json({ success: true });
 
-    // Auto return-to-stage on inbound message (closed conversations -> Yeni)
+  // Everything below runs in the background. Errors are logged but never
+  // surfaced to the worker.
+  setImmediate(async () => {
     try {
-      const isInbound = payload && payload.fromMe === false;
-      if (isInbound && leadForAutomation && statusBefore) {
-        const closedBefore = (payload && payload.was_closed === true)
-          ? true
-          : Boolean(leadForAutomation && leadForAutomation.conversation_closed);
+      // Apply routing rules server-side (both incoming and outgoing)
+      // This ensures first matching message assigns the field and won't change later.
+      if (event === 'new_message' && process.env.DATABASE_URL && payload && payload.phone && payload.message) {
+        let leadForAutomation = null;
+        let statusBefore = '';
+        try {
+          // Multi-account aware: scope lookup to the WA account that produced this message.
+          const lead = (db && typeof db.findLeadByPhone === 'function')
+            ? await db.findLeadByPhone(payload.phone, tenantId, messageAccountId)
+            : null;
+          if (lead) {
+            leadForAutomation = lead;
+            statusBefore = lead && lead.status ? String(lead.status).trim() : '';
+            if (payload && payload.status_before !== undefined && payload.status_before !== null) {
+              const sb = String(payload.status_before || '').trim();
+              if (sb) statusBefore = sb;
+            }
+            const updated = await maybeApplyRoutingRulesToLead(tenantId, lead, payload.message, payload);
+            if (updated) {
+              leadForAutomation = updated;
+              // Fire-and-forget — UI fanout shouldn't block automation chain.
+              emitLeadUpdatedScoped(tenantId, updated).catch(() => { });
+            }
+          }
+        } catch (e) {
+          console.warn('⚠️ Routing apply failed (internal webhook):', e.message);
+        }
 
-        if (closedBefore) {
-          await logLeadAudit(tenantId, null, 'CONVERSATION_REOPENED', leadForAutomation.id, {
-            reason: 'inbound_message',
-            auto: true,
-            previous_status: statusBefore || null,
-            source: payload.source || 'whatsapp',
-            whatsapp_id: payload.whatsapp_id || null
+        // Auto return-to-stage on inbound message (closed conversations -> Yeni)
+        try {
+          const isInbound = payload && payload.fromMe === false;
+          if (isInbound && leadForAutomation && statusBefore) {
+            const closedBefore = (payload && payload.was_closed === true)
+              ? true
+              : Boolean(leadForAutomation && leadForAutomation.conversation_closed);
+
+            if (closedBefore) {
+              logLeadAudit(tenantId, null, 'CONVERSATION_REOPENED', leadForAutomation.id, {
+                reason: 'inbound_message',
+                auto: true,
+                previous_status: statusBefore || null,
+                source: payload.source || 'whatsapp',
+                whatsapp_id: payload.whatsapp_id || null
+              }).catch(() => { });
+            }
+
+            const auto = await getTenantAutomationSettings(tenantId);
+            const cfg = auto && auto.reopenOnInbound ? auto.reopenOnInbound : null;
+            const enabled = cfg && cfg.enabled === true;
+            const onlyWhenClosed = cfg && cfg.onlyWhenClosed !== false;
+            const targetStage = cfg && cfg.targetStage ? String(cfg.targetStage).trim() : '';
+            const fromStages = cfg && Array.isArray(cfg.fromStages) ? cfg.fromStages : [];
+            const excludeStages = cfg && Array.isArray(cfg.excludeStages) ? cfg.excludeStages : [];
+            const okClosed = onlyWhenClosed ? closedBefore : true;
+            const okFromStages = fromStages.length > 0 ? fromStages.includes(statusBefore) : true;
+            const okExclude = excludeStages.includes(statusBefore) ? false : true;
+            if (enabled && okClosed && targetStage && okFromStages && okExclude && statusBefore !== targetStage) {
+              const moved = await db.updateLeadStatus(leadForAutomation.id, targetStage, tenantId).catch(() => null);
+              if (moved) {
+                leadForAutomation = moved;
+                logLeadAudit(tenantId, null, 'AUTO_STAGE_RETURN', leadForAutomation.id, {
+                  from_status: statusBefore,
+                  to_status: targetStage,
+                  reason: 'inbound_message',
+                  auto: true,
+                  reopened_from_closed: closedBefore,
+                  source: payload.source || 'whatsapp',
+                  whatsapp_id: payload.whatsapp_id || null
+                }).catch(() => { });
+                emitLeadUpdatedScoped(tenantId, moved).catch(() => { });
+              }
+            }
+          }
+        } catch {
+          // ignore
+        }
+
+        try {
+          if (leadForAutomation) {
+            const automated = await maybeApplyAutoRulesToLead(tenantId, leadForAutomation, payload.message, payload);
+            if (automated) {
+              leadForAutomation = automated;
+              emitLeadUpdatedScoped(tenantId, automated).catch(() => { });
+            }
+          }
+        } catch {
+          // ignore
+        }
+
+        // Telegram notifications for inbound WhatsApp messages
+        try {
+          if (payload && payload.fromMe === false) {
+            notifyTelegramInbound({
+              tenantId,
+              source: payload.source || 'whatsapp',
+              phone: payload.phone,
+              name: payload.name || null,
+              message: payload.message,
+              externalId: payload.whatsapp_id || null
+            });
+          }
+        } catch {
+          // ignore
+        }
+
+        // FAST PATH: emit the new_message + lead_updated to clients using the
+        // lead object we already have in memory. This used to do a SECOND
+        // findLeadByPhone query + await two emits, doubling the latency.
+        if (leadForAutomation) {
+          // Run both emits in parallel — they're independent.
+          Promise.all([
+            emitLeadUpdatedScoped(tenantId, leadForAutomation),
+            emitNewMessageScoped(tenantId, leadForAutomation, payload),
+          ]).catch((err) => {
+            console.warn('webhook fanout error:', err && err.message);
           });
         }
-
-        const auto = await getTenantAutomationSettings(tenantId);
-        const cfg = auto && auto.reopenOnInbound ? auto.reopenOnInbound : null;
-        const enabled = cfg && cfg.enabled === true;
-        const onlyWhenClosed = cfg && cfg.onlyWhenClosed !== false;
-        const targetStage = cfg && cfg.targetStage ? String(cfg.targetStage).trim() : '';
-        const fromStages = cfg && Array.isArray(cfg.fromStages) ? cfg.fromStages : [];
-        const excludeStages = cfg && Array.isArray(cfg.excludeStages) ? cfg.excludeStages : [];
-        const okClosed = onlyWhenClosed ? closedBefore : true;
-        const okFromStages = fromStages.length > 0 ? fromStages.includes(statusBefore) : true;
-        const okExclude = excludeStages.includes(statusBefore) ? false : true;
-        if (enabled && okClosed && targetStage && okFromStages && okExclude && statusBefore !== targetStage) {
-          const moved = await db.updateLeadStatus(leadForAutomation.id, targetStage, tenantId).catch(() => null);
-          if (moved) {
-            leadForAutomation = moved;
-            await logLeadAudit(tenantId, null, 'AUTO_STAGE_RETURN', leadForAutomation.id, {
-              from_status: statusBefore,
-              to_status: targetStage,
-              reason: 'inbound_message',
-              auto: true,
-              reopened_from_closed: closedBefore,
-              source: payload.source || 'whatsapp',
-              whatsapp_id: payload.whatsapp_id || null
-            });
-            await emitLeadUpdatedScoped(tenantId, moved);
-          }
-        }
-      }
-    } catch {
-      // ignore
-    }
-
-    try {
-      if (leadForAutomation) {
-        const automated = await maybeApplyAutoRulesToLead(tenantId, leadForAutomation, payload.message, payload);
-        if (automated) {
-          await emitLeadUpdatedScoped(tenantId, automated);
-        }
-      }
-    } catch {
-      // ignore
-    }
-
-    // Telegram notifications for inbound WhatsApp messages
-    try {
-      if (payload && payload.fromMe === false) {
-        notifyTelegramInbound({
-          tenantId,
-          source: payload.source || 'whatsapp',
-          phone: payload.phone,
-          name: payload.name || null,
-          message: payload.message,
-          externalId: payload.whatsapp_id || null
+      } else if (event === 'qr_code') {
+        io.to(tenantId).emit('qr_code', {
+          qr: (payload && (payload.qr || payload)) || null,
+          account_id: messageAccountId
         });
+      } else if (event === 'ready' || event === 'authenticated' || event === 'auth_failure' || event === 'account_restored') {
+        io.to(tenantId).emit(event, {
+          ...(payload && typeof payload === 'object' ? payload : { value: payload }),
+          account_id: messageAccountId
+        });
+      } else {
+        io.to(tenantId).emit(event, payload);
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error('⚠️ webhook background processing failed:', err && err.message);
     }
-  }
-
-  if (event === 'new_message' && payload && payload.phone) {
-    const currentLead = (db && typeof db.findLeadByPhone === 'function')
-      ? await db.findLeadByPhone(payload.phone, tenantId, messageAccountId).catch(() => null)
-      : null;
-    if (currentLead) {
-      await emitLeadUpdatedScoped(tenantId, currentLead);
-      await emitNewMessageScoped(tenantId, currentLead, payload);
-    }
-  } else if (event === 'qr_code') {
-    // Account-aware QR delivery: include account_id so the UI can route the QR to the right card.
-    io.to(tenantId).emit('qr_code', {
-      qr: (payload && (payload.qr || payload)) || null,
-      account_id: messageAccountId
-    });
-  } else if (event === 'ready' || event === 'authenticated' || event === 'auth_failure' || event === 'account_restored') {
-    io.to(tenantId).emit(event, {
-      ...(payload && typeof payload === 'object' ? payload : { value: payload }),
-      account_id: messageAccountId
-    });
-  } else {
-    io.to(tenantId).emit(event, payload);
-  }
-  res.json({ success: true });
+  });
 }));
 
 // ═══════════════════════════════════════════════════════════════

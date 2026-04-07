@@ -257,8 +257,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
     try {
       lastSilentRefreshAtRef.current = Date.now();
       const data = await CrmService.getLeads(dateRange);
-      setLeads(data);
-      leadsRef.current = data;
+      // Merge instead of overwrite: if a lead has an optimistic local state
+      // that's strictly newer than what the server returned (e.g. unread just
+      // cleared), preserve the local copy. Otherwise the silent poll would
+      // bounce the badge back for ~10 seconds until the server caught up.
+      setLeads(prev => {
+        if (!Array.isArray(prev) || prev.length === 0) {
+          leadsRef.current = data;
+          return data;
+        }
+        const prevById = new Map(prev.map(l => [l.id, l]));
+        const merged = data.map(serverLead => {
+          const local = prevById.get(serverLead.id);
+          if (!local) return serverLead;
+          const localUpdatedAt = Date.parse(String((local as any).updated_at || (local as any).last_read_at || ''));
+          const serverUpdatedAt = Date.parse(String((serverLead as any).updated_at || (serverLead as any).last_read_at || ''));
+          // If local copy is strictly newer, keep it (optimistic state).
+          if (Number.isFinite(localUpdatedAt) && Number.isFinite(serverUpdatedAt) && localUpdatedAt > serverUpdatedAt) {
+            return local;
+          }
+          return serverLead;
+        });
+        leadsRef.current = merged;
+        return merged;
+      });
     } catch (error) {
       console.error('❌ Silent leads refresh failed:', error);
     }
