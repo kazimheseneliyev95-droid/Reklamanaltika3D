@@ -1370,6 +1370,28 @@ async function bootWorker() {
         }
 
         try {
+            // Self-heal: any tenant with creds in baileys_auth_multi but missing
+            // a whatsapp_accounts row (or missing account_id on the creds row)
+            // gets recovered here BEFORE we list authenticated accounts. This
+            // is the rescue path for installs where the migration auto-create
+            // step didn't run.
+            try {
+                var orphanTenants = await db.pool.query(
+                    "SELECT DISTINCT tenant_id FROM baileys_auth_multi WHERE id = 'creds'"
+                );
+                for (var t = 0; t < orphanTenants.rows.length; t++) {
+                    var orphanTid = orphanTenants.rows[t].tenant_id;
+                    if (!orphanTid || orphanTid === 'admin') continue;
+                    if (typeof db.healWhatsAppAccountsForTenant === 'function') {
+                        await db.healWhatsAppAccountsForTenant(orphanTid).catch(function (e) {
+                            console.warn('⚠️ heal failed for ' + orphanTid + ': ' + e.message);
+                        });
+                    }
+                }
+            } catch (healErr) {
+                console.warn('⚠️ Worker self-heal scan failed:', healErr.message);
+            }
+
             var activeAccounts = await getAllAuthenticatedAccounts(db.pool);
             console.log('🤖 Found ' + activeAccounts.length + ' active WhatsApp accounts. Booting...');
             for (var i = 0; i < activeAccounts.length; i++) {

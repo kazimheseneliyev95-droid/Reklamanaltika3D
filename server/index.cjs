@@ -3081,6 +3081,27 @@ app.get('/api/whatsapp/accounts', requireTenantAuth, asyncHandler(async (req, re
   if (!process.env.DATABASE_URL || typeof db.listWhatsAppAccounts !== 'function') {
     return res.status(503).json({ error: 'Database not configured' });
   }
+  // Self-heal: if this tenant has live Baileys creds but no whatsapp_accounts
+  // row (e.g. migration auto-create skipped them), recover here. This makes the
+  // existing WhatsApp connection visible again WITHOUT requiring a re-scan.
+  let healed = null;
+  try {
+    if (typeof db.healWhatsAppAccountsForTenant === 'function') {
+      healed = await db.healWhatsAppAccountsForTenant(req.tenantId);
+    }
+  } catch (e) {
+    console.warn('⚠️ heal failed for', req.tenantId, ':', e.message);
+  }
+
+  // If we just healed a tenant with existing creds, kick the worker to start
+  // its session so the live status flips to "connected" immediately.
+  if (healed && healed.healed && healed.id) {
+    fetchJsonWithRetry(`http://localhost:4001/api/internal/start/${encodeURIComponent(req.tenantId)}/${encodeURIComponent(healed.id)}`, {
+      method: 'POST',
+      headers: safeInternalHeaders()
+    }, { retries: 0, timeoutMs: 3000 }).catch(() => { });
+  }
+
   const [accounts, liveSessions, limit] = await Promise.all([
     db.listWhatsAppAccounts(req.tenantId),
     fetchWorkerStatusForTenant(req.tenantId),

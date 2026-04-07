@@ -3009,6 +3009,104 @@ function normalizeWhatsAppPhone(raw) {
 }
 
 /**
+ * Self-healing: if a tenant has live Baileys credentials in baileys_auth_multi
+ * but no whatsapp_accounts row (e.g. because the migration auto-create step
+ * failed silently), create the default row and re-link the existing creds to
+ * it. Idempotent — safe to call on every request.
+ *
+ * This is the rescue path that prevents existing WhatsApp connections from
+ * "disappearing" after the multi-WA migration runs.
+ */
+async function healWhatsAppAccountsForTenant(tenantId) {
+    if (!tenantId || tenantId === 'admin') return null;
+
+    // 1. Already has a healthy whatsapp_accounts row? Make sure baileys_auth_multi
+    //    rows are linked to it (in case backfill missed them).
+    const existingRow = await pool.query(
+        `SELECT id FROM whatsapp_accounts
+         WHERE tenant_id = $1 AND deleted_at IS NULL
+         ORDER BY is_default DESC, created_at ASC
+         LIMIT 1`,
+        [tenantId]
+    );
+    if (existingRow.rowCount > 0) {
+        const accountId = existingRow.rows[0].id;
+        // Backfill any orphan creds rows
+        try {
+            await pool.query(
+                'UPDATE baileys_auth_multi SET account_id = $1 WHERE tenant_id = $2 AND account_id IS NULL',
+                [accountId, tenantId]
+            );
+        } catch { }
+        return { id: accountId, healed: false };
+    }
+
+    // 2. No row in whatsapp_accounts. Check if there are existing creds in baileys_auth_multi.
+    let credsRow = null;
+    try {
+        const credsRes = await pool.query(
+            "SELECT account_id FROM baileys_auth_multi WHERE tenant_id = $1 AND id = 'creds' LIMIT 1",
+            [tenantId]
+        );
+        credsRow = credsRes.rows[0] || null;
+    } catch { }
+
+    if (!credsRow) {
+        // No creds either — nothing to heal. The user will see an empty UI and
+        // can manually create a new account if they want.
+        return null;
+    }
+
+    // 3. Creds exist but no whatsapp_accounts row → recover.
+    //    If the creds row already has an account_id (from a partial backfill),
+    //    create the whatsapp_accounts row WITH that exact id so the link is
+    //    preserved. Otherwise generate a new id and backfill.
+    const existingAccountId = credsRow.account_id;
+    let healedAccountId = null;
+
+    if (existingAccountId) {
+        // Try to insert with the existing UUID. ON CONFLICT (id) DO NOTHING in case
+        // another concurrent request raced us.
+        try {
+            const r = await pool.query(
+                `INSERT INTO whatsapp_accounts (id, tenant_id, label, status, is_default, last_connected_at)
+                 VALUES ($1, $2, 'Əsas WhatsApp', 'connected', true, NOW())
+                 ON CONFLICT (id) DO NOTHING
+                 RETURNING id`,
+                [existingAccountId, tenantId]
+            );
+            healedAccountId = r.rows[0]?.id || existingAccountId;
+        } catch (e) {
+            console.warn(`⚠️ heal: failed to insert with existing account_id (${e.message})`);
+        }
+    }
+
+    if (!healedAccountId) {
+        // Either no existing account_id, or insert above failed — generate a new one.
+        try {
+            const r = await pool.query(
+                `INSERT INTO whatsapp_accounts (tenant_id, label, status, is_default, last_connected_at)
+                 VALUES ($1, 'Əsas WhatsApp', 'connected', true, NOW())
+                 RETURNING id`,
+                [tenantId]
+            );
+            healedAccountId = r.rows[0].id;
+            // Backfill all creds rows for this tenant to point to the new account.
+            await pool.query(
+                'UPDATE baileys_auth_multi SET account_id = $1 WHERE tenant_id = $2 AND account_id IS NULL',
+                [healedAccountId, tenantId]
+            );
+        } catch (e) {
+            console.error(`❌ heal: failed to create whatsapp_accounts row for ${tenantId}: ${e.message}`);
+            return null;
+        }
+    }
+
+    console.log(`♻️ Self-healed WhatsApp account for tenant ${tenantId} → ${String(healedAccountId).slice(0, 8)}`);
+    return { id: healedAccountId, healed: true };
+}
+
+/**
  * List all active (non-deleted) WhatsApp accounts for a tenant.
  */
 async function listWhatsAppAccounts(tenantId, { includeDeleted = false } = {}) {
@@ -3448,6 +3546,7 @@ module.exports = {
     finishFacebookAutoSync,
     closePool,
     // Multi-WhatsApp accounts
+    healWhatsAppAccountsForTenant,
     listWhatsAppAccounts,
     getWhatsAppAccountById,
     createWhatsAppAccount,
