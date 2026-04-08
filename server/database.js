@@ -1726,9 +1726,24 @@ async function getLeads(filters = {}, tenantId = 'admin', existingClient = null)
         }
 
         if (filters.assigneeId) {
-            query += ` AND l.assignee_id = $${paramCount}`;
-            values.push(filters.assigneeId);
-            paramCount++;
+            // Stage-aware visibility: if the caller passes a list of "shared"
+            // stage IDs, the operator should also see leads in those stages
+            // even when they're not the assignee. This is how the team inbox
+            // works — every operator sees the "Yeni" column but only their
+            // own leads in subsequent stages.
+            const sharedStages = Array.isArray(filters.sharedStageIds)
+                ? filters.sharedStageIds.filter((s) => s != null && String(s).trim() !== '')
+                : [];
+            if (sharedStages.length > 0) {
+                query += ` AND (l.assignee_id = $${paramCount} OR l.status = ANY($${paramCount + 1}::text[]))`;
+                values.push(filters.assigneeId);
+                values.push(sharedStages);
+                paramCount += 2;
+            } else {
+                query += ` AND l.assignee_id = $${paramCount}`;
+                values.push(filters.assigneeId);
+                paramCount++;
+            }
         }
 
         if (filters.whatsappAccountId) {

@@ -1937,12 +1937,20 @@ function socketCanViewAllLeads(socket) {
   return permissions.view_all_leads !== false;
 }
 
-function socketCanAccessLead(socket, lead) {
+// Stage-aware access check. The third arg is the cached list of "shared"
+// stage ids for the tenant — if the lead is currently sitting in one of
+// those stages every operator can see it (team inbox model).
+function socketCanAccessLead(socket, lead, sharedStageIds) {
   if (!socket || !lead) return false;
   if (socketCanViewAllLeads(socket)) return true;
   const assigneeId = lead.assignee_id ? String(lead.assignee_id) : '';
   const userId = socket.userId ? String(socket.userId) : '';
-  return Boolean(assigneeId && userId && assigneeId === userId);
+  if (assigneeId && userId && assigneeId === userId) return true;
+  if (Array.isArray(sharedStageIds) && sharedStageIds.length > 0) {
+    const status = String(lead.status || '');
+    if (status && sharedStageIds.includes(status)) return true;
+  }
+  return false;
 }
 
 async function emitLeadUpdatedScoped(tenantId, lead) {
@@ -1951,12 +1959,13 @@ async function emitLeadUpdatedScoped(tenantId, lead) {
   if (sockets.length === 0) return;
 
   const canDecorate = process.env.DATABASE_URL && typeof db.getLeadById === 'function';
+  const sharedStageIds = await getSharedStageIdsForTenant(tenantId);
 
   // Run per-socket decoration in parallel — used to be a sequential for-loop,
   // which serialized N database queries on every lead update and made
   // mark-read look laggy when multiple operators were online.
   await Promise.all(sockets.map(async (socket) => {
-    if (!socketCanAccessLead(socket, lead)) {
+    if (!socketCanAccessLead(socket, lead, sharedStageIds)) {
       if (lead.id) socket.emit('lead_deleted', lead.id);
       return;
     }
@@ -1970,8 +1979,9 @@ async function emitLeadUpdatedScoped(tenantId, lead) {
 async function emitLeadDeletedScoped(tenantId, lead) {
   if (!lead || !lead.id) return;
   const sockets = await io.in(tenantId).fetchSockets().catch(() => []);
+  const sharedStageIds = await getSharedStageIdsForTenant(tenantId);
   for (const socket of sockets) {
-    if (socketCanAccessLead(socket, lead)) {
+    if (socketCanAccessLead(socket, lead, sharedStageIds)) {
       socket.emit('lead_deleted', lead.id);
     }
   }
@@ -1979,8 +1989,9 @@ async function emitLeadDeletedScoped(tenantId, lead) {
 
 async function emitNewMessageScoped(tenantId, lead, payload) {
   const sockets = await io.in(tenantId).fetchSockets().catch(() => []);
+  const sharedStageIds = await getSharedStageIdsForTenant(tenantId);
   for (const socket of sockets) {
-    if (!lead || socketCanAccessLead(socket, lead)) {
+    if (!lead || socketCanAccessLead(socket, lead, sharedStageIds)) {
       socket.emit('new_message', {
         ...(payload || {}),
         lead_id: lead?.id || payload?.lead_id || null,
@@ -1992,10 +2003,11 @@ async function emitNewMessageScoped(tenantId, lead, payload) {
 async function emitScopedLeadList(tenantId) {
   if (!db || typeof db.getLeads !== 'function') return;
   const sockets = await io.in(tenantId).fetchSockets().catch(() => []);
+  const sharedStageIds = await getSharedStageIdsForTenant(tenantId);
   await Promise.all(sockets.map(async (socket) => {
     const filters = socketCanViewAllLeads(socket)
       ? { userId: socket.userId || null }
-      : { assigneeId: socket.userId, userId: socket.userId || null };
+      : { assigneeId: socket.userId, sharedStageIds, userId: socket.userId || null };
     const leads = await db.getLeads(filters, tenantId).catch(() => []);
     socket.emit('leads_updated', leads);
   }));
@@ -2730,13 +2742,54 @@ function requirePermission(permission, errorMessage) {
   };
 }
 
+// Returns the list of stage IDs whose visibility is 'shared' for the tenant.
+// Shared stages are visible to every operator regardless of assignee, so a
+// fresh lead in the "Yeni" inbox can be picked up by anyone.
+// Cached for 30 seconds per tenant — settings rarely change at runtime.
+const _sharedStagesCache = new Map(); // tenantId -> { ids: string[], expiresAt: number }
+async function getSharedStageIdsForTenant(tenantId) {
+  if (!tenantId) return [];
+  const now = Date.now();
+  const cached = _sharedStagesCache.get(tenantId);
+  if (cached && cached.expiresAt > now) return cached.ids;
+  let ids = [];
+  try {
+    if (db && typeof db.getCRMSettings === 'function') {
+      const settings = await db.getCRMSettings(tenantId);
+      const stages = settings && Array.isArray(settings.pipelineStages) ? settings.pipelineStages : [];
+      ids = stages
+        .filter(s => s && s.visibility === 'shared')
+        .map(s => String(s.id))
+        .filter(Boolean);
+    }
+  } catch {
+    ids = [];
+  }
+  _sharedStagesCache.set(tenantId, { ids, expiresAt: now + 30_000 });
+  return ids;
+}
+
+// Cache invalidation hook so settings updates take effect immediately.
+function invalidateSharedStagesCache(tenantId) {
+  if (tenantId) _sharedStagesCache.delete(tenantId);
+  else _sharedStagesCache.clear();
+}
+
 async function loadAccessibleLead(req, leadId) {
   if (!process.env.DATABASE_URL || !db || !db.pool) return null;
   const values = [leadId, req.tenantId];
   let query = 'SELECT * FROM leads WHERE id = $1 AND tenant_id = $2';
   if (!canViewAllLeads(req)) {
-    query += ' AND assignee_id = $3';
-    values.push(req.userId);
+    // Operator can see the lead if EITHER they're assigned to it OR the
+    // lead currently sits in a stage marked as 'shared' (e.g. the inbox).
+    const sharedStageIds = await getSharedStageIdsForTenant(req.tenantId);
+    if (sharedStageIds.length > 0) {
+      query += ' AND (assignee_id = $3 OR status = ANY($4::text[]))';
+      values.push(req.userId, sharedStageIds);
+    } else {
+      query += ' AND assignee_id = $3';
+      values.push(req.userId);
+    }
   }
   const result = await db.pool.query(query, values);
   return result.rows[0] || null;
@@ -3306,6 +3359,9 @@ app.delete('/api/whatsapp/accounts/:accountId', requireTenantAuth, requirePermis
 app.get('/api/leads', requireTenantAuth, asyncHandler(async (req, res) => {
   if (typeof db.getLeads !== 'function') return res.status(503).json({ error: 'Lead storage not configured' });
   const { status, startDate, endDate, limit, offset, tzOffsetMinutes, whatsappAccountId } = req.query;
+  // For operators without view_all_leads, also include leads in shared stages
+  // (e.g. the "Yeni" inbox column) so the team can pull from a common queue.
+  const sharedStageIds = canViewAllLeads(req) ? [] : await getSharedStageIdsForTenant(req.tenantId);
   const leads = await db.getLeads({
     status,
     startDate,
@@ -3314,6 +3370,7 @@ app.get('/api/leads', requireTenantAuth, asyncHandler(async (req, res) => {
     limit: limit ? parseInt(limit) : undefined,
     offset: offset ? parseInt(offset) : undefined,
     assigneeId: canViewAllLeads(req) ? undefined : req.userId,
+    sharedStageIds,
     userId: req.userId || null,
     whatsappAccountId: whatsappAccountId || undefined,
   }, req.tenantId);
@@ -4819,6 +4876,9 @@ app.post('/api/settings', requireTenantAuth, requireAdmin, asyncHandler(async (r
   // Bust per-tenant caches (settings affect automation/notifications)
   try { tenantSettingsCache.delete(String(req.tenantId)); } catch { }
   try { tenantAutomationCache.delete(String(req.tenantId)); } catch { }
+  // Stage visibility may have flipped — clear the shared-stages cache so the
+  // very next lead access query honors the new value.
+  try { invalidateSharedStagesCache(req.tenantId); } catch { }
 
   // Optionally, let all UI clients in the tenant know settings updated so they can reload
   io.to(req.tenantId).emit('settings_updated', updatedSettings);

@@ -15,6 +15,11 @@ export interface PipelineStage {
     id: string;      // ID sent to database
     label: string;   // UI Display Name
     color: string;   // Color theme (e.g. 'blue', 'purple', 'green', 'slate')
+    // Visibility model:
+    //   'shared'   — every operator sees every lead in this stage (e.g. "Yeni" inbox)
+    //   'assigned' — operators only see leads assigned to themselves (default)
+    // Users with view_all_leads permission always see everything regardless.
+    visibility?: 'shared' | 'assigned';
 }
 
 /**
@@ -231,10 +236,12 @@ const DEFAULT_FIELDS: CustomField[] = [
 ];
 
 const DEFAULT_STAGES: PipelineStage[] = [
-    { id: 'new', label: 'Yeni', color: 'blue' },
-    { id: 'potential', label: 'Kvalifikasiya', color: 'purple' },
-    { id: 'won', label: 'Satış', color: 'green' },
-    { id: 'lost', label: 'Uğursuz', color: 'slate' },
+    // First stage is shared by default — it acts as the team inbox so any
+    // operator can see new leads and pull them onto themselves.
+    { id: 'new', label: 'Yeni', color: 'blue', visibility: 'shared' },
+    { id: 'potential', label: 'Kvalifikasiya', color: 'purple', visibility: 'assigned' },
+    { id: 'won', label: 'Satış', color: 'green', visibility: 'assigned' },
+    { id: 'lost', label: 'Uğursuz', color: 'slate', visibility: 'assigned' },
 ];
 
 const DEFAULT_RULES: AutoRule[] = [
