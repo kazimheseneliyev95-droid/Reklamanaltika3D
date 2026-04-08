@@ -79,23 +79,63 @@ export interface DuplicateLead {
 }
 
 export interface UserPermissions {
+  // ─── Lead İdarəetməsi ───────────────────────────
   view_all_leads?: boolean;
+  view_unassigned_leads?: boolean;
   create_lead?: boolean;
   delete_lead?: boolean;
   change_status?: boolean;
-  view_budget?: boolean;
-  edit_budget?: boolean;
+  edit_lead_fields?: boolean;
+  assign_lead?: boolean;
+  close_conversation?: boolean;
+  export_leads?: boolean;
+
+  // ─── Mesajlaşma ─────────────────────────────────
   send_messages?: boolean;
+  send_media?: boolean;
   use_templates?: boolean;
   delete_message_history?: boolean;
-  send_media?: boolean;
-  view_stats?: boolean;
+  view_full_chat?: boolean;
+  add_internal_notes?: boolean;
+
+  // ─── Maliyyə ────────────────────────────────────
+  view_budget?: boolean;
+  edit_budget?: boolean;
+  view_revenue?: boolean;
   view_roi?: boolean;
+
+  // ─── Statistika & Hesabatlar ───────────────────
+  view_stats?: boolean;
+  view_dashboard?: boolean;
+  view_analytics?: boolean;
   view_other_operator_stats?: boolean;
-  manage_users?: boolean;
+  view_audit_log?: boolean;
+
+  // ─── WhatsApp Hesabları ────────────────────────
+  view_whatsapp_accounts?: boolean;
+  manage_whatsapp_accounts?: boolean;
+  view_qr_code?: boolean;
+  set_default_account?: boolean;
+  view_account_phone?: boolean;
+
+  // ─── Sistem Parametrləri ───────────────────────
   manage_kanban_columns?: boolean;
   create_custom_fields?: boolean;
+  manage_routing_rules?: boolean;
+  manage_automation_rules?: boolean;
+  manage_response_templates?: boolean;
+  manage_telegram_notifications?: boolean;
+  manage_meta_integration?: boolean;
+
+  // ─── İstifadəçilər ─────────────────────────────
+  view_users_list?: boolean;
+  manage_users?: boolean;
+  manage_user_permissions?: boolean;
+
+  // ─── Təhlükəli Əməliyyatlar ────────────────────
   factory_reset?: boolean;
+  delete_all_data?: boolean;
+  clear_chat_history?: boolean;
 }
 
 export interface User {

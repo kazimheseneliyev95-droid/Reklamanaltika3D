@@ -2609,68 +2609,101 @@ const requireAdmin = (req, res, next) => {
   next();
 };
 
+// Every CRM permission flag, grouped by category. Each role gets a sensible
+// default but every flag is per-user toggleable from the UsersSettings panel.
+const ALL_PERMISSIONS_TRUE = {
+  // Lead management
+  view_all_leads: true, view_unassigned_leads: true, create_lead: true,
+  delete_lead: true, change_status: true, edit_lead_fields: true,
+  assign_lead: true, close_conversation: true, export_leads: true,
+  // Messaging
+  send_messages: true, send_media: true, use_templates: true,
+  delete_message_history: true, view_full_chat: true, add_internal_notes: true,
+  // Finance
+  view_budget: true, edit_budget: true, view_revenue: true, view_roi: true,
+  // Stats & reports
+  view_stats: true, view_dashboard: true, view_analytics: true,
+  view_other_operator_stats: true, view_audit_log: true,
+  // WhatsApp accounts
+  view_whatsapp_accounts: true, manage_whatsapp_accounts: true,
+  view_qr_code: true, set_default_account: true, view_account_phone: true,
+  // System settings
+  manage_kanban_columns: true, create_custom_fields: true,
+  manage_routing_rules: true, manage_automation_rules: true,
+  manage_response_templates: true, manage_telegram_notifications: true,
+  manage_meta_integration: true,
+  // Users
+  view_users_list: true, manage_users: true, manage_user_permissions: true,
+  // Dangerous operations
+  factory_reset: true, delete_all_data: true, clear_chat_history: true,
+};
+
 const ROLE_PERMISSION_DEFAULTS = {
-  superadmin: {
-    view_all_leads: true,
-    create_lead: true,
-    delete_lead: true,
-    change_status: true,
-    view_budget: true,
-    edit_budget: true,
-    send_messages: true,
-    view_stats: true,
-    view_other_operator_stats: true,
-    manage_users: true,
-    factory_reset: true,
-  },
-  admin: {
-    view_all_leads: true,
-    create_lead: true,
-    delete_lead: true,
-    change_status: true,
-    view_budget: true,
-    edit_budget: true,
-    send_messages: true,
-    view_stats: true,
-    view_other_operator_stats: true,
-    manage_users: true,
-  },
+  // Superadmin: full god-mode (overridden by hasPermission early-return anyway)
+  superadmin: { ...ALL_PERMISSIONS_TRUE },
+
+  // Admin: full tenant control, everything ON by default
+  admin: { ...ALL_PERMISSIONS_TRUE },
+
+  // Manager: can run the team but can't break the system
   manager: {
-    view_all_leads: true,
-    create_lead: true,
-    delete_lead: false,
-    change_status: true,
-    view_budget: true,
-    edit_budget: false,
-    send_messages: true,
-    view_stats: true,
-    view_other_operator_stats: true,
-    manage_users: false,
+    view_all_leads: true, view_unassigned_leads: true, create_lead: true,
+    delete_lead: false, change_status: true, edit_lead_fields: true,
+    assign_lead: true, close_conversation: true, export_leads: true,
+    send_messages: true, send_media: true, use_templates: true,
+    delete_message_history: false, view_full_chat: true, add_internal_notes: true,
+    view_budget: true, edit_budget: false, view_revenue: true, view_roi: true,
+    view_stats: true, view_dashboard: true, view_analytics: true,
+    view_other_operator_stats: true, view_audit_log: true,
+    view_whatsapp_accounts: true, manage_whatsapp_accounts: false,
+    view_qr_code: false, set_default_account: false, view_account_phone: true,
+    manage_kanban_columns: false, create_custom_fields: false,
+    manage_routing_rules: false, manage_automation_rules: false,
+    manage_response_templates: true, manage_telegram_notifications: false,
+    manage_meta_integration: false,
+    view_users_list: true, manage_users: false, manage_user_permissions: false,
+    factory_reset: false, delete_all_data: false, clear_chat_history: false,
   },
+
+  // Worker: front-line operator — can see/handle their own leads only
   worker: {
-    view_all_leads: false,
-    create_lead: true,
-    delete_lead: false,
-    change_status: true,
-    view_budget: false,
-    edit_budget: false,
-    send_messages: true,
-    view_stats: false,
-    view_other_operator_stats: false,
-    manage_users: false,
+    view_all_leads: false, view_unassigned_leads: true, create_lead: true,
+    delete_lead: false, change_status: true, edit_lead_fields: true,
+    assign_lead: false, close_conversation: true, export_leads: false,
+    send_messages: true, send_media: true, use_templates: true,
+    delete_message_history: false, view_full_chat: true, add_internal_notes: true,
+    view_budget: false, edit_budget: false, view_revenue: false, view_roi: false,
+    view_stats: false, view_dashboard: false, view_analytics: false,
+    view_other_operator_stats: false, view_audit_log: false,
+    view_whatsapp_accounts: false, manage_whatsapp_accounts: false,
+    view_qr_code: false, set_default_account: false, view_account_phone: false,
+    manage_kanban_columns: false, create_custom_fields: false,
+    manage_routing_rules: false, manage_automation_rules: false,
+    manage_response_templates: false, manage_telegram_notifications: false,
+    manage_meta_integration: false,
+    view_users_list: false, manage_users: false, manage_user_permissions: false,
+    factory_reset: false, delete_all_data: false, clear_chat_history: false,
   },
+
+  // Viewer: read-only, can see everything but cannot change anything
   viewer: {
-    view_all_leads: true,
-    create_lead: false,
-    delete_lead: false,
-    change_status: false,
-    view_budget: false,
-    edit_budget: false,
-    send_messages: false,
-    view_stats: false,
-    view_other_operator_stats: false,
-    manage_users: false,
-  }
+    view_all_leads: true, view_unassigned_leads: true, create_lead: false,
+    delete_lead: false, change_status: false, edit_lead_fields: false,
+    assign_lead: false, close_conversation: false, export_leads: false,
+    send_messages: false, send_media: false, use_templates: false,
+    delete_message_history: false, view_full_chat: true, add_internal_notes: false,
+    view_budget: true, edit_budget: false, view_revenue: true, view_roi: true,
+    view_stats: true, view_dashboard: true, view_analytics: true,
+    view_other_operator_stats: true, view_audit_log: false,
+    view_whatsapp_accounts: true, manage_whatsapp_accounts: false,
+    view_qr_code: false, set_default_account: false, view_account_phone: false,
+    manage_kanban_columns: false, create_custom_fields: false,
+    manage_routing_rules: false, manage_automation_rules: false,
+    manage_response_templates: false, manage_telegram_notifications: false,
+    manage_meta_integration: false,
+    view_users_list: false, manage_users: false, manage_user_permissions: false,
+    factory_reset: false, delete_all_data: false, clear_chat_history: false,
+  },
 };
 
 function getEffectivePermissions(role, permissions) {
@@ -2834,7 +2867,7 @@ app.delete('/api/users/:id', requireTenantAuth, requireAdmin, asyncHandler(async
 }));
 
 // 📋 AUDIT LOGS API (Phase 3)
-app.get('/api/audit-logs', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+app.get('/api/audit-logs', requireTenantAuth, requirePermission('view_audit_log', 'Audit log görmək icazəniz yoxdur'), asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   const logs = await db.getAuditLogs(req.tenantId, 100);
   res.json(logs);
@@ -3105,6 +3138,11 @@ app.get('/api/whatsapp/accounts', requireTenantAuth, asyncHandler(async (req, re
   if (!process.env.DATABASE_URL || typeof db.listWhatsAppAccounts !== 'function') {
     return res.status(503).json({ error: 'Database not configured' });
   }
+  // Permission gate: users without view_whatsapp_accounts get an empty list
+  // rather than a 403 — the settings page will then hide the WhatsApp section.
+  if (!hasPermission(req, 'view_whatsapp_accounts')) {
+    return res.json({ accounts: [], limit: 0, used: 0 });
+  }
   // Self-heal: if this tenant has live Baileys creds but no whatsapp_accounts
   // row (e.g. migration auto-create skipped them), recover here. This makes the
   // existing WhatsApp connection visible again WITHOUT requiring a re-scan.
@@ -3139,7 +3177,7 @@ app.get('/api/whatsapp/accounts', requireTenantAuth, asyncHandler(async (req, re
 }));
 
 // Create a new account row, then start the worker session for it (will yield a QR).
-app.post('/api/whatsapp/accounts', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+app.post('/api/whatsapp/accounts', requireTenantAuth, requirePermission('manage_whatsapp_accounts', 'WhatsApp hesabı yaratmaq icazəniz yoxdur'), asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL || typeof db.createWhatsAppAccount !== 'function') {
     return res.status(503).json({ error: 'Database not configured' });
   }
@@ -3187,7 +3225,7 @@ app.post('/api/whatsapp/accounts/:accountId/start', requireTenantAuth, asyncHand
 }));
 
 // Hard restart (kill sock + restart)
-app.post('/api/whatsapp/accounts/:accountId/restart', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+app.post('/api/whatsapp/accounts/:accountId/restart', requireTenantAuth, requirePermission('manage_whatsapp_accounts', 'WhatsApp hesabını yenidən başlatmaq icazəniz yoxdur'), asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL || typeof db.getWhatsAppAccountById !== 'function') {
     return res.status(503).json({ error: 'Database not configured' });
   }
@@ -3205,7 +3243,7 @@ app.post('/api/whatsapp/accounts/:accountId/restart', requireTenantAuth, require
 }));
 
 // Logout (clear creds, mark logged_out — keeps the row in DB so leads survive)
-app.post('/api/whatsapp/accounts/:accountId/logout', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+app.post('/api/whatsapp/accounts/:accountId/logout', requireTenantAuth, requirePermission('manage_whatsapp_accounts', 'WhatsApp hesabından çıxış icazəniz yoxdur'), asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL || typeof db.getWhatsAppAccountById !== 'function') {
     return res.status(503).json({ error: 'Database not configured' });
   }
@@ -3223,7 +3261,7 @@ app.post('/api/whatsapp/accounts/:accountId/logout', requireTenantAuth, requireA
 }));
 
 // Rename a WhatsApp account (label only — phone number is bound by Baileys)
-app.patch('/api/whatsapp/accounts/:accountId', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+app.patch('/api/whatsapp/accounts/:accountId', requireTenantAuth, requirePermission('manage_whatsapp_accounts', 'WhatsApp hesabının adını dəyişmək icazəniz yoxdur'), asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL || typeof db.renameWhatsAppAccount !== 'function') {
     return res.status(503).json({ error: 'Database not configured' });
   }
@@ -3236,7 +3274,7 @@ app.patch('/api/whatsapp/accounts/:accountId', requireTenantAuth, requireAdmin, 
 }));
 
 // Set this account as the tenant default (used for outgoing messages on non-WA leads)
-app.post('/api/whatsapp/accounts/:accountId/default', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+app.post('/api/whatsapp/accounts/:accountId/default', requireTenantAuth, requirePermission('set_default_account', 'Default hesabı dəyişmək icazəniz yoxdur'), asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL || typeof db.setDefaultWhatsAppAccount !== 'function') {
     return res.status(503).json({ error: 'Database not configured' });
   }
@@ -3246,7 +3284,7 @@ app.post('/api/whatsapp/accounts/:accountId/default', requireTenantAuth, require
 }));
 
 // Soft-delete account (leads survive; same phone re-bind auto-restores)
-app.delete('/api/whatsapp/accounts/:accountId', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+app.delete('/api/whatsapp/accounts/:accountId', requireTenantAuth, requirePermission('manage_whatsapp_accounts', 'WhatsApp hesabını silmək icazəniz yoxdur'), asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL || typeof db.softDeleteWhatsAppAccount !== 'function') {
     return res.status(503).json({ error: 'Database not configured' });
   }
@@ -3359,9 +3397,21 @@ app.put('/api/leads/:id', requireTenantAuth, asyncHandler(async (req, res) => {
     return res.status(403).json({ error: 'Büdcəni dəyişmək üçün icazəniz yoxdur' });
   }
 
+  // Editing standard lead fields (name, product_name, custom fields, ...)
+  // requires the edit_lead_fields permission. Status / value have their own
+  // dedicated checks above.
+  const editableNonStatusKeys = ['name', 'product_name', 'extra_data', 'last_message'];
+  const isEditingNonStatusField = editableNonStatusKeys.some((k) => req.body[k] !== undefined);
+  if (isEditingNonStatusField && !hasPermission(req, 'edit_lead_fields')) {
+    return res.status(403).json({ error: 'Lead məlumatlarını dəyişmək icazəniz yoxdur' });
+  }
+
   if (req.body.assignee_id !== undefined) {
     const nextAssignee = req.body.assignee_id ? String(req.body.assignee_id) : null;
-    const canReassign = req.userRole === 'admin' || req.userRole === 'superadmin' || req.userRole === 'manager';
+    // assign_lead permission grants reassignment to anyone. Self-assignment
+    // (claiming an unassigned lead) is always allowed for any operator.
+    const canReassign = hasPermission(req, 'assign_lead')
+      || req.userRole === 'admin' || req.userRole === 'superadmin' || req.userRole === 'manager';
     const assigningSelf = nextAssignee && String(req.userId || '') === nextAssignee;
     if (!canReassign && !assigningSelf) {
       return res.status(403).json({ error: 'Lead təyinatını dəyişmək icazəniz yoxdur' });
@@ -4787,7 +4837,7 @@ function maskTelegramToken(token) {
   return t.slice(0, 6) + '…' + t.slice(-4);
 }
 
-app.get('/api/telegram/config', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+app.get('/api/telegram/config', requireTenantAuth, requirePermission('manage_telegram_notifications', 'Telegram konfiqurasiyası icazəniz yoxdur'), asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   if (!db || typeof db.getTelegramIntegration !== 'function') return res.status(501).json({ error: 'Telegram integration not available' });
 
@@ -4805,7 +4855,7 @@ app.get('/api/telegram/config', requireTenantAuth, requireAdmin, asyncHandler(as
   });
 }));
 
-app.post('/api/telegram/config', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+app.post('/api/telegram/config', requireTenantAuth, requirePermission('manage_telegram_notifications', 'Telegram konfiqurasiyası icazəniz yoxdur'), asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   if (!db || typeof db.upsertTelegramIntegration !== 'function' || typeof db.getTelegramIntegration !== 'function') {
     return res.status(501).json({ error: 'Telegram integration not available' });
@@ -5607,7 +5657,7 @@ async function subscribeMetaWebhooks({ pageId, pageAccessToken, igBusinessId }) 
   return out;
 }
 
-app.post('/api/meta/discover', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+app.post('/api/meta/discover', requireTenantAuth, requirePermission('manage_meta_integration', 'Meta inteqrasiyası icazəniz yoxdur'), asyncHandler(async (req, res) => {
   const token = String(req.body?.token || '').trim();
   if (!token) return res.status(400).json({ error: 'token is required' });
   const ex = await exchangeForLongLivedUserToken(token).catch(() => ({ access_token: token, expires_in: null, exchanged: false }));
@@ -5615,7 +5665,7 @@ app.post('/api/meta/discover', requireTenantAuth, requireAdmin, asyncHandler(asy
   res.json({ pages, exchanged: Boolean(ex.exchanged), expires_in: ex.expires_in });
 }));
 
-app.post('/api/meta/connect', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+app.post('/api/meta/connect', requireTenantAuth, requirePermission('manage_meta_integration', 'Meta inteqrasiyası icazəniz yoxdur'), asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   if (!db || typeof db.upsertMetaPage !== 'function') return res.status(501).json({ error: 'Meta integration is unavailable' });
 
@@ -5977,7 +6027,7 @@ app.get('/api/facebook-import/insights', requireTenantAuth, requireAdmin, asyncH
   res.json(payload);
 }));
 
-app.get('/api/dashboard/combined', requireTenantAuth, requirePermission('view_stats', 'Dashboard görmək icazəniz yoxdur'), asyncHandler(async (req, res) => {
+app.get('/api/dashboard/combined', requireTenantAuth, requirePermission('view_dashboard', 'Dashboard görmək icazəniz yoxdur'), asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
 
   const cacheKey = JSON.stringify({
