@@ -1791,6 +1791,24 @@ db.initDb()
       } catch (e) {
         console.warn('⚠️ Failed to start Facebook auto sync:', e.message);
       }
+
+      // Danger zone archive purge: every 12 hours, hard-delete soft-deleted
+      // leads/messages whose deleted_at is older than 30 days. Runs once at
+      // boot (with a 30s delay) so a long-archived tenant doesn't sit on
+      // stale data after a deploy.
+      try {
+        if (HAS_DATABASE && db && typeof db.purgeExpiredSoftDeletes === 'function') {
+          setTimeout(() => {
+            db.purgeExpiredSoftDeletes(30).catch((e) => console.warn('⚠️ purge initial run failed:', e && e.message));
+          }, 30 * 1000);
+          setInterval(() => {
+            db.purgeExpiredSoftDeletes(30).catch((e) => console.warn('⚠️ purge interval run failed:', e && e.message));
+          }, 12 * 60 * 60 * 1000);
+          console.log('🧹 Danger-zone archive purge: enabled (12h interval, 30d retention)');
+        }
+      } catch (e) {
+        console.warn('⚠️ Failed to start archive purge:', e.message);
+      }
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     });
   });
@@ -2778,7 +2796,9 @@ function invalidateSharedStagesCache(tenantId) {
 async function loadAccessibleLead(req, leadId) {
   if (!process.env.DATABASE_URL || !db || !db.pool) return null;
   const values = [leadId, req.tenantId];
-  let query = 'SELECT * FROM leads WHERE id = $1 AND tenant_id = $2';
+  // Soft-deleted leads are part of the danger-zone archive — they only appear
+  // through dedicated archive endpoints, never the regular lead access path.
+  let query = 'SELECT * FROM leads WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL';
   if (!canViewAllLeads(req)) {
     // Operator can see the lead if EITHER they're assigned to it OR the
     // lead currently sits in a stage marked as 'shared' (e.g. the inbox).
@@ -3665,42 +3685,351 @@ app.post('/api/leads/:id/notes', requireTenantAuth, asyncHandler(async (req, res
   res.status(201).json({ success: true });
 }));
 
-// 🗑️ FACTORY RESET — delete ALL leads and messages FOR TENANT
-// NOTE: This route MUST appear before /api/leads/:id to avoid being shadowed.
-app.delete('/api/leads/all', requireTenantAuth, asyncHandler(async (req, res) => {
-  if (req.userRole !== 'superadmin') {
-    return res.status(403).json({ error: 'alnız SuperAdmin məlumatları sıfırlaya bilər' });
+// ═══════════════════════════════════════════════════════════════
+// 🛡️  DANGER ZONE — approval queue + 30-day soft-delete archive
+// ═══════════════════════════════════════════════════════════════
+//
+// Workflow:
+//   1. Any user with the relevant permission (factory_reset / delete_all_data /
+//      clear_chat_history) calls POST /api/danger-actions to REQUEST the action.
+//   2. The request lands in danger_action_requests with status='pending' and a
+//      socket event notifies all superadmins.
+//   3. A superadmin reviews and either:
+//        - approves → backend executes a SOFT delete (sets deleted_at)
+//          and stores archive_expires_at = NOW + 30 days
+//        - rejects → request is marked rejected with a reason
+//   4. For 30 days the superadmin can restore everything via
+//      POST /api/danger-actions/:id/restore
+//   5. After 30 days a background job hard-deletes the archived rows.
+//
+// The original "DELETE /api/leads/all" endpoint is kept for backward
+// compatibility but it now creates a pending request instead of deleting.
+
+const DANGER_ARCHIVE_RETENTION_DAYS = 30;
+
+function isSuperadminUser(req) {
+  return req && req.userRole === 'superadmin';
+}
+
+// Resolve which permission a given danger action_type requires.
+function permissionForDangerAction(actionType) {
+  if (actionType === 'factory_reset') return 'factory_reset';
+  if (actionType === 'delete_all_data') return 'delete_all_data';
+  if (actionType === 'clear_chat_history') return 'clear_chat_history';
+  return null;
+}
+
+// Step 1 — User submits a request. Any user with the matching permission can
+// submit, but the action does NOT run yet.
+app.post('/api/danger-actions', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL || typeof db.createDangerActionRequest !== 'function') {
+    return res.status(503).json({ error: 'Database not configured' });
   }
-  const { password } = req.body;
-
-  let storedPasswordHash = '';
-  if (HAS_DATABASE && db.pool) {
-    const user = await db.pool.query('SELECT password_hash FROM users WHERE id = $1', [req.userId]);
-    if (!user.rows[0]) return res.status(404).json({ error: 'İstifadəçi tapılmadı' });
-    storedPasswordHash = user.rows[0].password_hash;
-  } else {
-    storedPasswordHash = String(process.env.ADMIN_PASSWORD || '');
+  const actionType = String(req.body?.actionType || '').trim();
+  const reason = req.body?.reason ? String(req.body.reason).slice(0, 1200) : null;
+  const requiredPermission = permissionForDangerAction(actionType);
+  if (!requiredPermission) {
+    return res.status(400).json({ error: 'Naməlum əməliyyat növü' });
+  }
+  if (!hasPermission(req, requiredPermission)) {
+    return res.status(403).json({ error: 'Bu əməliyyatı tələb etmək icazəniz yoxdur' });
   }
 
-  const validPass = await verifyPassword(password, storedPasswordHash);
-  if (!validPass) return res.status(401).json({ error: 'Şifrə yalnışdır' });
-
-  if (typeof db.deleteAllLeads !== 'function') return res.status(503).json({ error: 'Lead storage not configured' });
-  await db.deleteAllLeads(req.tenantId);
-  io.to(req.tenantId).emit('leads_reset', {});
+  const created = await db.createDangerActionRequest({
+    tenantId: req.tenantId,
+    requesterUserId: req.userId,
+    requesterUsername: req.username || null,
+    actionType,
+    payload: { source: 'web' },
+    reason,
+  });
 
   if (typeof db.logAuditAction === 'function') {
-    await db.logAuditAction({
+    db.logAuditAction({
       tenantId: req.tenantId,
       userId: req.userId,
-      action: 'FACTORY_RESET',
-      entityType: 'tenant',
-      entityId: null,
-      details: {}
-    });
+      action: 'DANGER_ACTION_REQUESTED',
+      entityType: 'danger_action_request',
+      entityId: created?.id || null,
+      details: { actionType, reason }
+    }).catch(() => { });
   }
 
-  res.json({ success: true, message: 'All leads and messages deleted for tenant' });
+  // Notify every connected superadmin socket so they see the pending count update.
+  try {
+    io.emit('danger_action:new', {
+      id: created?.id || null,
+      tenantId: req.tenantId,
+      actionType,
+      requester: req.username || req.userId,
+      created_at: created?.created_at || new Date().toISOString(),
+    });
+  } catch { }
+
+  res.status(202).json({
+    success: true,
+    request: created,
+    message: 'Sorğunuz super-admin təsdiqini gözləyir.'
+  });
+}));
+
+// Step 2a — Superadmin lists pending requests (across all tenants by default).
+app.get('/api/danger-actions', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL || typeof db.listDangerActionRequests !== 'function') {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+  const isSuper = isSuperadminUser(req);
+  const status = req.query.status ? String(req.query.status) : null;
+  // Non-superadmins only see their own tenant's requests.
+  const filters = isSuper
+    ? { status, limit: 200 }
+    : { tenantId: req.tenantId, status, limit: 50 };
+  const rows = await db.listDangerActionRequests(filters);
+  res.json({ requests: rows });
+}));
+
+// Step 2b — Superadmin approves and the action EXECUTES (soft delete).
+app.post('/api/danger-actions/:id/approve', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!isSuperadminUser(req)) {
+    return res.status(403).json({ error: 'Yalnız super-admin təsdiqləyə bilər' });
+  }
+  if (!process.env.DATABASE_URL || typeof db.getDangerActionRequest !== 'function') {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+
+  const request = await db.getDangerActionRequest(req.params.id);
+  if (!request) return res.status(404).json({ error: 'Sorğu tapılmadı' });
+  if (request.status !== 'pending') {
+    return res.status(409).json({ error: `Bu sorğu artıq ${request.status} statusundadır` });
+  }
+
+  const targetTenant = request.tenant_id;
+  const actionType = request.action_type;
+
+  let executionResult = null;
+  let executionError = null;
+
+  try {
+    if (actionType === 'factory_reset' || actionType === 'delete_all_data') {
+      executionResult = await db.deleteAllLeads(targetTenant);
+    } else if (actionType === 'clear_chat_history') {
+      executionResult = await db.clearAllChatHistory(targetTenant);
+    } else {
+      throw new Error(`Unsupported action_type: ${actionType}`);
+    }
+  } catch (e) {
+    executionError = e && e.message ? e.message : String(e);
+  }
+
+  const now = new Date();
+  const archiveExpiresAt = new Date(now.getTime() + DANGER_ARCHIVE_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+
+  const updated = await db.updateDangerActionRequest(request.id, {
+    status: executionError ? 'failed' : 'executed',
+    decided_by_user_id: req.userId,
+    decided_by_username: req.username || null,
+    decided_at: now,
+    executed_at: executionError ? null : now,
+    archive_expires_at: executionError ? null : archiveExpiresAt,
+    affected_count: executionResult ? (executionResult.affectedLeads ?? executionResult.affectedMessages ?? 0) : 0,
+    last_error: executionError,
+  });
+
+  if (typeof db.logAuditAction === 'function') {
+    db.logAuditAction({
+      tenantId: targetTenant,
+      userId: req.userId,
+      action: executionError ? 'DANGER_ACTION_FAILED' : 'DANGER_ACTION_APPROVED',
+      entityType: 'danger_action_request',
+      entityId: request.id,
+      details: { actionType, requesterUserId: request.requester_user_id, error: executionError }
+    }).catch(() => { });
+  }
+
+  if (!executionError) {
+    // Tell every UI client in the affected tenant to wipe their local cache.
+    try { io.to(targetTenant).emit('leads_reset', {}); } catch { }
+  }
+
+  if (executionError) {
+    return res.status(500).json({ error: executionError, request: updated });
+  }
+  res.json({ success: true, request: updated, archiveExpiresAt });
+}));
+
+// Step 2c — Superadmin rejects.
+app.post('/api/danger-actions/:id/reject', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!isSuperadminUser(req)) {
+    return res.status(403).json({ error: 'Yalnız super-admin rədd edə bilər' });
+  }
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  const request = await db.getDangerActionRequest(req.params.id);
+  if (!request) return res.status(404).json({ error: 'Sorğu tapılmadı' });
+  if (request.status !== 'pending') {
+    return res.status(409).json({ error: `Bu sorğu artıq ${request.status} statusundadır` });
+  }
+  const reason = req.body?.reason ? String(req.body.reason).slice(0, 1200) : null;
+  const updated = await db.updateDangerActionRequest(request.id, {
+    status: 'rejected',
+    decided_by_user_id: req.userId,
+    decided_by_username: req.username || null,
+    decided_at: new Date(),
+    decision_reason: reason,
+  });
+  if (typeof db.logAuditAction === 'function') {
+    db.logAuditAction({
+      tenantId: request.tenant_id,
+      userId: req.userId,
+      action: 'DANGER_ACTION_REJECTED',
+      entityType: 'danger_action_request',
+      entityId: request.id,
+      details: { actionType: request.action_type, reason }
+    }).catch(() => { });
+  }
+  res.json({ success: true, request: updated });
+}));
+
+// Step 3 — Superadmin restores from archive (within the 30-day window).
+app.post('/api/danger-actions/:id/restore', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!isSuperadminUser(req)) {
+    return res.status(403).json({ error: 'Yalnız super-admin bərpa edə bilər' });
+  }
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  const request = await db.getDangerActionRequest(req.params.id);
+  if (!request) return res.status(404).json({ error: 'Sorğu tapılmadı' });
+  if (request.status !== 'executed') {
+    return res.status(409).json({ error: 'Yalnız icra olunmuş sorğular bərpa edilə bilər' });
+  }
+  if (!request.executed_at) {
+    return res.status(409).json({ error: 'İcra zamanı tapılmadı' });
+  }
+  const expiresAt = request.archive_expires_at ? new Date(request.archive_expires_at) : null;
+  if (expiresAt && Date.now() > expiresAt.getTime()) {
+    return res.status(410).json({ error: '30 günlük arxiv müddəti bitib — bərpa mümkün deyil' });
+  }
+
+  const result = await db.restoreSoftDeletedSince(request.tenant_id, request.executed_at);
+
+  const updated = await db.updateDangerActionRequest(request.id, {
+    status: 'cancelled',
+    decision_reason: 'Restored from archive by super-admin',
+  });
+
+  if (typeof db.logAuditAction === 'function') {
+    db.logAuditAction({
+      tenantId: request.tenant_id,
+      userId: req.userId,
+      action: 'DANGER_ACTION_RESTORED',
+      entityType: 'danger_action_request',
+      entityId: request.id,
+      details: { restoredLeads: result.restoredLeads, restoredMessages: result.restoredMessages }
+    }).catch(() => { });
+  }
+
+  // Tell the affected tenant to reload their lead list.
+  try { io.to(request.tenant_id).emit('leads_reset', {}); } catch { }
+
+  res.json({
+    success: true,
+    request: updated,
+    restoredLeads: result.restoredLeads,
+    restoredMessages: result.restoredMessages,
+  });
+}));
+
+// Step 4 — Superadmin manually purges the archive (skips the 30-day wait).
+app.delete('/api/danger-actions/:id/purge', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!isSuperadminUser(req)) {
+    return res.status(403).json({ error: 'Yalnız super-admin arxivi silə bilər' });
+  }
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  const request = await db.getDangerActionRequest(req.params.id);
+  if (!request) return res.status(404).json({ error: 'Sorğu tapılmadı' });
+  if (request.status !== 'executed') {
+    return res.status(409).json({ error: 'Yalnız icra olunmuş sorğular silinə bilər' });
+  }
+  // Hard-delete every soft-deleted row that this request created. We use the
+  // executed_at timestamp as the cutoff so we don't accidentally hard-delete
+  // rows from a different danger action.
+  const executedAt = request.executed_at;
+  if (!executedAt) return res.status(409).json({ error: 'İcra zamanı tapılmadı' });
+  const cutoff = new Date(new Date(executedAt).getTime() - 5000);
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      'DELETE FROM messages WHERE tenant_id = $1 AND deleted_at IS NOT NULL AND deleted_at >= $2',
+      [request.tenant_id, cutoff]
+    );
+    await client.query(
+      'DELETE FROM leads WHERE tenant_id = $1 AND deleted_at IS NOT NULL AND deleted_at >= $2',
+      [request.tenant_id, cutoff]
+    );
+    await client.query('COMMIT');
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch { }
+    return res.status(500).json({ error: e.message || 'Purge failed' });
+  } finally {
+    client.release();
+  }
+
+  const updated = await db.updateDangerActionRequest(request.id, {
+    archive_expires_at: new Date(),
+    decision_reason: 'Archive purged by super-admin',
+  });
+
+  if (typeof db.logAuditAction === 'function') {
+    db.logAuditAction({
+      tenantId: request.tenant_id,
+      userId: req.userId,
+      action: 'DANGER_ACTION_PURGED',
+      entityType: 'danger_action_request',
+      entityId: request.id,
+      details: {}
+    }).catch(() => { });
+  }
+
+  res.json({ success: true, request: updated });
+}));
+
+// Lightweight stats — pending count + archive summary for the current tenant.
+app.get('/api/danger-actions/summary', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL || typeof db.listDangerActionRequests !== 'function') {
+    return res.json({ pending: 0, archivedLeads: 0, archivedMessages: 0 });
+  }
+  const isSuper = isSuperadminUser(req);
+  const filters = isSuper
+    ? { status: 'pending', limit: 500 }
+    : { tenantId: req.tenantId, status: 'pending', limit: 50 };
+  const pending = await db.listDangerActionRequests(filters);
+  const summary = isSuper ? { archivedLeads: 0, archivedMessages: 0 } : await db.getActiveArchiveSummary(req.tenantId);
+  res.json({ pending: pending.length, ...summary });
+}));
+
+// Legacy: DELETE /api/leads/all now creates a request instead of deleting.
+// Frontend code that still calls this old endpoint will get a 202 with the
+// pending request payload — easier than breaking older deployments.
+app.delete('/api/leads/all', requireTenantAuth, asyncHandler(async (req, res) => {
+  if (!hasPermission(req, 'factory_reset')) {
+    return res.status(403).json({ error: 'Factory reset icazəniz yoxdur' });
+  }
+  if (typeof db.createDangerActionRequest !== 'function') {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+  const created = await db.createDangerActionRequest({
+    tenantId: req.tenantId,
+    requesterUserId: req.userId,
+    requesterUsername: req.username || null,
+    actionType: 'factory_reset',
+    payload: { source: 'legacy_delete_all_endpoint' },
+    reason: 'Legacy DELETE /api/leads/all',
+  });
+  res.status(202).json({
+    success: true,
+    pending: true,
+    request: created,
+    message: 'Factory reset sorğusu super-admin təsdiqinə göndərildi.'
+  });
 }));
 
 app.delete('/api/leads/:id', requireTenantAuth, asyncHandler(async (req, res) => {

@@ -20,6 +20,7 @@ import {
   X,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { DangerActionRequests } from '../components/DangerActionRequests';
 
 type TenantStatus = {
   tenant_id: string;
@@ -352,6 +353,10 @@ export default function SuperAdminDashboard() {
           <StatCard icon={<Users className="w-4 h-4 text-emerald-400" />} label="Aktiv istifadəçi" value={globalMetrics.totalUsers} />
           <StatCard icon={<Server className="w-4 h-4 text-violet-400" />} label="Aktiv WhatsApp" value={globalMetrics.connectedWA} />
         </div>
+
+        {/* Danger zone approval queue — pending requests from operators that need
+            super-admin approval. Shows above tenants so it can't be missed. */}
+        <DangerActionRequests />
 
         <div className="grid grid-cols-1 xl:grid-cols-[1.25fr_0.75fr] gap-6">
           <section className="rounded-3xl border border-slate-800 bg-slate-900/60 shadow-2xl shadow-black/20 overflow-hidden">

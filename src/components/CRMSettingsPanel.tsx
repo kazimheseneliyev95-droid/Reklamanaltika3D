@@ -16,85 +16,105 @@ import { CustomFieldsTab } from './settings/crm/CustomFieldsTab';
 import { NotificationsTab } from './settings/crm/NotificationsTab';
 import { DashboardTab } from './settings/crm/DashboardTab';
 
-// ─── Factory Reset Button ─────────────────────────────────────────────────────
-function FormatButton({ serverUrl, onClose }: { serverUrl: string; onClose: () => void }) {
+// ─── Factory Reset Button (now creates a super-admin approval request) ─────
+function FormatButton({ serverUrl }: { serverUrl: string; onClose: () => void }) {
   const { currentUser } = useAppStore();
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [password, setPassword] = useState('');
+  const [reason, setReason] = useState('');
   const [error, setError] = useState('');
+  const [submitted, setSubmitted] = useState(false);
 
   if (currentUser?.permissions?.factory_reset === false && currentUser?.role !== 'superadmin') {
     return null;
   }
 
-  const handleReset = async () => {
-    if (!password) {
-      setError('Şifrə daxil edilməlidir');
-      return;
-    }
-
+  const handleSubmitRequest = async () => {
     setBusy(true);
     setError('');
     try {
-      if (serverUrl) {
-        const res = await fetch(`${serverUrl}/api/leads/all`, {
-          method: 'DELETE',
-          headers: {
-            'Content-Type': 'application/json',
-            ...CrmService['getAuthHeaders'](),
-          },
-          body: JSON.stringify({ password }),
-        });
-
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Silinmə zamanı xəta baş verdi');
-      }
-
-      Object.keys(localStorage).forEach((k) => {
-        if (k.includes('lead') || k.includes('crm')) localStorage.removeItem(k);
+      if (!serverUrl) throw new Error('Server URL yoxdur');
+      const res = await fetch(`${serverUrl}/api/danger-actions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...CrmService['getAuthHeaders']() },
+        body: JSON.stringify({ actionType: 'factory_reset', reason: reason.trim() || null }),
       });
-
-      onClose();
-      window.location.reload();
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'Sorğu göndərilmədi');
+      setSubmitted(true);
     } catch (e: any) {
-      setError(e.message || 'Silinmə uğursuz oldu');
+      setError(e?.message || 'Sorğu uğursuz oldu');
     } finally {
       setBusy(false);
     }
   };
+
+  if (submitted) {
+    return (
+      <div className="rounded-xl border border-emerald-900/40 bg-emerald-950/15 p-4 space-y-2">
+        <p className="text-xs text-emerald-200 font-bold flex items-center gap-2">
+          <AlertTriangle className="w-4 h-4 shrink-0" />
+          Sorğunuz super-admin təsdiqini gözləyir
+        </p>
+        <p className="text-[11px] text-emerald-300/70 leading-relaxed">
+          Super-admin sorğunu təsdiqləyəndə bütün leadlər və mesajlar
+          <strong className="text-emerald-200"> 30 gün arxivə </strong> daşınacaq.
+          Bu müddət ərzində super-admin istənilən an bərpa edə bilər.
+          30 gündən sonra məlumatlar avtomatik silinir.
+        </p>
+        <button
+          onClick={() => {
+            setSubmitted(false);
+            setConfirm(false);
+            setReason('');
+          }}
+          className="w-full mt-2 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-200 text-xs font-bold rounded-lg"
+        >
+          Bağla
+        </button>
+      </div>
+    );
+  }
 
   if (confirm) {
     return (
       <div className="rounded-xl border border-red-900/40 bg-red-950/15 p-4 space-y-3">
         <p className="text-xs text-red-300 font-semibold flex items-center gap-2">
           <AlertTriangle className="w-4 h-4 shrink-0" />
-          Bütün leadlar və yazışmalar silinəcək. Geri qaytarıla bilməz.
+          Bu əməliyyat dərhal icra OLUNMUR
+        </p>
+        <p className="text-[11px] text-red-300/80 leading-relaxed">
+          Sorğunuz <strong className="text-red-200">super-admin təsdiqinə</strong> göndəriləcək.
+          Təsdiqdən sonra məlumatlar 30 günlük arxivə daşınacaq və super-admin
+          tərəfindən bərpa edilə bilər. Heç bir məlumat dərhal silinməz.
         </p>
 
         <div>
-          <input
-            type="password"
-            placeholder="Təsdiq üçün şifrənizi yazın"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-red-500 placeholder:text-slate-500"
+          <label className="block text-[10px] uppercase font-bold text-red-300/70 mb-1">
+            Səbəb (super-admin görəcək)
+          </label>
+          <textarea
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="Niyə bu əməliyyat lazımdır?"
+            rows={3}
+            className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-red-500 placeholder:text-slate-500 resize-none"
           />
           {error ? <p className="text-[10px] text-red-300 mt-1">{error}</p> : null}
         </div>
 
         <div className="flex gap-2">
           <button
-            onClick={handleReset}
-            disabled={busy || !password}
+            onClick={handleSubmitRequest}
+            disabled={busy}
             className="flex-1 py-2 bg-red-600 hover:bg-red-500 text-white text-xs font-bold rounded-lg transition-colors disabled:opacity-50"
           >
-            {busy ? 'Silinir...' : 'Bəli, sil!'}
+            {busy ? 'Göndərilir...' : 'Sorğu göndər'}
           </button>
           <button
             onClick={() => {
               setConfirm(false);
-              setPassword('');
+              setReason('');
               setError('');
             }}
             className="flex-1 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-200 text-xs font-bold rounded-lg transition-colors"
@@ -112,7 +132,7 @@ function FormatButton({ serverUrl, onClose }: { serverUrl: string; onClose: () =
       className="w-full py-2 rounded-lg text-xs font-semibold text-red-300 hover:text-red-200 border border-red-900/30 hover:border-red-800/60 bg-transparent hover:bg-red-950/20 flex items-center justify-center gap-2 transition-colors"
     >
       <AlertTriangle className="w-4 h-4" />
-      Formatla (Bütün Datanı Sil)
+      Formatla (super-admin təsdiqi tələb edir)
     </button>
   );
 }

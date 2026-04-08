@@ -1036,6 +1036,67 @@ async function migrateMultiWhatsAppAccounts() {
                     ON leads(phone, tenant_id)
                     WHERE whatsapp_account_id IS NULL;
             `
+        },
+        // ═══════════════════════════════════════════════════════════
+        // DANGER ZONE: soft-delete + 30-day archive + approval requests
+        // ═══════════════════════════════════════════════════════════
+        {
+            name: 'leads.deleted_at column (soft-delete archive)',
+            sql: "ALTER TABLE leads ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP;"
+        },
+        {
+            name: 'idx_leads_active (partial — exclude soft-deleted)',
+            sql: "CREATE INDEX IF NOT EXISTS idx_leads_active_tenant_created ON leads(tenant_id, created_at DESC) WHERE deleted_at IS NULL;"
+        },
+        {
+            name: 'idx_leads_archive (find archived rows for purge job)',
+            sql: "CREATE INDEX IF NOT EXISTS idx_leads_archive_deleted_at ON leads(deleted_at) WHERE deleted_at IS NOT NULL;"
+        },
+        {
+            name: 'messages.deleted_at column (soft-delete archive)',
+            sql: "ALTER TABLE messages ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP;"
+        },
+        {
+            name: 'idx_messages_archive',
+            sql: "CREATE INDEX IF NOT EXISTS idx_messages_archive_deleted_at ON messages(deleted_at) WHERE deleted_at IS NOT NULL;"
+        },
+        {
+            name: 'danger_action_requests table',
+            sql: `
+                CREATE TABLE IF NOT EXISTS danger_action_requests (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    tenant_id VARCHAR(50) NOT NULL,
+                    requester_user_id UUID,
+                    requester_username VARCHAR(255),
+                    action_type VARCHAR(40) NOT NULL,
+                    payload JSONB DEFAULT '{}'::jsonb,
+                    reason TEXT,
+                    status VARCHAR(20) NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending', 'approved', 'rejected', 'executed', 'failed', 'cancelled')),
+                    decided_by_user_id UUID,
+                    decided_by_username VARCHAR(255),
+                    decided_at TIMESTAMP,
+                    decision_reason TEXT,
+                    executed_at TIMESTAMP,
+                    archive_expires_at TIMESTAMP,
+                    affected_count INTEGER,
+                    last_error TEXT,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW()
+                );
+            `
+        },
+        {
+            name: 'idx_danger_requests_tenant_status',
+            sql: "CREATE INDEX IF NOT EXISTS idx_danger_requests_tenant_status ON danger_action_requests(tenant_id, status, created_at DESC);"
+        },
+        {
+            name: 'idx_danger_requests_pending',
+            sql: "CREATE INDEX IF NOT EXISTS idx_danger_requests_pending ON danger_action_requests(created_at DESC) WHERE status = 'pending';"
+        },
+        {
+            name: 'idx_danger_requests_archive_expires',
+            sql: "CREATE INDEX IF NOT EXISTS idx_danger_requests_archive_expires ON danger_action_requests(archive_expires_at) WHERE archive_expires_at IS NOT NULL;"
         }
     ];
 
@@ -1048,13 +1109,13 @@ async function migrateMultiWhatsAppAccounts() {
         } catch (e) {
             failed++;
             const msg = e && e.message ? e.message : String(e);
-            console.warn(`⚠️ [multi-wa migration] ${step.name} — ${msg}`);
+            console.warn(`⚠️ [migration] ${step.name} — ${msg}`);
         }
     }
     if (failed === 0) {
-        console.log(`✅ Multi-WhatsApp accounts schema ready (${succeeded} steps)`);
+        console.log(`✅ Multi-WhatsApp + danger-zone schema ready (${succeeded} steps)`);
     } else {
-        console.warn(`⚠️ Multi-WhatsApp migration finished with ${failed} warnings (${succeeded} steps OK)`);
+        console.warn(`⚠️ Migration finished with ${failed} warnings (${succeeded} steps OK)`);
     }
 }
 
@@ -1324,9 +1385,9 @@ async function findLeadByPhone(phone, tenantId = 'admin', whatsappAccountId = nu
         const accountFilterSql = whatsappAccountId ? ' AND whatsapp_account_id = $3' : '';
         const accountParams = whatsappAccountId ? [whatsappAccountId] : [];
 
-        // 1. Exact match first
+        // 1. Exact match first (exclude soft-deleted archive entries)
         const exact = await pool.query(
-            `SELECT * FROM leads WHERE phone = $1 AND tenant_id = $2${accountFilterSql}`,
+            `SELECT * FROM leads WHERE phone = $1 AND tenant_id = $2 AND deleted_at IS NULL${accountFilterSql}`,
             [cleanedPhone, tenantId, ...accountParams]
         );
         if (exact.rows[0]) return exact.rows[0];
@@ -1340,7 +1401,7 @@ async function findLeadByPhone(phone, tenantId = 'admin', whatsappAccountId = nu
         if (cleanedPhone.length >= 9) {
             const suffix = cleanedPhone.slice(-9);
             const fuzzy = await pool.query(
-                `SELECT * FROM leads WHERE phone LIKE $1 AND tenant_id = $2${accountFilterSql} ORDER BY created_at DESC LIMIT 1`,
+                `SELECT * FROM leads WHERE phone LIKE $1 AND tenant_id = $2 AND deleted_at IS NULL${accountFilterSql} ORDER BY created_at DESC LIMIT 1`,
                 [`%${suffix}`, tenantId, ...accountParams]
             );
             if (fuzzy.rows[0]) {
@@ -1362,7 +1423,7 @@ async function findLeadByPhone(phone, tenantId = 'admin', whatsappAccountId = nu
 async function findLeadByWhatsAppId(whatsappId, tenantId = 'admin') {
     try {
         if (!whatsappId) return null;
-        const query = 'SELECT * FROM leads WHERE whatsapp_id = $1 AND tenant_id = $2';
+        const query = 'SELECT * FROM leads WHERE whatsapp_id = $1 AND tenant_id = $2 AND deleted_at IS NULL';
         const result = await pool.query(query, [whatsappId, tenantId]);
         return result.rows[0] || null;
     } catch (error) {
@@ -1670,8 +1731,9 @@ async function getLeads(filters = {}, tenantId = 'admin', existingClient = null)
             WHERE l2.tenant_id = l.tenant_id
               AND l2.phone = l.phone
               AND l2.id <> l.id
+              AND l2.deleted_at IS NULL
           ) dup ON true
-          WHERE l.tenant_id = $1
+          WHERE l.tenant_id = $1 AND l.deleted_at IS NULL
         `;
         const values = [tenantId];
         let paramCount = 2;
@@ -1817,7 +1879,7 @@ async function getLeadStats(tenantId = 'admin') {
           COUNT(*) FILTER (WHERE status = 'lost') as lost,
           COALESCE(SUM(value) FILTER (WHERE status = 'won'), 0) as total_won_value,
           COALESCE(AVG(value) FILTER (WHERE status = 'won'), 0) as avg_won_value
-        FROM leads WHERE tenant_id = $1;
+        FROM leads WHERE tenant_id = $1 AND deleted_at IS NULL;
       `;
 
         const result = await pool.query(query, [tenantId]);
@@ -1837,7 +1899,7 @@ async function getLeadStats(tenantId = 'admin') {
 async function getLeadsByStatus(status, tenantId = 'admin') {
     try {
         const validStatus = validateStatus(status);
-        const query = 'SELECT * FROM leads WHERE status = $1 AND tenant_id = $2 ORDER BY updated_at DESC LIMIT 50';
+        const query = 'SELECT * FROM leads WHERE status = $1 AND tenant_id = $2 AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 50';
         const result = await pool.query(query, [validStatus, tenantId]);
         return result.rows;
     } catch (error) {
@@ -2301,7 +2363,7 @@ async function finishFacebookAutoSync(tenantId, { nextSyncAt = null, lastInsight
 async function getMessages(leadId, tenantId = 'admin') {
     try {
         const result = await pool.query(
-            'SELECT * FROM messages WHERE lead_id = $1 AND tenant_id = $2 ORDER BY created_at ASC',
+            'SELECT * FROM messages WHERE lead_id = $1 AND tenant_id = $2 AND deleted_at IS NULL ORDER BY created_at ASC',
             [leadId, tenantId]
         );
         return result.rows;
@@ -2337,11 +2399,11 @@ async function getRecentLeadsWithLatestMessage(tenantId = 'admin', limit = 50) {
             LEFT JOIN LATERAL (
                 SELECT body, created_at, direction
                 FROM messages
-                WHERE lead_id = l.id AND tenant_id = l.tenant_id
+                WHERE lead_id = l.id AND tenant_id = l.tenant_id AND deleted_at IS NULL
                 ORDER BY created_at DESC
                 LIMIT 1
             ) m ON true
-            WHERE l.tenant_id = $1
+            WHERE l.tenant_id = $1 AND l.deleted_at IS NULL
             ORDER BY COALESCE(m.created_at, l.updated_at) DESC
             LIMIT $2
         `, [tenantId, limit]);
@@ -2353,17 +2415,32 @@ async function getRecentLeadsWithLatestMessage(tenantId = 'admin', limit = 50) {
 }
 
 /**
- * Delete ALL leads and messages (Format / Factory Reset)
+ * Soft-delete ALL active leads + messages for a tenant (factory reset).
+ *
+ * Critical change: this no longer hard-deletes. Rows get a deleted_at
+ * timestamp and stay in the table for the 30-day archive window so a
+ * superadmin can restore everything if the action turns out to be a
+ * mistake. The background purge job hard-deletes after 30 days.
+ *
+ * Returns { affectedLeads, affectedMessages }.
  */
 async function deleteAllLeads(tenantId = 'admin') {
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
-        await client.query('DELETE FROM messages WHERE tenant_id = $1', [tenantId]);
-        await client.query('DELETE FROM leads WHERE tenant_id = $1', [tenantId]);
+        const msgRes = await client.query(
+            'UPDATE messages SET deleted_at = NOW() WHERE tenant_id = $1 AND deleted_at IS NULL',
+            [tenantId]
+        );
+        const leadRes = await client.query(
+            'UPDATE leads SET deleted_at = NOW() WHERE tenant_id = $1 AND deleted_at IS NULL',
+            [tenantId]
+        );
         await client.query('COMMIT');
-        console.log('🗑️ All leads and messages deleted (factory reset)');
-        return { deleted: true };
+        const affectedLeads = leadRes.rowCount || 0;
+        const affectedMessages = msgRes.rowCount || 0;
+        console.log(`🗑️ Soft-deleted ${affectedLeads} leads + ${affectedMessages} messages (factory reset, 30-day archive)`);
+        return { deleted: true, affectedLeads, affectedMessages };
     } catch (error) {
         await client.query('ROLLBACK');
         console.error('❌ deleteAllLeads error:', error.message);
@@ -2371,6 +2448,159 @@ async function deleteAllLeads(tenantId = 'admin') {
     } finally {
         client.release();
     }
+}
+
+/**
+ * Soft-delete only the messages (clear chat history) for a tenant.
+ * Leads stay intact. Used by the 'clear_chat_history' danger action.
+ */
+async function clearAllChatHistory(tenantId = 'admin') {
+    const res = await pool.query(
+        'UPDATE messages SET deleted_at = NOW() WHERE tenant_id = $1 AND deleted_at IS NULL',
+        [tenantId]
+    );
+    const affectedMessages = res.rowCount || 0;
+    console.log(`🗑️ Soft-deleted ${affectedMessages} messages (chat history cleared)`);
+    return { affectedMessages };
+}
+
+/**
+ * Restore ALL soft-deleted rows for a tenant whose deletion came from a
+ * specific danger_action_request. Used by the superadmin "restore" button
+ * within the 30-day window.
+ */
+async function restoreSoftDeletedSince(tenantId, sinceTimestamp) {
+    if (!tenantId || !sinceTimestamp) return { restoredLeads: 0, restoredMessages: 0 };
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        // Restore ALL rows that were soft-deleted at or after the request's
+        // executed_at timestamp. Allow a 5-second window for clock drift between
+        // statements that ran in the same UPDATE batch.
+        const cutoff = new Date(new Date(sinceTimestamp).getTime() - 5000);
+        const leadRes = await client.query(
+            'UPDATE leads SET deleted_at = NULL WHERE tenant_id = $1 AND deleted_at IS NOT NULL AND deleted_at >= $2',
+            [tenantId, cutoff]
+        );
+        const msgRes = await client.query(
+            'UPDATE messages SET deleted_at = NULL WHERE tenant_id = $1 AND deleted_at IS NOT NULL AND deleted_at >= $2',
+            [tenantId, cutoff]
+        );
+        await client.query('COMMIT');
+        return { restoredLeads: leadRes.rowCount || 0, restoredMessages: msgRes.rowCount || 0 };
+    } catch (e) {
+        try { await client.query('ROLLBACK'); } catch { }
+        console.error('❌ restoreSoftDeletedSince error:', e.message);
+        return { restoredLeads: 0, restoredMessages: 0, error: e.message };
+    } finally {
+        client.release();
+    }
+}
+
+/**
+ * Hard-delete soft-deleted rows older than the retention window (30 days).
+ * Run periodically by a background job.
+ */
+async function purgeExpiredSoftDeletes(retentionDays = 30) {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const msgRes = await client.query(
+            `DELETE FROM messages WHERE deleted_at IS NOT NULL AND deleted_at < NOW() - ($1::int * INTERVAL '1 day')`,
+            [retentionDays]
+        );
+        const leadRes = await client.query(
+            `DELETE FROM leads WHERE deleted_at IS NOT NULL AND deleted_at < NOW() - ($1::int * INTERVAL '1 day')`,
+            [retentionDays]
+        );
+        await client.query('COMMIT');
+        const purgedLeads = leadRes.rowCount || 0;
+        const purgedMessages = msgRes.rowCount || 0;
+        if (purgedLeads + purgedMessages > 0) {
+            console.log(`🧹 Purged ${purgedLeads} archived leads + ${purgedMessages} messages (>${retentionDays}d)`);
+        }
+        return { purgedLeads, purgedMessages };
+    } catch (e) {
+        try { await client.query('ROLLBACK'); } catch { }
+        console.error('❌ purgeExpiredSoftDeletes error:', e.message);
+        return { purgedLeads: 0, purgedMessages: 0, error: e.message };
+    } finally {
+        client.release();
+    }
+}
+
+// ─── Danger action requests (approval queue) ─────────────────────────────
+async function createDangerActionRequest({ tenantId, requesterUserId, requesterUsername, actionType, payload, reason }) {
+    if (!tenantId || !actionType) throw new Error('tenantId and actionType are required');
+    const allowed = ['factory_reset', 'delete_all_data', 'clear_chat_history'];
+    if (!allowed.includes(actionType)) throw new Error(`Unsupported actionType: ${actionType}`);
+    const res = await pool.query(
+        `INSERT INTO danger_action_requests
+         (tenant_id, requester_user_id, requester_username, action_type, payload, reason, status)
+         VALUES ($1, $2, $3, $4, $5::jsonb, $6, 'pending')
+         RETURNING *`,
+        [tenantId, requesterUserId || null, requesterUsername || null, actionType, payload || {}, reason || null]
+    );
+    return res.rows[0] || null;
+}
+
+async function listDangerActionRequests({ tenantId = null, status = null, limit = 100 } = {}) {
+    const where = [];
+    const values = [];
+    let i = 1;
+    if (tenantId) { where.push(`tenant_id = $${i++}`); values.push(tenantId); }
+    if (status) { where.push(`status = $${i++}`); values.push(status); }
+    const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+    values.push(Math.max(1, Math.min(500, parseInt(String(limit), 10) || 100)));
+    const res = await pool.query(
+        `SELECT * FROM danger_action_requests ${whereSql} ORDER BY created_at DESC LIMIT $${i}`,
+        values
+    );
+    return res.rows;
+}
+
+async function getDangerActionRequest(id) {
+    if (!id) return null;
+    const res = await pool.query('SELECT * FROM danger_action_requests WHERE id = $1 LIMIT 1', [id]);
+    return res.rows[0] || null;
+}
+
+async function updateDangerActionRequest(id, fields) {
+    if (!id || !fields || typeof fields !== 'object') return null;
+    const sets = [];
+    const values = [];
+    let i = 1;
+    for (const [key, value] of Object.entries(fields)) {
+        if (!['status', 'decided_by_user_id', 'decided_by_username', 'decided_at',
+              'decision_reason', 'executed_at', 'archive_expires_at',
+              'affected_count', 'last_error'].includes(key)) continue;
+        sets.push(`${key} = $${i++}`);
+        values.push(value);
+    }
+    if (sets.length === 0) return null;
+    sets.push('updated_at = NOW()');
+    values.push(id);
+    const res = await pool.query(
+        `UPDATE danger_action_requests SET ${sets.join(', ')} WHERE id = $${i} RETURNING *`,
+        values
+    );
+    return res.rows[0] || null;
+}
+
+async function getActiveArchiveSummary(tenantId) {
+    if (!tenantId) return { archivedLeads: 0, archivedMessages: 0 };
+    const leads = await pool.query(
+        'SELECT COUNT(*)::int AS c FROM leads WHERE tenant_id = $1 AND deleted_at IS NOT NULL',
+        [tenantId]
+    );
+    const messages = await pool.query(
+        'SELECT COUNT(*)::int AS c FROM messages WHERE tenant_id = $1 AND deleted_at IS NOT NULL',
+        [tenantId]
+    );
+    return {
+        archivedLeads: leads.rows[0]?.c || 0,
+        archivedMessages: messages.rows[0]?.c || 0,
+    };
 }
 
 async function ensureTenantRecord(tenantId, opts = {}) {
@@ -3459,11 +3689,11 @@ async function getDuplicateLeadsForLead(leadId, tenantId) {
                 wa.label AS whatsapp_account_label,
                 wa.phone_number AS whatsapp_account_phone,
                 l2.last_inbound_at, l2.created_at,
-                (SELECT COUNT(*)::int FROM messages m WHERE m.lead_id = l2.id AND m.tenant_id = l2.tenant_id) AS message_count
+                (SELECT COUNT(*)::int FROM messages m WHERE m.lead_id = l2.id AND m.tenant_id = l2.tenant_id AND m.deleted_at IS NULL) AS message_count
          FROM leads l1
-         JOIN leads l2 ON l2.tenant_id = l1.tenant_id AND l2.phone = l1.phone AND l2.id <> l1.id
+         JOIN leads l2 ON l2.tenant_id = l1.tenant_id AND l2.phone = l1.phone AND l2.id <> l1.id AND l2.deleted_at IS NULL
          LEFT JOIN whatsapp_accounts wa ON wa.id = l2.whatsapp_account_id AND wa.tenant_id = l2.tenant_id
-         WHERE l1.id = $1 AND l1.tenant_id = $2
+         WHERE l1.id = $1 AND l1.tenant_id = $2 AND l1.deleted_at IS NULL
          ORDER BY l2.created_at DESC
          LIMIT 10`,
         [leadId, tenantId]
@@ -3579,6 +3809,15 @@ module.exports = {
     claimDueFacebookAutoSyncConfigs,
     finishFacebookAutoSync,
     closePool,
+    // Danger zone (soft-delete + approval queue)
+    clearAllChatHistory,
+    restoreSoftDeletedSince,
+    purgeExpiredSoftDeletes,
+    createDangerActionRequest,
+    listDangerActionRequests,
+    getDangerActionRequest,
+    updateDangerActionRequest,
+    getActiveArchiveSummary,
     // Multi-WhatsApp accounts
     healWhatsAppAccountsForTenant,
     listWhatsAppAccounts,
