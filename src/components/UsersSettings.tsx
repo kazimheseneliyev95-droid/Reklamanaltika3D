@@ -248,69 +248,65 @@ function PermissionEditor({
 
     return (
         <div className="space-y-2">
-            {/* ─── Per-user stage visibility picker ─────────────────────
-                Lets the admin grant this user "see-all" access to ONLY
-                certain kanban stages while still scoping every other
-                stage to their own assigned leads. Hidden when the user
-                has the global view_all_leads permission turned on
-                (in that case they already see everything). */}
+            {/* ─── Per-user stage visibility picker (compact chip layout) ───
+                Lets the admin grant this user "see-all" access to specific
+                kanban stages. Stays hidden when view_all_leads is on (then
+                the user already sees everything). */}
             {!hasViewAll && stages.length > 0 ? (
-                <div className="rounded-xl border border-blue-900/30 bg-blue-950/10 transition-colors">
-                    <button
-                        type="button"
-                        onClick={() => toggleGroup('stages')}
-                        className="w-full flex items-center justify-between gap-2 px-3 py-2.5 text-left hover:bg-blue-950/20 rounded-xl"
-                    >
-                        <div className="flex items-center gap-2 min-w-0">
-                            <span className="shrink-0 text-blue-400">
-                                <LayoutGrid className="w-4 h-4" />
+                <div className="rounded-lg border border-blue-900/30 bg-blue-950/10">
+                    {/* Header — title + counter + inline Hamısı/Təmizlə + chevron */}
+                    <div className="flex items-center gap-1.5 px-2 py-1.5">
+                        <button
+                            type="button"
+                            onClick={() => toggleGroup('stages')}
+                            className="flex items-center gap-1.5 min-w-0 flex-1 text-left hover:opacity-80"
+                        >
+                            <LayoutGrid className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                            <span className="text-[11px] font-bold text-blue-100 truncate">
+                                Görünən sütunlar
                             </span>
-                            <div className="min-w-0">
-                                <div className="text-[12px] font-bold text-blue-100 truncate">
-                                    Görünən kanban sütunları
-                                </div>
-                                <div className="text-[10px] text-blue-300/60 truncate">
-                                    Seçilmiş sütunlarda bütün leadləri, qalanlarda yalnız özünü görəcək
-                                </div>
-                            </div>
-                        </div>
-                        <div className="flex items-center gap-2 shrink-0">
                             <span className={cn(
-                                'text-[10px] font-extrabold px-2 py-0.5 rounded-full border',
+                                'text-[9px] font-extrabold px-1.5 py-0.5 rounded-full border tabular-nums shrink-0',
                                 allSelected
                                     ? 'border-emerald-500/40 bg-emerald-950/30 text-emerald-200'
                                     : noneSelected
                                         ? 'border-slate-700 bg-slate-900/40 text-slate-500'
                                         : 'border-blue-500/40 bg-blue-950/30 text-blue-200'
                             )}>
-                                {visibleStageIds.length} / {stages.length}
+                                {visibleStageIds.length}/{stages.length}
                             </span>
-                            {stagesGroupOpen ? <ChevronDown className="w-4 h-4 text-slate-500" /> : <ChevronRight className="w-4 h-4 text-slate-500" />}
-                        </div>
-                    </button>
-
-                    {stagesGroupOpen ? (
-                        <div className="px-3 pb-3 border-t border-blue-900/30">
-                            <div className="flex items-center gap-2 py-2">
+                        </button>
+                        {stagesGroupOpen ? (
+                            <>
                                 <button
                                     type="button"
                                     onClick={() => setAllStages(allStageIds)}
-                                    className="text-[10px] font-bold px-2 py-1 rounded-md border border-emerald-900/30 bg-emerald-950/15 text-emerald-200 hover:bg-emerald-950/25"
+                                    className="text-[9px] font-extrabold px-1.5 py-0.5 rounded border border-emerald-900/40 bg-emerald-950/20 text-emerald-200 hover:bg-emerald-950/30 shrink-0"
                                 >
-                                    Hamısını seç
+                                    Hamısı
                                 </button>
                                 <button
                                     type="button"
                                     onClick={() => setAllStages([])}
-                                    className="text-[10px] font-bold px-2 py-1 rounded-md border border-slate-700 bg-slate-900/40 text-slate-300 hover:bg-slate-800"
+                                    className="text-[9px] font-extrabold px-1.5 py-0.5 rounded border border-slate-700 bg-slate-900/40 text-slate-400 hover:bg-slate-800 shrink-0"
                                 >
-                                    Hamısını sil
+                                    Təmizlə
                                 </button>
-                                <span className="text-[10px] text-slate-500 ml-auto">
-                                    Heç bir sütun seçməsən, yalnız öz leadlərini görəcək
-                                </span>
-                            </div>
-                            <div className="space-y-1">
+                            </>
+                        ) : null}
+                        <button
+                            type="button"
+                            onClick={() => toggleGroup('stages')}
+                            className="shrink-0 p-0.5 hover:bg-blue-950/30 rounded"
+                        >
+                            {stagesGroupOpen ? <ChevronDown className="w-3.5 h-3.5 text-slate-500" /> : <ChevronRight className="w-3.5 h-3.5 text-slate-500" />}
+                        </button>
+                    </div>
+
+                    {stagesGroupOpen ? (
+                        <div className="px-2 pb-2 pt-1 border-t border-blue-900/30">
+                            {/* Compact 2-col grid of mini toggles */}
+                            <div className="grid grid-cols-2 gap-1">
                                 {stages.map(stage => {
                                     const checked = visibleStageIds.includes(stage.id);
                                     return (
@@ -318,37 +314,25 @@ function PermissionEditor({
                                             key={stage.id}
                                             type="button"
                                             onClick={() => toggleStage(stage.id)}
+                                            title={`${stage.label} • ${checked ? 'Bütün leadlər' : 'Yalnız öz leadləri'}`}
                                             className={cn(
-                                                'w-full flex items-center gap-2 p-2 rounded-lg border text-left transition-colors',
+                                                'flex items-center gap-1.5 px-1.5 py-1 rounded border text-[10.5px] font-semibold transition-colors min-w-0',
                                                 checked
-                                                    ? 'border-blue-500/40 bg-blue-950/25'
-                                                    : 'border-slate-800 bg-slate-950/30 hover:border-slate-700'
+                                                    ? 'border-blue-500/50 bg-blue-600/20 text-blue-100 hover:bg-blue-600/30'
+                                                    : 'border-slate-800 bg-slate-950/40 text-slate-400 hover:border-slate-700 hover:text-slate-200'
                                             )}
                                         >
-                                            <div className={cn('shrink-0', checked ? 'text-blue-400' : 'text-slate-600')}>
-                                                {checked ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
-                                            </div>
-                                            <div className="min-w-0 flex-1">
-                                                <div className={cn('text-[11px] font-bold', checked ? 'text-blue-100' : 'text-slate-300')}>
-                                                    {stage.label}
-                                                </div>
-                                                <div className="text-[10px] text-slate-500 font-mono">
-                                                    id: {stage.id}
-                                                </div>
-                                            </div>
-                                            {checked ? (
-                                                <span className="text-[9px] font-extrabold uppercase text-blue-300 px-1.5 py-0.5 rounded border border-blue-500/30 bg-blue-950/30 shrink-0">
-                                                    Hamısını görür
-                                                </span>
-                                            ) : (
-                                                <span className="text-[9px] font-extrabold uppercase text-slate-500 px-1.5 py-0.5 rounded border border-slate-800 bg-slate-950/40 shrink-0">
-                                                    Yalnız özü
-                                                </span>
-                                            )}
+                                            {checked
+                                                ? <CheckSquare className="w-3 h-3 text-blue-300 shrink-0" />
+                                                : <Square className="w-3 h-3 text-slate-600 shrink-0" />}
+                                            <span className="truncate flex-1 text-left">{stage.label}</span>
                                         </button>
                                     );
                                 })}
                             </div>
+                            <p className="text-[9.5px] text-blue-300/50 mt-1.5 leading-snug">
+                                Seçili sütunlarda bütün leadləri, qalanlarda yalnız özünü görəcək.
+                            </p>
                         </div>
                     ) : null}
                 </div>
