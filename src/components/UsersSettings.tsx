@@ -7,6 +7,8 @@ import {
 import { CrmService } from '../services/CrmService';
 import { UserPermissions, User as StoreUser } from '../types/crm';
 import { cn } from '../lib/utils';
+import { loadCRMSettings, type PipelineStage } from '../lib/crmSettings';
+import { LayoutGrid } from 'lucide-react';
 
 interface User extends StoreUser { }
 
@@ -182,7 +184,40 @@ function PermissionEditor({
     permissions: UserPermissions;
     onChange: (next: UserPermissions) => void;
 }) {
-    const [openGroups, setOpenGroups] = useState<Set<string>>(new Set(['leads']));
+    const [openGroups, setOpenGroups] = useState<Set<string>>(new Set(['leads', 'stages']));
+
+    // Load pipeline stages once so we can render the per-user stage picker.
+    // Falls back to localStorage CRM settings, then refreshes from server.
+    const [stages, setStages] = useState<PipelineStage[]>(() => loadCRMSettings().pipelineStages || []);
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const url = CrmService.getServerUrl();
+                if (!url) return;
+                const res = await fetch(`${url}/api/settings`, { headers: CrmService['getAuthHeaders']() });
+                if (!res.ok) return;
+                const data = await res.json();
+                const list: PipelineStage[] = data?.settings?.pipelineStages || [];
+                if (!cancelled && Array.isArray(list) && list.length > 0) setStages(list);
+            } catch { /* fallback to local */ }
+        })();
+        return () => { cancelled = true; };
+    }, []);
+
+    const visibleStageIds = Array.isArray(permissions.visible_stage_ids) ? permissions.visible_stage_ids : [];
+    const hasViewAll = permissions.view_all_leads === true;
+
+    const toggleStage = (stageId: string) => {
+        const set = new Set(visibleStageIds);
+        if (set.has(stageId)) set.delete(stageId);
+        else set.add(stageId);
+        onChange({ ...permissions, visible_stage_ids: Array.from(set) });
+    };
+
+    const setAllStages = (ids: string[]) => {
+        onChange({ ...permissions, visible_stage_ids: ids });
+    };
 
     const toggleGroup = (id: string) => {
         setOpenGroups(prev => {
@@ -194,17 +229,131 @@ function PermissionEditor({
     };
 
     const togglePerm = (key: PermKey) => {
-        onChange({ ...permissions, [key]: !permissions[key] });
+        // PermKey here is always a boolean flag (PERMISSION_GROUPS only contains
+        // boolean items). Cast through unknown to satisfy TS now that
+        // UserPermissions also has the visible_stage_ids string[] member.
+        onChange({ ...permissions, [key]: !(permissions as any)[key] });
     };
 
     const setGroupAll = (group: PermGroup, value: boolean) => {
-        const next = { ...permissions };
+        const next: any = { ...permissions };
         group.items.forEach(item => { next[item.key] = value; });
-        onChange(next);
+        onChange(next as UserPermissions);
     };
+
+    const stagesGroupOpen = openGroups.has('stages');
+    const allStageIds = stages.map(s => s.id);
+    const allSelected = visibleStageIds.length > 0 && allStageIds.every(id => visibleStageIds.includes(id));
+    const noneSelected = visibleStageIds.length === 0;
 
     return (
         <div className="space-y-2">
+            {/* ─── Per-user stage visibility picker ─────────────────────
+                Lets the admin grant this user "see-all" access to ONLY
+                certain kanban stages while still scoping every other
+                stage to their own assigned leads. Hidden when the user
+                has the global view_all_leads permission turned on
+                (in that case they already see everything). */}
+            {!hasViewAll && stages.length > 0 ? (
+                <div className="rounded-xl border border-blue-900/30 bg-blue-950/10 transition-colors">
+                    <button
+                        type="button"
+                        onClick={() => toggleGroup('stages')}
+                        className="w-full flex items-center justify-between gap-2 px-3 py-2.5 text-left hover:bg-blue-950/20 rounded-xl"
+                    >
+                        <div className="flex items-center gap-2 min-w-0">
+                            <span className="shrink-0 text-blue-400">
+                                <LayoutGrid className="w-4 h-4" />
+                            </span>
+                            <div className="min-w-0">
+                                <div className="text-[12px] font-bold text-blue-100 truncate">
+                                    Görünən kanban sütunları
+                                </div>
+                                <div className="text-[10px] text-blue-300/60 truncate">
+                                    Seçilmiş sütunlarda bütün leadləri, qalanlarda yalnız özünü görəcək
+                                </div>
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                            <span className={cn(
+                                'text-[10px] font-extrabold px-2 py-0.5 rounded-full border',
+                                allSelected
+                                    ? 'border-emerald-500/40 bg-emerald-950/30 text-emerald-200'
+                                    : noneSelected
+                                        ? 'border-slate-700 bg-slate-900/40 text-slate-500'
+                                        : 'border-blue-500/40 bg-blue-950/30 text-blue-200'
+                            )}>
+                                {visibleStageIds.length} / {stages.length}
+                            </span>
+                            {stagesGroupOpen ? <ChevronDown className="w-4 h-4 text-slate-500" /> : <ChevronRight className="w-4 h-4 text-slate-500" />}
+                        </div>
+                    </button>
+
+                    {stagesGroupOpen ? (
+                        <div className="px-3 pb-3 border-t border-blue-900/30">
+                            <div className="flex items-center gap-2 py-2">
+                                <button
+                                    type="button"
+                                    onClick={() => setAllStages(allStageIds)}
+                                    className="text-[10px] font-bold px-2 py-1 rounded-md border border-emerald-900/30 bg-emerald-950/15 text-emerald-200 hover:bg-emerald-950/25"
+                                >
+                                    Hamısını seç
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setAllStages([])}
+                                    className="text-[10px] font-bold px-2 py-1 rounded-md border border-slate-700 bg-slate-900/40 text-slate-300 hover:bg-slate-800"
+                                >
+                                    Hamısını sil
+                                </button>
+                                <span className="text-[10px] text-slate-500 ml-auto">
+                                    Heç bir sütun seçməsən, yalnız öz leadlərini görəcək
+                                </span>
+                            </div>
+                            <div className="space-y-1">
+                                {stages.map(stage => {
+                                    const checked = visibleStageIds.includes(stage.id);
+                                    return (
+                                        <button
+                                            key={stage.id}
+                                            type="button"
+                                            onClick={() => toggleStage(stage.id)}
+                                            className={cn(
+                                                'w-full flex items-center gap-2 p-2 rounded-lg border text-left transition-colors',
+                                                checked
+                                                    ? 'border-blue-500/40 bg-blue-950/25'
+                                                    : 'border-slate-800 bg-slate-950/30 hover:border-slate-700'
+                                            )}
+                                        >
+                                            <div className={cn('shrink-0', checked ? 'text-blue-400' : 'text-slate-600')}>
+                                                {checked ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
+                                            </div>
+                                            <div className="min-w-0 flex-1">
+                                                <div className={cn('text-[11px] font-bold', checked ? 'text-blue-100' : 'text-slate-300')}>
+                                                    {stage.label}
+                                                </div>
+                                                <div className="text-[10px] text-slate-500 font-mono">
+                                                    id: {stage.id}
+                                                </div>
+                                            </div>
+                                            {checked ? (
+                                                <span className="text-[9px] font-extrabold uppercase text-blue-300 px-1.5 py-0.5 rounded border border-blue-500/30 bg-blue-950/30 shrink-0">
+                                                    Hamısını görür
+                                                </span>
+                                            ) : (
+                                                <span className="text-[9px] font-extrabold uppercase text-slate-500 px-1.5 py-0.5 rounded border border-slate-800 bg-slate-950/40 shrink-0">
+                                                    Yalnız özü
+                                                </span>
+                                            )}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    ) : null}
+                </div>
+            ) : null}
+
             {PERMISSION_GROUPS.map(group => {
                 const isOpen = openGroups.has(group.id);
                 const enabledCount = group.items.filter(i => permissions[i.key]).length;

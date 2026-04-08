@@ -1955,18 +1955,26 @@ function socketCanViewAllLeads(socket) {
   return permissions.view_all_leads !== false;
 }
 
-// Stage-aware access check. The third arg is the cached list of "shared"
-// stage ids for the tenant — if the lead is currently sitting in one of
-// those stages every operator can see it (team inbox model).
+// Stage-aware access check. The third arg is the tenant-wide shared stage list
+// (cached, prefetched once per emit batch). Per-user visible_stage_ids overrides
+// from socket.userPermissions are merged in here.
 function socketCanAccessLead(socket, lead, sharedStageIds) {
   if (!socket || !lead) return false;
   if (socketCanViewAllLeads(socket)) return true;
   const assigneeId = lead.assignee_id ? String(lead.assignee_id) : '';
   const userId = socket.userId ? String(socket.userId) : '';
   if (assigneeId && userId && assigneeId === userId) return true;
-  if (Array.isArray(sharedStageIds) && sharedStageIds.length > 0) {
-    const status = String(lead.status || '');
-    if (status && sharedStageIds.includes(status)) return true;
+  const status = String(lead.status || '');
+  if (!status) return false;
+  if (Array.isArray(sharedStageIds) && sharedStageIds.length > 0 && sharedStageIds.includes(status)) {
+    return true;
+  }
+  // Per-user visible_stage_ids override
+  const userOverride = Array.isArray(socket.userPermissions?.visible_stage_ids)
+    ? socket.userPermissions.visible_stage_ids
+    : [];
+  if (userOverride.length > 0 && userOverride.map(String).includes(status)) {
+    return true;
   }
   return false;
 }
@@ -2023,10 +2031,22 @@ async function emitScopedLeadList(tenantId) {
   const sockets = await io.in(tenantId).fetchSockets().catch(() => []);
   const sharedStageIds = await getSharedStageIdsForTenant(tenantId);
   await Promise.all(sockets.map(async (socket) => {
-    const filters = socketCanViewAllLeads(socket)
-      ? { userId: socket.userId || null }
-      : { assigneeId: socket.userId, sharedStageIds, userId: socket.userId || null };
-    const leads = await db.getLeads(filters, tenantId).catch(() => []);
+    if (socketCanViewAllLeads(socket)) {
+      const leads = await db.getLeads({ userId: socket.userId || null }, tenantId).catch(() => []);
+      socket.emit('leads_updated', leads);
+      return;
+    }
+    // Merge tenant-wide shared stages with this user's per-user override.
+    const userOverride = Array.isArray(socket.userPermissions?.visible_stage_ids)
+      ? socket.userPermissions.visible_stage_ids.map((s) => String(s).trim()).filter(Boolean)
+      : [];
+    const merged = userOverride.length > 0
+      ? Array.from(new Set([...sharedStageIds, ...userOverride]))
+      : sharedStageIds;
+    const leads = await db.getLeads(
+      { assigneeId: socket.userId, sharedStageIds: merged, userId: socket.userId || null },
+      tenantId
+    ).catch(() => []);
     socket.emit('leads_updated', leads);
   }));
 }
@@ -2793,6 +2813,21 @@ function invalidateSharedStagesCache(tenantId) {
   else _sharedStagesCache.clear();
 }
 
+// Combine the tenant-wide shared stages (from CRM settings) with the per-user
+// visible_stage_ids permission override. Both grant the user "see-all" access
+// to leads inside those stage IDs.
+async function getEffectiveVisibleStagesForUser(req) {
+  const tenantWide = await getSharedStageIdsForTenant(req.tenantId);
+  const userOverride = Array.isArray(req.userPermissions?.visible_stage_ids)
+    ? req.userPermissions.visible_stage_ids.map((s) => String(s).trim()).filter(Boolean)
+    : [];
+  if (userOverride.length === 0) return tenantWide;
+  if (tenantWide.length === 0) return userOverride;
+  // Union, dedup
+  const set = new Set([...tenantWide, ...userOverride]);
+  return Array.from(set);
+}
+
 async function loadAccessibleLead(req, leadId) {
   if (!process.env.DATABASE_URL || !db || !db.pool) return null;
   const values = [leadId, req.tenantId];
@@ -2801,11 +2836,12 @@ async function loadAccessibleLead(req, leadId) {
   let query = 'SELECT * FROM leads WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL';
   if (!canViewAllLeads(req)) {
     // Operator can see the lead if EITHER they're assigned to it OR the
-    // lead currently sits in a stage marked as 'shared' (e.g. the inbox).
-    const sharedStageIds = await getSharedStageIdsForTenant(req.tenantId);
-    if (sharedStageIds.length > 0) {
+    // lead currently sits in a stage the user has see-all access to
+    // (tenant-wide shared stages OR per-user visible_stage_ids override).
+    const visibleStages = await getEffectiveVisibleStagesForUser(req);
+    if (visibleStages.length > 0) {
       query += ' AND (assignee_id = $3 OR status = ANY($4::text[]))';
-      values.push(req.userId, sharedStageIds);
+      values.push(req.userId, visibleStages);
     } else {
       query += ' AND assignee_id = $3';
       values.push(req.userId);
@@ -3380,8 +3416,9 @@ app.get('/api/leads', requireTenantAuth, asyncHandler(async (req, res) => {
   if (typeof db.getLeads !== 'function') return res.status(503).json({ error: 'Lead storage not configured' });
   const { status, startDate, endDate, limit, offset, tzOffsetMinutes, whatsappAccountId } = req.query;
   // For operators without view_all_leads, also include leads in shared stages
-  // (e.g. the "Yeni" inbox column) so the team can pull from a common queue.
-  const sharedStageIds = canViewAllLeads(req) ? [] : await getSharedStageIdsForTenant(req.tenantId);
+  // (e.g. the "Yeni" inbox column) AND in stages they were granted see-all
+  // access via per-user visible_stage_ids permission override.
+  const sharedStageIds = canViewAllLeads(req) ? [] : await getEffectiveVisibleStagesForUser(req);
   const leads = await db.getLeads({
     status,
     startDate,

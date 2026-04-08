@@ -82,6 +82,11 @@ export interface UserPermissions {
   // ─── Lead İdarəetməsi ───────────────────────────
   view_all_leads?: boolean;
   view_unassigned_leads?: boolean;
+  // Per-user stage override: a list of pipeline stage IDs where this user
+  // sees EVERY lead regardless of assignee, even when view_all_leads is off.
+  // Stages NOT in this list still follow the assignee filter for this user.
+  // Empty / undefined means "no extra stages — use the global default".
+  visible_stage_ids?: string[];
   create_lead?: boolean;
   delete_lead?: boolean;
   change_status?: boolean;
