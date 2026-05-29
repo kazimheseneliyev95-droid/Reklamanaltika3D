@@ -26,6 +26,6 @@ services:
       - key: META_VERIFY_TOKEN
         sync: false
       - key: PUBLIC_APP_URL
-        value: https://whatsapp-crm.onrender.com
+        value: https://whatsapp-crm-dndk.onrender.com
       - key: FB_API_VERSION
         value: v21.0

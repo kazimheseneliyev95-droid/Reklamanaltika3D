@@ -5622,10 +5622,26 @@ function verifyMetaOAuthState(state, maxAgeMs = 10 * 60 * 1000) {
   return { tenantId: String(payload.t) };
 }
 
-function buildMetaOAuthDialogUrl(state) {
+// Derive the OAuth callback URL from the actual request host so it always matches the real
+// deployed domain (avoids PUBLIC_APP_URL drift, e.g. Render's "-suffix" service URLs). The
+// same value must be used for both the dialog and the token exchange, and both endpoints are
+// hit on the same public host, so they agree. Facebook still validates it against the app's
+// registered redirect-URI allowlist, so a spoofed Host header can't redirect anywhere new.
+function getRequestRedirectUri(req) {
+  try {
+    const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0].trim() || 'https';
+    const host = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
+    if (host) return `${proto}://${host}/api/meta/oauth/callback`;
+  } catch {
+    // fall through to configured default
+  }
+  return META_REDIRECT_URI;
+}
+
+function buildMetaOAuthDialogUrl(state, redirectUri) {
   const params = new URLSearchParams({
     client_id: String(META_APP_ID),
-    redirect_uri: META_REDIRECT_URI,
+    redirect_uri: redirectUri || META_REDIRECT_URI,
     scope: META_OAUTH_SCOPES,
     state,
     response_type: 'code'
@@ -5634,9 +5650,10 @@ function buildMetaOAuthDialogUrl(state) {
 }
 
 // Step (a)→(b): exchange the one-time OAuth `code` for a short-lived user token.
-async function exchangeCodeForUserToken(code) {
+// redirectUri MUST equal the one used to build the dialog URL.
+async function exchangeCodeForUserToken(code, redirectUri) {
   if (!META_APP_ID || !META_APP_SECRET) throw new Error('META_APP_ID/META_APP_SECRET missing');
-  const url = `https://graph.facebook.com/${FB_API_VERSION}/oauth/access_token?client_id=${encodeURIComponent(String(META_APP_ID))}&client_secret=${encodeURIComponent(String(META_APP_SECRET))}&redirect_uri=${encodeURIComponent(META_REDIRECT_URI)}&code=${encodeURIComponent(String(code))}`;
+  const url = `https://graph.facebook.com/${FB_API_VERSION}/oauth/access_token?client_id=${encodeURIComponent(String(META_APP_ID))}&client_secret=${encodeURIComponent(String(META_APP_SECRET))}&redirect_uri=${encodeURIComponent(redirectUri || META_REDIRECT_URI)}&code=${encodeURIComponent(String(code))}`;
   const data = await fetchJsonWithRetry(url, {}, { retries: 0, timeoutMs: 8000 });
   return {
     access_token: data?.access_token ? String(data.access_token) : '',
@@ -6254,8 +6271,9 @@ app.post('/api/meta/oauth/start', requireTenantAuth, requirePermission('manage_m
     return res.status(400).json({ error: 'META_APP_ID/META_APP_SECRET missing (Render → Environment → deploy/restart)' });
   }
   const state = createMetaOAuthState(req.tenantId);
-  const url = buildMetaOAuthDialogUrl(state);
-  res.json({ url, redirectUri: META_REDIRECT_URI });
+  const redirectUri = getRequestRedirectUri(req);
+  const url = buildMetaOAuthDialogUrl(state, redirectUri);
+  res.json({ url, redirectUri });
 }));
 
 // Step 2: Meta redirects the browser here (no app auth — identity comes from signed state).
@@ -6271,7 +6289,8 @@ app.get('/api/meta/oauth/callback', asyncHandler(async (req, res) => {
   if (!code) return back('nocode');
 
   try {
-    const short = await exchangeCodeForUserToken(code);
+    const redirectUri = getRequestRedirectUri(req);
+    const short = await exchangeCodeForUserToken(code, redirectUri);
     if (!short.access_token) return back('exchangefail');
 
     const long = await exchangeForLongLivedUserToken(short.access_token)
@@ -6436,7 +6455,7 @@ app.get('/api/meta/config', requireTenantAuth, requireAdmin, asyncHandler(async 
     dbEnabled: Boolean(process.env.DATABASE_URL),
     callbackPath: '/api/webhooks/meta',
     oauthConfigured: Boolean(META_APP_ID && META_APP_SECRET),
-    oauthRedirectUri: META_REDIRECT_URI,
+    oauthRedirectUri: getRequestRedirectUri(req),
     oauthScopes: META_OAUTH_SCOPES.split(',').map((s) => s.trim()).filter(Boolean),
     apiVersion: FB_API_VERSION
   });
