@@ -18,3 +18,14 @@ services:
         value: "true"
       - key: ALLOW_LEGACY_TOKEN
         value: "true"
+      # Meta (Facebook/Instagram) OAuth + webhooks — set values in the Render dashboard.
+      - key: META_APP_ID
+        sync: false
+      - key: META_APP_SECRET
+        sync: false
+      - key: META_VERIFY_TOKEN
+        sync: false
+      - key: PUBLIC_APP_URL
+        value: https://whatsapp-crm.onrender.com
+      - key: FB_API_VERSION
+        value: v21.0

@@ -4,7 +4,8 @@ import { Lead, LeadStatus, DuplicateLead } from '../types/crm';
 import {
     User, Phone, Package, MessageSquare, Clock, Hash,
     Save, CheckCircle2, TrendingUp, BarChart2, Edit3, Check, Route, ChevronDown,
-    Smartphone, Users, AlertTriangle, Instagram, Facebook
+    Smartphone, Users, AlertTriangle, Instagram, Facebook,
+    MessageCircle, Send, Megaphone, CornerUpLeft, X
 } from 'lucide-react';
 import { cn, toNumberSafe } from '../lib/utils';
 import { loadCRMSettings } from '../lib/crmSettings';
@@ -62,7 +63,22 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
 
     const isMeta = lead.source === 'facebook' || lead.source === 'instagram';
     const [metaMode, setMetaMode] = useState<'dm' | 'comment' | 'private'>(isMeta ? 'comment' : 'dm');
+    const [replyTarget, setReplyTarget] = useState<{ kind: 'comment' | 'dm'; commentId?: string; label: string } | null>(null);
     const [sendError, setSendError] = useState('');
+
+    // Per-message reply: clicking "cavab ver" on a bubble targets that specific comment / DM.
+    const startReplyTo = useCallback((m: ChatMessage) => {
+        const k = String(m?.metadata?.kind || '');
+        const snippet = String(m?.body || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+        if (k === 'comment' || k === 'comment_reply') {
+            const cid = m?.metadata?.comment_id ? String(m.metadata.comment_id) : undefined;
+            setReplyTarget({ kind: 'comment', commentId: cid, label: snippet || 'Yorum' });
+            setMetaMode('comment');
+        } else {
+            setReplyTarget({ kind: 'dm', label: snippet || 'Mesaj' });
+            setMetaMode('dm');
+        }
+    }, []);
 
     const canSend = lead.source === 'whatsapp' || isMeta;
 
@@ -229,9 +245,13 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                 ? `${serverUrl}/api/leads/${lead.id}/messages`
                 : `${serverUrl}/api/meta/leads/${lead.id}/reply`;
 
-            const payload = lead.source === 'whatsapp'
+            const payload: Record<string, any> = lead.source === 'whatsapp'
                 ? { body: outgoing }
                 : { body: outgoing, mode: metaMode };
+            // Target a specific comment when replying to one (comment/private modes use comment_id).
+            if (isMeta && replyTarget?.commentId && (metaMode === 'comment' || metaMode === 'private')) {
+                payload.comment_id = replyTarget.commentId;
+            }
 
             const res = await fetch(endpoint, {
                 method: 'POST',
@@ -248,6 +268,7 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                             : m
                     ));
                 }
+                setReplyTarget(null);
                 // Background reload after delay to get final status from DB
                 setTimeout(() => loadMessages({ background: true }), 2500);
             } else {
@@ -380,6 +401,13 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                         const ctwa = msg?.metadata?.ctwa;
                         const adUrl = ad?.sourceUrl || ad?.wtwaWebsiteUrl || ad?.adPreviewUrl || ad?.mediaUrl;
 
+                        // Meta (FB/IG) message kind + ad referral attribution
+                        const referral = msg?.metadata?.referral;
+                        const msgKind = String(msg?.metadata?.kind || '');
+                        const isComment = msgKind === 'comment' || msgKind === 'comment_reply';
+                        const isDmKind = msgKind === 'dm' || msgKind === 'dm_out' || msgKind === 'private_reply';
+                        const permalink = msg?.metadata?.permalink ? String(msg.metadata.permalink) : '';
+
                         const media = msg?.metadata?.media;
                         const mediaKind = String(media?.kind || '').toLowerCase();
                         const mediaSrc = media?.url ? buildMediaSrc(String(media.url)) : '';
@@ -405,6 +433,24 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                                         ? 'bg-blue-600/90 text-white rounded-br-sm'
                                         : 'bg-slate-800 text-slate-200 rounded-bl-sm'
                                 )}>
+                                    {isMeta && (isComment || isDmKind) ? (
+                                        <div className="mb-1 flex items-center gap-1.5">
+                                            <span className={cn(
+                                                'inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide',
+                                                isComment
+                                                    ? (isOut ? 'bg-amber-400/25 text-amber-50' : 'bg-amber-500/15 text-amber-300')
+                                                    : (isOut ? 'bg-blue-300/25 text-blue-50' : 'bg-slate-700 text-slate-300')
+                                            )}>
+                                                {isComment ? <MessageCircle className="w-3 h-3" /> : <Send className="w-3 h-3" />}
+                                                {isComment ? 'Yorum' : 'DM'}
+                                            </span>
+                                            {permalink ? (
+                                                <a href={permalink} target="_blank" rel="noreferrer" className={cn('text-[9px] underline', isOut ? 'text-blue-100' : 'text-blue-300')}>
+                                                    gönderiyə bax
+                                                </a>
+                                            ) : null}
+                                        </div>
+                                    ) : null}
                                     {(adUrl || qAd?.advertiserName || qAd?.caption) && (
                                         <div className={cn(
                                             'mb-2 rounded-xl border p-2',
@@ -449,6 +495,32 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                                             )}
                                         </div>
                                     )}
+
+                                    {referral && (referral.ad_title || referral.ad_id || referral.ref || referral.source) ? (
+                                        <div className={cn(
+                                            'mb-2 rounded-xl border p-2',
+                                            isOut ? 'border-blue-300/30 bg-blue-500/10' : 'border-fuchsia-700/40 bg-fuchsia-950/20'
+                                        )}>
+                                            <p className={cn('text-[10px] font-bold uppercase tracking-wide flex items-center gap-1', isOut ? 'text-blue-100/80' : 'text-fuchsia-300')}>
+                                                <Megaphone className="w-3 h-3" /> Reklamdan gəldi
+                                            </p>
+                                            {referral.ad_title ? (
+                                                <p className={cn('text-xs mt-1', isOut ? 'text-blue-50' : 'text-slate-200')}>
+                                                    <span className="font-semibold">Reklam:</span> {referral.ad_title}
+                                                </p>
+                                            ) : null}
+                                            {(referral.ad_id || referral.ref) ? (
+                                                <p className={cn('mt-1 text-[10px] break-all', isOut ? 'text-blue-100/70' : 'text-slate-500')}>
+                                                    {referral.ad_id ? `ad_id: ${referral.ad_id}` : ''}{referral.ad_id && referral.ref ? ' · ' : ''}{referral.ref ? `ref: ${referral.ref}` : ''}
+                                                </p>
+                                            ) : null}
+                                            {referral.source ? (
+                                                <p className={cn('mt-0.5 text-[10px]', isOut ? 'text-blue-100/70' : 'text-slate-500')}>
+                                                    mənbə: {referral.source}
+                                                </p>
+                                            ) : null}
+                                        </div>
+                                    ) : null}
 
                                     {media && media.tooLarge ? (
                                         <div className={cn(
@@ -503,6 +575,17 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
                                     {!hideBody ? (
                                         <p className="whitespace-pre-wrap break-words">{msg.body}</p>
                                     ) : null}
+                                    {!isOut && isMeta ? (
+                                        <div className="mt-1">
+                                            <button
+                                                type="button"
+                                                onClick={() => startReplyTo(msg)}
+                                                className="inline-flex items-center gap-1 text-[10px] font-semibold text-slate-400 hover:text-blue-300"
+                                            >
+                                                <CornerUpLeft className="w-3 h-3" /> {isComment ? 'Yoruma cavab ver' : 'Mesaja cavab ver'}
+                                            </button>
+                                        </div>
+                                    ) : null}
                                     <p className={cn(
                                         'text-[10px] mt-1 text-right',
                                         isOut ? 'text-blue-200/70' : 'text-slate-500'
@@ -532,6 +615,16 @@ function ChatHistoryTab({ lead, serverUrl }: { lead: Lead; serverUrl: string }) 
 
             {/* Reply Input Area */}
             <div className="shrink-0 p-2 sm:p-3 border-t border-slate-800 bg-[#111827]" style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 0.75rem)' }}>
+                {isMeta && replyTarget ? (
+                    <div className="mb-2 flex items-center justify-between gap-2 rounded-lg border border-blue-900/40 bg-blue-950/20 px-2 py-1.5">
+                        <span className="text-[11px] text-blue-200 truncate">
+                            <span className="font-bold">{replyTarget.kind === 'comment' ? 'Yoruma' : 'Mesaja'} cavab:</span> {replyTarget.label}
+                        </span>
+                        <button type="button" onClick={() => setReplyTarget(null)} className="shrink-0 text-blue-300 hover:text-blue-100" title="Ləğv et">
+                            <X className="w-3.5 h-3.5" />
+                        </button>
+                    </div>
+                ) : null}
                 {isMeta ? (
                     <div className="mb-2 flex flex-col sm:flex-row sm:items-center gap-2">
                         <div className="text-[10px] uppercase font-bold text-slate-500">Reply mode</div>

@@ -2115,6 +2115,24 @@ async function upsertMetaUserToken(tenantId, { user_access_token, expires_at, de
     return res.rows[0] || null;
 }
 
+async function getMetaUserToken(tenantId) {
+    if (!tenantId) return null;
+    const res = await pool.query(
+        'SELECT tenant_id, user_access_token, expires_at, debug_info, status, last_error, updated_at FROM meta_user_tokens WHERE tenant_id = $1 LIMIT 1',
+        [String(tenantId)]
+    );
+    return res.rows[0] || null;
+}
+
+async function deleteMetaUserToken(tenantId) {
+    if (!tenantId) throw new Error('tenantId is required');
+    const res = await pool.query(
+        'DELETE FROM meta_user_tokens WHERE tenant_id = $1 RETURNING tenant_id',
+        [String(tenantId)]
+    );
+    return res.rowCount > 0;
+}
+
 async function upsertFacebookAdImport(tenantId, { access_token, selected_account_ids, selected_campaign_ids, account_cache, campaign_cache, last_error, auto_sync_enabled, auto_sync_start_date, auto_sync_end_date, auto_sync_every_hours, auto_sync_minute, auto_sync_tz_offset_minutes, auto_sync_next_at, last_insight_sync_at, last_insight_sync_error }) {
     if (!tenantId) throw new Error('tenantId is required');
     const safeSelected = Array.isArray(selected_account_ids) ? selected_account_ids.map((x) => String(x || '').trim()).filter(Boolean) : [];
@@ -3800,6 +3818,8 @@ module.exports = {
     completeMetaWebhookEvent,
     failMetaWebhookEvent,
     upsertMetaUserToken,
+    getMetaUserToken,
+    deleteMetaUserToken,
     upsertWhatsAppMediaAsset,
     getWhatsAppMediaAsset,
     upsertFacebookAdImport,

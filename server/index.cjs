@@ -45,6 +45,20 @@ const META_APP_SECRET = process.env.META_APP_SECRET || '';
 const META_APP_ID = process.env.META_APP_ID || '';
 const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || '';
 const META_WEBHOOK_DEBUG = process.env.META_WEBHOOK_DEBUG === 'true';
+
+// Meta Graph API version + server-side OAuth (Facebook Login) config
+const FB_API_VERSION = process.env.FB_API_VERSION || 'v21.0';
+// Public base URL of the deployed app (Render). Used to build the OAuth redirect URI.
+const PUBLIC_APP_URL = String(process.env.PUBLIC_APP_URL || 'https://whatsapp-crm.onrender.com').replace(/\/$/, '');
+// redirect_uri MUST match the "Valid OAuth Redirect URIs" entry in the Meta App dashboard exactly.
+const META_REDIRECT_URI = process.env.META_REDIRECT_URI || `${PUBLIC_APP_URL}/api/meta/oauth/callback`;
+// One OAuth grant powers FB Ads + Instagram + Leads (see architecture spec).
+const META_OAUTH_SCOPES = String(
+  process.env.META_OAUTH_SCOPES ||
+  'pages_show_list,pages_read_engagement,instagram_basic,instagram_manage_insights,business_management,leads_retrieval,pages_manage_ads,ads_management'
+);
+// Stable-ish secret to sign the CSRF state token (ephemeral per-process if not set).
+const META_OAUTH_STATE_SECRET = process.env.META_OAUTH_STATE_SECRET || process.env.JWT_SECRET || INTERNAL_WEBHOOK_SECRET;
 const META_EVENT_PROCESSOR_ENABLED = process.env.META_EVENT_PROCESSOR_ENABLED !== 'false';
 const META_EVENT_PROCESSOR_BATCH = parseInt(process.env.META_EVENT_PROCESSOR_BATCH || '20', 10);
 const META_EVENT_PROCESSOR_INTERVAL_MS = parseInt(process.env.META_EVENT_PROCESSOR_INTERVAL_MS || '1500', 10);
@@ -1172,6 +1186,77 @@ async function upsertMetaInbound({ tenantId, source, contactKey, displayName, te
   });
 }
 
+// In-memory cache of resolved Meta profile names (psid/igsid -> name) to avoid refetching per message.
+const metaProfileNameCache = new Map();
+const META_PROFILE_CACHE_MAX = 5000;
+
+// Best-effort human-readable name for a DM sender. Returns null on any failure (handled by caller).
+async function resolveMetaProfileName({ userId, pageToken, source, igBusinessId }) {
+  void igBusinessId;
+  const id = String(userId || '').trim();
+  const token = String(pageToken || '').trim();
+  if (!id || !token) return null;
+  const cacheKey = (source === 'instagram' ? 'ig:' : 'fb:') + id;
+  if (metaProfileNameCache.has(cacheKey)) return metaProfileNameCache.get(cacheKey) || null;
+
+  let name = null;
+  try {
+    const fields = source === 'instagram' ? 'name,username' : 'name,first_name,last_name';
+    const url = `https://graph.facebook.com/${FB_API_VERSION}/${encodeURIComponent(id)}?fields=${encodeURIComponent(fields)}&access_token=${encodeURIComponent(token)}`;
+    const data = await fetchJsonWithRetry(url, {}, { retries: 0, timeoutMs: 4000 }).catch(() => null);
+    if (data) {
+      name = data.name
+        || [data.first_name, data.last_name].filter(Boolean).join(' ').trim()
+        || (data.username ? `@${data.username}` : null)
+        || null;
+    }
+  } catch {
+    name = null;
+  }
+
+  // Cache even null to avoid hammering Graph; bound the map size (FIFO eviction).
+  if (metaProfileNameCache.size >= META_PROFILE_CACHE_MAX) {
+    const firstKey = metaProfileNameCache.keys().next().value;
+    if (firstKey !== undefined) metaProfileNameCache.delete(firstKey);
+  }
+  metaProfileNameCache.set(cacheKey, name);
+  return name;
+}
+
+// Map the first Meta DM attachment into a `media` object the chat UI already renders.
+function buildMetaMediaFromAttachments(attachments) {
+  if (!Array.isArray(attachments) || attachments.length === 0) return null;
+  const a = attachments[0] || {};
+  const type = String(a.type || '').toLowerCase();
+  const url = a && a.payload && a.payload.url ? String(a.payload.url) : '';
+  if (!url) return null;
+  const kind = type === 'image' ? 'image'
+    : type === 'video' ? 'video'
+    : type === 'audio' ? 'audio'
+    : (type === 'file' || type === 'document') ? 'document'
+    : '';
+  if (!kind) return null;
+  return { kind, url, fileName: (a.payload && a.payload.title) ? String(a.payload.title) : null, source: 'meta' };
+}
+
+// Normalize a Click-to-Messenger / referral payload ("which ad did they come from").
+function normalizeMetaReferral(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const ctx = raw.ads_context_data || raw.adsContextData || {};
+  const out = {
+    source: raw.source || null,   // ADS | SHORTLINK | CUSTOMER_CHAT_PLUGIN | ...
+    type: raw.type || null,       // OPEN_THREAD | ...
+    ad_id: raw.ad_id || raw.adId || null,
+    ref: raw.ref || null,
+    ad_title: ctx.ad_title || ctx.adTitle || null,
+    photo_url: ctx.photo_url || ctx.photoUrl || null,
+    video_url: ctx.video_url || ctx.videoUrl || null,
+    post_id: ctx.post_id || ctx.postId || null
+  };
+  const hasData = out.ad_id || out.ref || out.ad_title || out.source;
+  return hasData ? out : null;
+}
+
 function handleMetaWebhookVerify(req, res) {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -1244,21 +1329,33 @@ async function processMetaWebhookPayload(json) {
       const text = ev?.message?.text || '';
 
       const attachments = Array.isArray(ev?.message?.attachments) ? ev.message.attachments : [];
+      // Map the first attachment into a `media` object the chat UI already knows how to render.
+      const media = buildMetaMediaFromAttachments(attachments);
       let safeText = String(text || '').trim();
       if (!safeText && attachments.length > 0) {
-        safeText = '[Attachment]';
+        const label = media ? (media.kind === 'document' ? 'Document' : media.kind === 'video' ? 'Video' : media.kind === 'audio' ? 'Audio' : 'Image') : 'Attachment';
+        safeText = `[${label}]`;
       }
+
+      // Click-to-Messenger / referral attribution ("which ad did they come from").
+      const referral = normalizeMetaReferral(ev?.referral || ev?.postback?.referral || ev?.message?.referral || null);
 
       const mid = ev?.message?.mid ? String(ev.message.mid) : '';
       const msgId = (source === 'instagram' ? 'igmid:' : 'fbmid:') + (mid || (String(ev?.timestamp || '') || String(Date.now())));
       const createdAtIso = toIsoFromMetaTimestamp(ev?.timestamp || Date.now());
       const direction = isFromPage ? 'out' : 'in';
 
+      // Resolve a human-readable name for inbound DM senders (best-effort, cached).
+      let displayName = null;
+      if (!isFromPage && contactId) {
+        displayName = await resolveMetaProfileName({ userId: contactId, pageToken, source, igBusinessId }).catch(() => null);
+      }
+
       await upsertMetaInbound({
         tenantId,
         source,
         contactKey,
-        displayName: null,
+        displayName,
         text: safeText,
         msgId,
         direction,
@@ -1270,7 +1367,9 @@ async function processMetaWebhookPayload(json) {
           ig_business_id: igBusinessId,
           sender_id: senderId || null,
           recipient_id: recipientId || null,
-          attachments: attachments.length > 0 ? attachments : null
+          attachments: attachments.length > 0 ? attachments : null,
+          media: media || null,
+          referral: referral || null
         }
       });
 
@@ -1479,10 +1578,10 @@ async function pollMetaOutbox() {
         if (platform === 'instagram') {
           const igId = dispatch?.ig_id ? String(dispatch.ig_id) : (igBusinessId ? String(igBusinessId) : '');
           if (!igId) throw new Error('Missing ig_id');
-          graphResult = await postGraphJson(`${igId}/messages`, { recipient: { id: userId }, message: { text: row.body } }, pageToken);
+          graphResult = await sendMetaDmMessage(`${igId}/messages`, userId, row.body, pageToken);
           outId = graphResult?.message_id || graphResult?.id || null;
         } else {
-          graphResult = await postGraphJson(`me/messages`, { recipient: { id: userId }, message: { text: row.body } }, pageToken);
+          graphResult = await sendMetaDmMessage('me/messages', userId, row.body, pageToken);
           outId = graphResult?.message_id || graphResult?.id || null;
         }
       } else {
@@ -5460,7 +5559,7 @@ async function exchangeForLongLivedUserToken(userAccessToken) {
   }
 
   // https://developers.facebook.com/docs/facebook-login/access-tokens/refreshing
-  const url = `https://graph.facebook.com/v19.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${encodeURIComponent(String(META_APP_ID))}&client_secret=${encodeURIComponent(String(META_APP_SECRET))}&fb_exchange_token=${encodeURIComponent(token)}`;
+  const url = `https://graph.facebook.com/${FB_API_VERSION}/oauth/access_token?grant_type=fb_exchange_token&client_id=${encodeURIComponent(String(META_APP_ID))}&client_secret=${encodeURIComponent(String(META_APP_SECRET))}&fb_exchange_token=${encodeURIComponent(token)}`;
   const data = await fetchJsonWithRetry(url, {}, { retries: 0, timeoutMs: 6000 }).catch((e) => {
     throw new Error(e?.message || 'Token exchange failed');
   });
@@ -5476,7 +5575,7 @@ async function fetchMetaPagesForToken(userAccessToken) {
   const token = String(userAccessToken || '').trim();
   if (!token) throw new Error('Token is required');
 
-  const url = `https://graph.facebook.com/v19.0/me/accounts?fields=${encodeURIComponent(
+  const url = `https://graph.facebook.com/${FB_API_VERSION}/me/accounts?fields=${encodeURIComponent(
     'id,name,access_token,instagram_business_account{id,username},connected_instagram_account{id,username}'
   )}&limit=200&access_token=${encodeURIComponent(token)}`;
 
@@ -5492,6 +5591,66 @@ async function fetchMetaPagesForToken(userAccessToken) {
       igUsername: ig?.username ? String(ig.username) : null,
     };
   }).filter((p) => p.pageId && p.pageAccessToken);
+}
+
+// ─── Server-side OAuth (Facebook Login) helpers ───
+// CSRF state is a signed, self-contained token: base64url(payload).hmac
+// It carries the tenantId so the (unauthenticated) callback can attribute the result.
+function createMetaOAuthState(tenantId) {
+  const payload = { t: String(tenantId || ''), n: crypto.randomBytes(9).toString('hex'), ts: Date.now() };
+  const b64 = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+  const sig = crypto.createHmac('sha256', META_OAUTH_STATE_SECRET).update(b64).digest('base64url');
+  return `${b64}.${sig}`;
+}
+
+function verifyMetaOAuthState(state, maxAgeMs = 10 * 60 * 1000) {
+  const raw = String(state || '');
+  const dot = raw.indexOf('.');
+  if (dot <= 0) return null;
+  const b64 = raw.slice(0, dot);
+  const sig = raw.slice(dot + 1);
+  const expected = crypto.createHmac('sha256', META_OAUTH_STATE_SECRET).update(b64).digest('base64url');
+  if (!safeEqual(sig, expected)) return null;
+  let payload;
+  try {
+    payload = JSON.parse(Buffer.from(b64, 'base64url').toString('utf8'));
+  } catch {
+    return null;
+  }
+  if (!payload || !payload.t || !payload.ts) return null;
+  if (Date.now() - Number(payload.ts) > maxAgeMs) return null;
+  return { tenantId: String(payload.t) };
+}
+
+function buildMetaOAuthDialogUrl(state) {
+  const params = new URLSearchParams({
+    client_id: String(META_APP_ID),
+    redirect_uri: META_REDIRECT_URI,
+    scope: META_OAUTH_SCOPES,
+    state,
+    response_type: 'code'
+  });
+  return `https://www.facebook.com/${FB_API_VERSION}/dialog/oauth?${params.toString()}`;
+}
+
+// Step (a)→(b): exchange the one-time OAuth `code` for a short-lived user token.
+async function exchangeCodeForUserToken(code) {
+  if (!META_APP_ID || !META_APP_SECRET) throw new Error('META_APP_ID/META_APP_SECRET missing');
+  const url = `https://graph.facebook.com/${FB_API_VERSION}/oauth/access_token?client_id=${encodeURIComponent(String(META_APP_ID))}&client_secret=${encodeURIComponent(String(META_APP_SECRET))}&redirect_uri=${encodeURIComponent(META_REDIRECT_URI)}&code=${encodeURIComponent(String(code))}`;
+  const data = await fetchJsonWithRetry(url, {}, { retries: 0, timeoutMs: 8000 });
+  return {
+    access_token: data?.access_token ? String(data.access_token) : '',
+    expires_in: data?.expires_in ? Number(data.expires_in) : null
+  };
+}
+
+// debug_token introspection (uses an app access token: "{app_id}|{app_secret}").
+async function introspectMetaToken(token) {
+  if (!META_APP_ID || !META_APP_SECRET || !token) return null;
+  const appToken = `${META_APP_ID}|${META_APP_SECRET}`;
+  const url = `https://graph.facebook.com/${FB_API_VERSION}/debug_token?input_token=${encodeURIComponent(String(token))}&access_token=${encodeURIComponent(appToken)}`;
+  const data = await fetchJsonWithRetry(url, {}, { retries: 0, timeoutMs: 6000 }).catch(() => null);
+  return data?.data || null;
 }
 
 function normalizeFacebookAdAccount(row) {
@@ -5517,7 +5676,7 @@ async function fetchFacebookAdAccountsForToken(userAccessToken) {
   if (!token) throw new Error('Token is required');
 
   const out = [];
-  let nextUrl = `https://graph.facebook.com/v19.0/me/adaccounts?fields=${encodeURIComponent(
+  let nextUrl = `https://graph.facebook.com/${FB_API_VERSION}/me/adaccounts?fields=${encodeURIComponent(
     'id,account_id,name,account_status,currency,timezone_name,timezone_offset_hours_utc,business{id,name}'
   )}&limit=200&access_token=${encodeURIComponent(token)}`;
 
@@ -6083,45 +6242,102 @@ async function subscribeMetaWebhooks({ pageId, pageAccessToken, igBusinessId }) 
   return out;
 }
 
-app.post('/api/meta/discover', requireTenantAuth, requirePermission('manage_meta_integration', 'Meta inteqrasiyası icazəniz yoxdur'), asyncHandler(async (req, res) => {
-  const token = String(req.body?.token || '').trim();
-  if (!token) return res.status(400).json({ error: 'token is required' });
-  const ex = await exchangeForLongLivedUserToken(token).catch(() => ({ access_token: token, expires_in: null, exchanged: false }));
-  const pages = await fetchMetaPagesForToken(ex.access_token);
-  res.json({ pages, exchanged: Boolean(ex.exchanged), expires_in: ex.expires_in });
+// ═══════════════════════════════════════════════════════════════
+// SERVER-SIDE OAUTH (Facebook Login) — replaces manual token paste.
+// One grant powers FB Ads + Instagram + Leads. App secret stays server-side;
+// the OAuth code→token exchange happens here and tokens never reach the UI.
+// ═══════════════════════════════════════════════════════════════
+
+// Step 1: UI (authenticated) asks for the Meta dialog URL, then navigates to it.
+app.post('/api/meta/oauth/start', requireTenantAuth, requirePermission('manage_meta_integration', 'Meta inteqrasiyası icazəniz yoxdur'), asyncHandler(async (req, res) => {
+  if (!META_APP_ID || !META_APP_SECRET) {
+    return res.status(400).json({ error: 'META_APP_ID/META_APP_SECRET missing (Render → Environment → deploy/restart)' });
+  }
+  const state = createMetaOAuthState(req.tenantId);
+  const url = buildMetaOAuthDialogUrl(state);
+  res.json({ url, redirectUri: META_REDIRECT_URI });
 }));
 
-app.post('/api/meta/connect', requireTenantAuth, requirePermission('manage_meta_integration', 'Meta inteqrasiyası icazəniz yoxdur'), asyncHandler(async (req, res) => {
-  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
-  if (!db || typeof db.upsertMetaPage !== 'function') return res.status(501).json({ error: 'Meta integration is unavailable' });
+// Step 2: Meta redirects the browser here (no app auth — identity comes from signed state).
+// Exchanges code → short → long-lived user token, persists it, then bounces back to the UI.
+app.get('/api/meta/oauth/callback', asyncHandler(async (req, res) => {
+  const back = (status) => res.redirect(`/settings?meta_oauth=${encodeURIComponent(status)}`);
+  const errorReason = String(req.query?.error_description || req.query?.error_reason || req.query?.error || '');
+  if (errorReason) return back('denied');
 
-  const token = String(req.body?.token || '').trim();
-  const pageIds = Array.isArray(req.body?.pageIds) ? req.body.pageIds.map((x) => String(x).trim()).filter(Boolean) : [];
-  if (!token) return res.status(400).json({ error: 'token is required' });
-  if (pageIds.length === 0) return res.status(400).json({ error: 'pageIds is required' });
+  const code = String(req.query?.code || '');
+  const parsed = verifyMetaOAuthState(req.query?.state);
+  if (!parsed) return back('badstate');
+  if (!code) return back('nocode');
 
-  const ex = await exchangeForLongLivedUserToken(token).catch((e) => ({ access_token: token, expires_in: null, exchanged: false, error: e?.message }));
-  const effectiveToken = ex && ex.access_token ? ex.access_token : token;
-
-  // Persist user token for this tenant (used for later re-connect/debug flows)
   try {
-    if (typeof db.upsertMetaUserToken === 'function') {
-      const expiresAt = (ex && ex.expires_in && Number.isFinite(ex.expires_in))
-        ? new Date(Date.now() + (Number(ex.expires_in) * 1000))
-        : null;
-      await db.upsertMetaUserToken(req.tenantId, {
+    const short = await exchangeCodeForUserToken(code);
+    if (!short.access_token) return back('exchangefail');
+
+    const long = await exchangeForLongLivedUserToken(short.access_token)
+      .catch(() => ({ access_token: short.access_token, expires_in: short.expires_in, exchanged: false }));
+    const effectiveToken = long?.access_token || short.access_token;
+
+    const info = await introspectMetaToken(effectiveToken);
+    const expiresAt = info?.expires_at
+      ? new Date(Number(info.expires_at) * 1000)
+      : (long?.expires_in ? new Date(Date.now() + Number(long.expires_in) * 1000) : null);
+
+    if (process.env.DATABASE_URL && db && typeof db.upsertMetaUserToken === 'function') {
+      await db.upsertMetaUserToken(parsed.tenantId, {
         user_access_token: effectiveToken,
         expires_at: expiresAt,
-        debug_info: { exchanged: Boolean(ex.exchanged), source: 'connect' },
+        debug_info: { source: 'oauth', exchanged: Boolean(long?.exchanged), scopes: info?.scopes || [], type: info?.type || null },
         status: 'active',
-        last_error: ex?.error || null
+        last_error: null
       });
     }
-  } catch {
-    // non-fatal
+    return back('success');
+  } catch (e) {
+    if (META_WEBHOOK_DEBUG) console.warn('⚠️ Meta OAuth callback error:', e?.message);
+    return back('error');
+  }
+}));
+
+// Step 3: UI loads the pages reachable by the stored user token — METADATA ONLY (no tokens).
+app.get('/api/meta/oauth/pending', requireTenantAuth, requirePermission('manage_meta_integration', 'Meta inteqrasiyası icazəniz yoxdur'), asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  if (!db || typeof db.getMetaUserToken !== 'function') return res.status(501).json({ error: 'Meta integration is unavailable' });
+
+  const tok = await db.getMetaUserToken(req.tenantId).catch(() => null);
+  if (!tok || !tok.user_access_token) return res.json({ pending: false, pages: [] });
+
+  try {
+    const pages = await fetchMetaPagesForToken(tok.user_access_token);
+    const safe = pages.map((p) => ({
+      pageId: p.pageId,
+      pageName: p.pageName,
+      igBusinessId: p.igBusinessId,
+      igUsername: p.igUsername,
+      hasToken: Boolean(p.pageAccessToken)
+    }));
+    res.json({ pending: true, pages: safe, expires_at: tok.expires_at || null, status: tok.status || null });
+  } catch (e) {
+    // Token likely expired/revoked → surface so UI can prompt re-connect.
+    res.json({ pending: true, pages: [], error: e?.message || 'Token etibarsızdır, yenidən bağlanın' });
+  }
+}));
+
+// Step 4: UI confirms which pages to keep → save page tokens + subscribe webhooks.
+app.post('/api/meta/oauth/select', requireTenantAuth, requirePermission('manage_meta_integration', 'Meta inteqrasiyası icazəniz yoxdur'), asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  if (!db || typeof db.upsertMetaPage !== 'function' || typeof db.getMetaUserToken !== 'function') {
+    return res.status(501).json({ error: 'Meta integration is unavailable' });
+  }
+  const pageIds = Array.isArray(req.body?.pageIds) ? req.body.pageIds.map((x) => String(x).trim()).filter(Boolean) : [];
+  if (pageIds.length === 0) return res.status(400).json({ error: 'pageIds is required' });
+
+  const tok = await db.getMetaUserToken(req.tenantId).catch(() => null);
+  if (!tok || !tok.user_access_token) {
+    return res.status(400).json({ error: 'Pending OAuth sessiyası yoxdur. Əvvəlcə "Facebook ilə Bağlan".' });
   }
 
-  const discovered = await fetchMetaPagesForToken(effectiveToken);
+  const discovered = await fetchMetaPagesForToken(tok.user_access_token);
   const byId = new Map(discovered.map((p) => [p.pageId, p]));
 
   const saved = [];
@@ -6137,7 +6353,6 @@ app.post('/api/meta/connect', requireTenantAuth, requirePermission('manage_meta_
     });
     if (row) saved.push(row);
 
-    // Best-effort: subscribe app to the Page/IG for webhook delivery
     const sub = await subscribeMetaWebhooks({
       pageId: p.pageId,
       pageAccessToken: p.pageAccessToken,
@@ -6146,68 +6361,15 @@ app.post('/api/meta/connect', requireTenantAuth, requirePermission('manage_meta_
     subscribe.push({ pageId: p.pageId, igBusinessId: p.igBusinessId || null, result: sub });
   }
 
-  res.status(201).json({ success: true, savedCount: saved.length, pages: saved, subscribe, exchanged: Boolean(ex.exchanged), expires_in: ex.expires_in || null });
+  res.status(201).json({ success: true, savedCount: saved.length, pages: saved, subscribe });
 }));
 
-// Auto-connect: token ver → bütün sayfaları avtomatik tap, bağla, subscribe et
-app.post('/api/meta/auto-connect', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
-  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
-  if (!db || typeof db.upsertMetaPage !== 'function') return res.status(501).json({ error: 'Meta integration is unavailable' });
-
-  const token = String(req.body?.token || '').trim();
-  if (!token) return res.status(400).json({ error: 'token is required' });
-
-  // 1. Long-lived token al
-  const ex = await exchangeForLongLivedUserToken(token).catch((e) => ({ access_token: token, expires_in: null, exchanged: false, error: e?.message }));
-  const effectiveToken = ex && ex.access_token ? ex.access_token : token;
-
-  // User token'ı kaydet
-  try {
-    if (typeof db.upsertMetaUserToken === 'function') {
-      const expiresAt = (ex && ex.expires_in && Number.isFinite(ex.expires_in))
-        ? new Date(Date.now() + (Number(ex.expires_in) * 1000))
-        : null;
-      await db.upsertMetaUserToken(req.tenantId, {
-        user_access_token: effectiveToken,
-        expires_at: expiresAt,
-        debug_info: { exchanged: Boolean(ex.exchanged), source: 'auto-connect' },
-        status: 'active',
-        last_error: ex?.error || null
-      });
-    }
-  } catch { /* non-fatal */ }
-
-  // 2. Tüm sayfaları keşfet
-  const discovered = await fetchMetaPagesForToken(effectiveToken);
-  if (discovered.length === 0) {
-    return res.status(200).json({ success: true, savedCount: 0, pages: [], subscribe: [], message: 'Bu token ile erişilebilir sayfa bulunamadı.' });
+// Discard the pending OAuth session (stored user token) without touching connected pages.
+app.post('/api/meta/oauth/cancel', requireTenantAuth, requirePermission('manage_meta_integration', 'Meta inteqrasiyası icazəniz yoxdur'), asyncHandler(async (req, res) => {
+  if (process.env.DATABASE_URL && db && typeof db.deleteMetaUserToken === 'function') {
+    await db.deleteMetaUserToken(req.tenantId).catch(() => {});
   }
-
-  // 3. Hepsini bağla ve subscribe et
-  const saved = [];
-  const subscribe = [];
-  for (const p of discovered) {
-    if (!p.pageId || !p.pageAccessToken) continue;
-    try {
-      const row = await db.upsertMetaPage(req.tenantId, {
-        page_id: p.pageId,
-        page_name: p.pageName || null,
-        page_access_token: p.pageAccessToken,
-        ig_business_id: p.igBusinessId || null
-      });
-      if (row) saved.push(row);
-      const sub = await subscribeMetaWebhooks({
-        pageId: p.pageId,
-        pageAccessToken: p.pageAccessToken,
-        igBusinessId: p.igBusinessId || null,
-      });
-      subscribe.push({ pageId: p.pageId, pageName: p.pageName || null, igBusinessId: p.igBusinessId || null, result: sub });
-    } catch (e) {
-      subscribe.push({ pageId: p.pageId, pageName: p.pageName || null, error: e?.message || 'failed' });
-    }
-  }
-
-  res.status(201).json({ success: true, savedCount: saved.length, pages: saved, subscribe, exchanged: Boolean(ex.exchanged), expires_in: ex.expires_in || null });
+  res.json({ success: true });
 }));
 
 app.post('/api/meta/pages/:pageId/subscribe', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
@@ -6272,7 +6434,11 @@ app.get('/api/meta/config', requireTenantAuth, requireAdmin, asyncHandler(async 
     hasAppSecret: Boolean(META_APP_SECRET),
     hasVerifyToken: Boolean(META_VERIFY_TOKEN),
     dbEnabled: Boolean(process.env.DATABASE_URL),
-    callbackPath: '/api/webhooks/meta'
+    callbackPath: '/api/webhooks/meta',
+    oauthConfigured: Boolean(META_APP_ID && META_APP_SECRET),
+    oauthRedirectUri: META_REDIRECT_URI,
+    oauthScopes: META_OAUTH_SCOPES.split(',').map((s) => s.trim()).filter(Boolean),
+    apiVersion: FB_API_VERSION
   });
 }));
 
@@ -6817,6 +6983,31 @@ async function postGraphJson(path, payload, accessToken, timeoutMs = 7000) {
   return json;
 }
 
+// Detect "outside the 24-hour standard messaging window" errors from the Send API.
+function isMetaOutOfWindowError(msg) {
+  const m = String(msg || '').toLowerCase();
+  return m.includes('2018278')                  // subcode: message sent outside of allowed window
+    || m.includes('outside the allowed window')
+    || m.includes('outside of the allowed window')
+    || m.includes('24-hour') || m.includes('24 hour') || m.includes('24h')
+    || m.includes('message tag')
+    || (m.includes('code 10') && m.includes('window'));
+}
+
+// Send a Meta DM with the standard 24h window (messaging_type=RESPONSE); if outside the
+// window, retry once under the Human Agent tag (needs the human_agent feature approved).
+async function sendMetaDmMessage(node, userId, body, pageToken) {
+  const base = { recipient: { id: String(userId) }, message: { text: String(body || '') } };
+  try {
+    return await postGraphJson(node, { ...base, messaging_type: 'RESPONSE' }, pageToken);
+  } catch (e) {
+    if (isMetaOutOfWindowError(e && e.message)) {
+      return await postGraphJson(node, { ...base, messaging_type: 'MESSAGE_TAG', tag: 'HUMAN_AGENT' }, pageToken);
+    }
+    throw e;
+  }
+}
+
 app.post('/api/meta/leads/:id/reply', requireTenantAuth, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   const leadId = String(req.params.id || '').trim();
@@ -6838,17 +7029,30 @@ app.post('/api/meta/leads/:id/reply', requireTenantAuth, asyncHandler(async (req
     return res.status(400).json({ error: 'Lead is not a Meta (FB/IG) lead' });
   }
 
-  // Find the most recent relevant inbound event metadata
-  const lastCommentRes = await db.pool.query(
-    "SELECT metadata FROM messages WHERE lead_id = $1 AND tenant_id = $2 AND (metadata->>'kind') = 'comment' ORDER BY created_at DESC LIMIT 1",
-    [leadId, req.tenantId]
-  );
+  // Optional: target a specific comment (per-message reply) instead of the latest one.
+  const requestedCommentId = String(req.body?.comment_id || '').trim();
+
+  // Find the relevant inbound event metadata
+  let commentMeta = null;
+  if (requestedCommentId) {
+    const specific = await db.pool.query(
+      "SELECT metadata FROM messages WHERE lead_id = $1 AND tenant_id = $2 AND (metadata->>'comment_id') = $3 ORDER BY created_at DESC LIMIT 1",
+      [leadId, req.tenantId, requestedCommentId]
+    );
+    commentMeta = specific.rows[0]?.metadata || null;
+    if (!commentMeta) return res.status(400).json({ error: 'Hədəf comment tapılmadı (bu lead-ə aid deyil)' });
+  } else {
+    const lastCommentRes = await db.pool.query(
+      "SELECT metadata FROM messages WHERE lead_id = $1 AND tenant_id = $2 AND (metadata->>'kind') = 'comment' ORDER BY created_at DESC LIMIT 1",
+      [leadId, req.tenantId]
+    );
+    commentMeta = lastCommentRes.rows[0]?.metadata || null;
+  }
+
   const lastDmRes = await db.pool.query(
     "SELECT metadata, direction FROM messages WHERE lead_id = $1 AND tenant_id = $2 AND (metadata->>'kind') = 'dm' ORDER BY created_at DESC LIMIT 1",
     [leadId, req.tenantId]
   );
-
-  const commentMeta = lastCommentRes.rows[0]?.metadata || null;
   const dmMeta = lastDmRes.rows[0]?.metadata || null;
   const dmDirection = lastDmRes.rows[0]?.direction || 'in';
 

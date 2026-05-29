@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { RefreshCcw, Wifi, WifiOff, Link2, Trash2, BellRing, Send, Bot, ShieldCheck, ScanSearch, AlertCircle, Info, ClipboardCopy, CheckCircle2 } from 'lucide-react';
+import { RefreshCcw, Wifi, WifiOff, Link2, Trash2, BellRing, Send, Bot, ShieldCheck, ScanSearch, AlertCircle, Info, ClipboardCopy, CheckCircle2, Facebook, XCircle } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import { CrmService } from '../../../services/CrmService';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/Card';
@@ -38,9 +38,11 @@ export function ConnectionTab() {
   const [metaBusy, setMetaBusy] = useState(false);
   const [metaError, setMetaError] = useState('');
 
-  const [userToken, setUserToken] = useState('');
-  const [discovered, setDiscovered] = useState<{ pageId: string; pageName: string | null; igBusinessId: string | null; igUsername: string | null }[]>([]);
+  const [oauthBusy, setOauthBusy] = useState(false);
+  const [pendingActive, setPendingActive] = useState(false);
+  const [pendingPages, setPendingPages] = useState<{ pageId: string; pageName: string | null; igBusinessId: string | null; igUsername: string | null; hasToken: boolean }[]>([]);
   const [selectedPageIds, setSelectedPageIds] = useState<string[]>([]);
+  const [oauthNotice, setOauthNotice] = useState<{ kind: 'success' | 'error' | 'info'; text: string } | null>(null);
   const [webhookStats, setWebhookStats] = useState<any | null>(null);
   const [lastConnectReport, setLastConnectReport] = useState<any | null>(null);
   const [metaConfig, setMetaConfig] = useState<any | null>(null);
@@ -283,36 +285,57 @@ export function ConnectionTab() {
     return '';
   };
 
-  const discoverPages = async () => {
-    setMetaBusy(true);
+  // Step 1: ask backend for the Facebook dialog URL, then redirect the browser to Meta.
+  const startOAuth = async () => {
+    setOauthBusy(true);
     setMetaError('');
-    setDiscovered([]);
-    setSelectedPageIds([]);
-    setLastConnectReport(null);
+    setOauthNotice(null);
     try {
       const url = CrmService.getServerUrl();
       const authToken = localStorage.getItem('crm_auth_token');
       if (!url || !authToken) return;
-      const res = await fetch(`${url}/api/meta/discover`, {
+      const res = await fetch(`${url}/api/meta/oauth/start`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
-        body: JSON.stringify({ token: userToken })
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` }
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.error || 'Səhifələr alınmadı');
-      const pages = Array.isArray(data?.pages) ? data.pages : [];
-      setDiscovered(pages);
-      // Yeni (bağlı olmayan) sayfalar varsayılan seçili gelsin
-      const connected = new Set((metaPages || []).map(p => String(p.page_id)));
-      setSelectedPageIds(pages.filter((p: any) => !connected.has(p.pageId)).map((p: any) => p.pageId));
+      if (!res.ok || !data?.url) throw new Error(data?.error || 'OAuth başlatıla bilmədi');
+      window.location.href = data.url;
     } catch (e: any) {
-      setMetaError(e?.message || 'Səhifələr alınmadı');
-    } finally {
-      setMetaBusy(false);
+      setMetaError(e?.message || 'OAuth başlatıla bilmədi');
+      setOauthBusy(false);
     }
   };
 
-  const connectSelected = async () => {
+  // Step 3: load the pages reachable by the stored user token (metadata only, no tokens).
+  const loadPending = async (silent = false) => {
+    if (!silent) setMetaBusy(true);
+    try {
+      const url = CrmService.getServerUrl();
+      const authToken = localStorage.getItem('crm_auth_token');
+      if (!url || !authToken) return;
+      const res = await fetch(`${url}/api/meta/oauth/pending`, {
+        headers: { 'Authorization': `Bearer ${authToken}` }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Pending sessiya oxunmadı');
+      const active = Boolean(data?.pending);
+      setPendingActive(active);
+      const pages = Array.isArray(data?.pages) ? data.pages : [];
+      setPendingPages(pages);
+      if (data?.error) setOauthNotice({ kind: 'error', text: String(data.error) });
+      // Default-select pages that are not yet connected.
+      const connected = new Set((metaPages || []).map(p => String(p.page_id)));
+      setSelectedPageIds(pages.filter((p: any) => p.hasToken && !connected.has(p.pageId)).map((p: any) => p.pageId));
+    } catch (e: any) {
+      if (!silent) setMetaError(e?.message || 'Pending sessiya oxunmadı');
+    } finally {
+      if (!silent) setMetaBusy(false);
+    }
+  };
+
+  // Step 4: confirm which pages to keep → backend saves page tokens + subscribes webhooks.
+  const selectPages = async () => {
     if (selectedPageIds.length === 0) return;
     setMetaBusy(true);
     setMetaError('');
@@ -321,24 +344,44 @@ export function ConnectionTab() {
       const url = CrmService.getServerUrl();
       const authToken = localStorage.getItem('crm_auth_token');
       if (!url || !authToken) return;
-      const res = await fetch(`${url}/api/meta/connect`, {
+      const res = await fetch(`${url}/api/meta/oauth/select`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
-        body: JSON.stringify({ token: userToken, pageIds: selectedPageIds })
+        body: JSON.stringify({ pageIds: selectedPageIds })
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.error || 'Qoşulma uğursuz oldu');
+      if (!res.ok) throw new Error(data?.error || 'Səhifələr qoşulmadı');
       setLastConnectReport(data?.subscribe || null);
-      setUserToken('');
-      setDiscovered([]);
-      setSelectedPageIds([]);
+      setOauthNotice({ kind: 'success', text: `${data?.savedCount ?? selectedPageIds.length} səhifə qoşuldu.` });
       await refreshMeta();
       await refreshWebhookStats();
       await refreshMetaConfig();
+      await loadPending(true);
     } catch (e: any) {
-      setMetaError(e?.message || 'Qoşulma alınmadı');
+      setMetaError(e?.message || 'Səhifələr qoşulmadı');
     } finally {
       setMetaBusy(false);
+    }
+  };
+
+  // Discard the pending OAuth session (stored user token) without touching connected pages.
+  const cancelOAuth = async () => {
+    setOauthBusy(true);
+    setMetaError('');
+    try {
+      const url = CrmService.getServerUrl();
+      const authToken = localStorage.getItem('crm_auth_token');
+      if (!url || !authToken) return;
+      await fetch(`${url}/api/meta/oauth/cancel`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${authToken}` }
+      }).catch(() => {});
+      setPendingActive(false);
+      setPendingPages([]);
+      setSelectedPageIds([]);
+      setOauthNotice(null);
+    } finally {
+      setOauthBusy(false);
     }
   };
 
@@ -397,10 +440,38 @@ export function ConnectionTab() {
     refreshWebhookStats();
     refreshMetaConfig();
 
+    // Handle the OAuth redirect status set by the backend callback (?meta_oauth=...).
+    let oauthSucceeded = false;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const status = params.get('meta_oauth');
+      if (status) {
+        const messages: Record<string, { kind: 'success' | 'error' | 'info'; text: string }> = {
+          success: { kind: 'success', text: 'Facebook icazəsi verildi. Aşağıdan səhifələri seçib qoşun.' },
+          denied: { kind: 'error', text: 'İcazə ləğv edildi. Yenidən cəhd edin.' },
+          badstate: { kind: 'error', text: 'Təhlükəsizlik yoxlaması uğursuz oldu (state). Yenidən cəhd edin.' },
+          nocode: { kind: 'error', text: 'Meta-dan kod gəlmədi. Yenidən cəhd edin.' },
+          exchangefail: { kind: 'error', text: 'Token mübadiləsi alınmadı. Yenidən cəhd edin.' },
+          error: { kind: 'error', text: 'OAuth zamanı xəta baş verdi. Yenidən cəhd edin.' }
+        };
+        setOauthNotice(messages[status] || { kind: 'info', text: `OAuth: ${status}` });
+        oauthSucceeded = status === 'success';
+        // Clean the query param so a refresh does not re-trigger the notice.
+        params.delete('meta_oauth');
+        const clean = window.location.pathname + (params.toString() ? `?${params}` : '') + window.location.hash;
+        window.history.replaceState({}, '', clean);
+      }
+    } catch {
+      // ignore URL parsing issues
+    }
+    // Always probe for a stored pending session (resilient across refresh); force-show after success.
+    loadPending(!oauthSucceeded);
+
     return () => {
       cleanupHealth();
       cleanupAuth();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleReconnect = async () => {
@@ -417,6 +488,8 @@ export function ConnectionTab() {
 
   const callbackPath = metaConfig?.callbackPath || '/api/webhooks/meta';
   const callbackUrl = info?.serverUrl ? `${String(info.serverUrl).replace(/\/$/, '')}${callbackPath}` : callbackPath;
+  const oauthRedirectUri = metaConfig?.oauthRedirectUri
+    || (info?.serverUrl ? `${String(info.serverUrl).replace(/\/$/, '')}/api/meta/oauth/callback` : '/api/meta/oauth/callback');
 
   const tgServerEnabled = tgConfig ? (tgConfig.enabled !== false) : false;
   const tgServerChat = String(tgConfig?.chat_id || '').trim();
@@ -866,7 +939,19 @@ export function ConnectionTab() {
                 {' → Verify Token = META_VERIFY_TOKEN → Verify and Save.'}
               </div>
               <div className="mt-1">
-                {'3) Meta Developers → Webhooks → Add Subscriptions: '}
+                {'3) Facebook Login → Settings → Valid OAuth Redirect URIs = '}
+                <span className="text-slate-200 font-semibold break-all">{oauthRedirectUri}</span>
+                <button
+                  type="button"
+                  onClick={() => copyText(oauthRedirectUri)}
+                  className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-700 text-slate-300 hover:bg-slate-800 align-middle"
+                  title="Copy redirect URI"
+                >
+                  <ClipboardCopy className="w-3 h-3" />
+                </button>
+              </div>
+              <div className="mt-1">
+                {'4) Meta Developers → Webhooks → Add Subscriptions: '}
                 <span className="text-slate-200 font-semibold">messages</span>
                 {', '}
                 <span className="text-slate-200 font-semibold">messaging_postbacks</span>
@@ -875,7 +960,9 @@ export function ConnectionTab() {
                 {' (Instagram).'}
               </div>
               <div className="mt-1">
-                {'4) Token yaz → Sayfaları Gətir → istədiklərini seç → Seçilənləri Bağla.'}
+                {'5) '}
+                <span className="text-slate-200 font-semibold">Facebook ilə Bağlan</span>
+                {' → icazə ver → qayıdışda səhifələri seç → Seçilənləri Qoş.'}
               </div>
               <div className="mt-1 text-slate-500">
                 Qayda: Webhook <span className="text-slate-200 font-semibold">ok</span> artmadan trigger işləməyəcək.
@@ -922,75 +1009,112 @@ export function ConnectionTab() {
               </div>
             ) : null}
 
+            {oauthNotice ? (
+              <div className={cn(
+                'rounded-lg border px-3 py-2 text-[11px] flex items-start gap-2',
+                oauthNotice.kind === 'success' ? 'border-emerald-900/40 bg-emerald-950/15 text-emerald-300'
+                  : oauthNotice.kind === 'error' ? 'border-red-900/40 bg-red-950/15 text-red-300'
+                  : 'border-blue-900/40 bg-blue-950/15 text-blue-300'
+              )}>
+                {oauthNotice.kind === 'success' ? <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
+                  : oauthNotice.kind === 'error' ? <XCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                  : <Info className="w-4 h-4 mt-0.5 shrink-0" />}
+                <span>{oauthNotice.text}</span>
+              </div>
+            ) : null}
+
             <div>
-              <label className="text-[10px] uppercase font-bold text-slate-500 mb-1 block">User Access Token</label>
-              <div className="flex gap-2">
-                <input
-                  type="password"
-                  value={userToken}
-                  onChange={(e) => { setUserToken(e.target.value); setDiscovered([]); setSelectedPageIds([]); }}
-                  onKeyDown={(e) => { if (e.key === 'Enter' && userToken.trim() && !metaBusy) discoverPages(); }}
-                  className="flex-1 h-9 rounded-lg bg-slate-950 border border-slate-800 px-3 text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-600/50"
-                  placeholder="EAAG..."
-                />
-                <button
-                  onClick={discoverPages}
-                  disabled={metaBusy || !userToken.trim()}
-                  className="px-3 h-9 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 transition-colors disabled:opacity-50 whitespace-nowrap"
-                >
-                  {metaBusy && discovered.length === 0 ? '...' : 'Sayfaları Gətir'}
-                </button>
-              </div>
-              <div className="mt-1 text-[10px] text-slate-600">
-                {'Facebook User Access Token yaz → sayfaları gətir → seç → Bağla.'}
-              </div>
+              <button
+                onClick={startOAuth}
+                disabled={oauthBusy || metaBusy || (metaConfig != null && metaConfig.oauthConfigured === false)}
+                className="w-full h-10 rounded-lg text-sm font-semibold bg-[#1877F2] hover:bg-[#1465d8] text-white transition-colors disabled:opacity-50 inline-flex items-center justify-center gap-2"
+              >
+                <Facebook className="w-4 h-4" />
+                {oauthBusy ? 'Yönləndirilir...' : 'Facebook ilə Bağlan'}
+              </button>
+              {metaConfig && metaConfig.oauthConfigured === false ? (
+                <div className="mt-1 text-[10px] text-amber-400">
+                  OAuth üçün META_APP_ID + META_APP_SECRET tələb olunur (Render → Environment).
+                </div>
+              ) : (
+                <div className="mt-1 text-[10px] text-slate-600">
+                  {'Facebook icazə pəncərəsinə yönlənəcəksiniz. Qayıdışda səhifələri seçib qoşacaqsınız.'}
+                </div>
+              )}
             </div>
 
-            {discovered.length > 0 ? (
+            {pendingActive ? (
               <div className="rounded-lg border border-slate-800 bg-slate-950/30 p-3">
                 <div className="flex items-center justify-between gap-2 mb-2">
-                  <div className="text-[10px] uppercase font-bold text-slate-500">Tapılan səhifələr ({discovered.length})</div>
-                  <button
-                    onClick={() => {
-                      const all = discovered.map(d => d.pageId);
-                      setSelectedPageIds(selectedPageIds.length === all.length ? [] : all);
-                    }}
-                    className="px-2 py-1 rounded text-[10px] font-bold border border-slate-700 text-slate-400 hover:bg-slate-800"
-                  >
-                    {selectedPageIds.length === discovered.length ? 'Heçbirini seçmə' : 'Hamısını seç'}
-                  </button>
-                </div>
-                <div className="space-y-1 max-h-60 overflow-auto pr-1">
-                  {discovered.map((p) => {
-                    const checked = selectedPageIds.includes(p.pageId);
-                    const alreadyConnected = metaPages.some(mp => String(mp.page_id) === String(p.pageId));
-                    return (
+                  <div className="text-[10px] uppercase font-bold text-slate-500">Səhifə seçimi ({pendingPages.length})</div>
+                  <div className="flex items-center gap-1">
+                    {pendingPages.length > 0 ? (
                       <button
-                        key={p.pageId}
-                        onClick={() => setSelectedPageIds(prev => checked ? prev.filter(x => x !== p.pageId) : [...prev, p.pageId])}
-                        className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg border text-left transition-colors ${checked ? 'border-blue-700/50 bg-blue-950/20' : 'border-slate-800 hover:bg-slate-900/40'}`}
+                        onClick={() => {
+                          const all = pendingPages.filter(p => p.hasToken).map(d => d.pageId);
+                          setSelectedPageIds(selectedPageIds.length === all.length ? [] : all);
+                        }}
+                        className="px-2 py-1 rounded text-[10px] font-bold border border-slate-700 text-slate-400 hover:bg-slate-800"
                       >
-                        <div className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${checked ? 'border-blue-500 bg-blue-600' : 'border-slate-600'}`}>
-                          {checked ? <span className="text-white text-[10px] font-bold">✓</span> : null}
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="text-[12px] font-semibold text-slate-200 truncate">{p.pageName || p.pageId}</div>
-                          <div className="text-[10px] text-slate-600 truncate">
-                            {p.pageId}{p.igBusinessId ? ` · ig: ${p.igUsername ? `@${p.igUsername}` : p.igBusinessId}` : ''}
-                          </div>
-                        </div>
-                        {alreadyConnected ? <span className="text-[10px] text-green-400 font-bold shrink-0">bağlı</span> : null}
+                        {selectedPageIds.length === pendingPages.filter(p => p.hasToken).length ? 'Heçbirini seçmə' : 'Hamısını seç'}
                       </button>
-                    );
-                  })}
+                    ) : null}
+                    <button
+                      onClick={cancelOAuth}
+                      disabled={oauthBusy}
+                      className="px-2 py-1 rounded text-[10px] font-bold border border-red-900/40 bg-red-950/10 text-red-300 hover:bg-red-950/20 disabled:opacity-50"
+                      title="Pending OAuth sessiyasını ləğv et (qoşulu səhifələrə toxunmur)"
+                    >
+                      Ləğv et
+                    </button>
+                  </div>
                 </div>
-                <button
-                  onClick={connectSelected}
-                  disabled={metaBusy || selectedPageIds.length === 0}
-                  className="mt-3 w-full py-2 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white transition-colors disabled:opacity-50"
-                >
-                  {metaBusy ? 'Qoşulur...' : `Seçilənləri Bağla (${selectedPageIds.length})`}
-                </button>
+                {pendingPages.length === 0 ? (
+                  <div className="text-[11px] text-slate-500">
+                    Səhifə tapılmadı. Facebook hesabınızda idarə etdiyiniz Page olmalıdır, yoxsa token vaxtı keçib — yenidən bağlanın.
+                  </div>
+                ) : (
+                  <div className="space-y-1 max-h-60 overflow-auto pr-1">
+                    {pendingPages.map((p) => {
+                      const checked = selectedPageIds.includes(p.pageId);
+                      const alreadyConnected = metaPages.some(mp => String(mp.page_id) === String(p.pageId));
+                      const disabled = !p.hasToken;
+                      return (
+                        <button
+                          key={p.pageId}
+                          disabled={disabled}
+                          onClick={() => setSelectedPageIds(prev => checked ? prev.filter(x => x !== p.pageId) : [...prev, p.pageId])}
+                          className={cn(
+                            'w-full flex items-center gap-3 px-3 py-2 rounded-lg border text-left transition-colors',
+                            checked ? 'border-blue-700/50 bg-blue-950/20' : 'border-slate-800 hover:bg-slate-900/40',
+                            disabled && 'opacity-50 cursor-not-allowed'
+                          )}
+                        >
+                          <div className={cn('w-4 h-4 rounded border flex items-center justify-center shrink-0', checked ? 'border-blue-500 bg-blue-600' : 'border-slate-600')}>
+                            {checked ? <span className="text-white text-[10px] font-bold">✓</span> : null}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="text-[12px] font-semibold text-slate-200 truncate">{p.pageName || p.pageId}</div>
+                            <div className="text-[10px] text-slate-600 truncate">
+                              {p.pageId}{p.igBusinessId ? ` · ig: ${p.igUsername ? `@${p.igUsername}` : p.igBusinessId}` : ''}
+                            </div>
+                          </div>
+                          {!p.hasToken ? <span className="text-[10px] text-amber-400 font-bold shrink-0">token yox</span>
+                            : alreadyConnected ? <span className="text-[10px] text-green-400 font-bold shrink-0">bağlı</span> : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+                {pendingPages.length > 0 ? (
+                  <button
+                    onClick={selectPages}
+                    disabled={metaBusy || selectedPageIds.length === 0}
+                    className="mt-3 w-full py-2 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white transition-colors disabled:opacity-50"
+                  >
+                    {metaBusy ? 'Qoşulur...' : `Seçilənləri Qoş (${selectedPageIds.length})`}
+                  </button>
+                ) : null}
               </div>
             ) : null}
 

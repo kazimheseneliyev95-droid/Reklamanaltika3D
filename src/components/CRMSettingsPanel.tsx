@@ -165,7 +165,13 @@ export function CRMSettingsPanel({ onClose, variant = 'modal' }: CRMSettingsPane
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
-  const [activeTab, setActiveTab] = useState<Tab>(() => (isWhatsAppConnected ? 'rules' : 'connection'));
+  const [activeTab, setActiveTab] = useState<Tab>(() => {
+    // Returning from the Meta OAuth redirect (?meta_oauth=...) should land on Connection.
+    if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('meta_oauth')) {
+      return 'connection';
+    }
+    return isWhatsAppConnected ? 'rules' : 'connection';
+  });
   const serverUrl = CrmService.getServerUrl();
 
   const canSaveToDb = currentUser?.role === 'admin' || currentUser?.role === 'superadmin';
