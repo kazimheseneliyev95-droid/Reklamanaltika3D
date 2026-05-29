@@ -1015,13 +1015,6 @@ function metaDebugLog(...args) {
   try { console.log('[META]', ...args); } catch { /* ignore */ }
 }
 
-function computeMetaSignature(rawBodyBuffer) {
-  if (!META_APP_SECRET) return null;
-  const h = crypto.createHmac('sha256', META_APP_SECRET);
-  h.update(rawBodyBuffer);
-  return 'sha256=' + h.digest('hex');
-}
-
 function parseMetaBody(req) {
   // For signature checks we need the raw bytes (captured by express.json verify).
   const buf = Buffer.isBuffer(req.rawBody)
@@ -1030,6 +1023,66 @@ function parseMetaBody(req) {
 
   const json = (req.body && typeof req.body === 'object') ? req.body : {};
   return { buf, json };
+}
+
+// Collect the app secrets that could have signed this webhook: the global env secret (if any)
+// plus the per-tenant app secret of every page/IG account referenced in the payload. This lets a
+// single webhook endpoint serve many tenants, each with their own Facebook app.
+async function getCandidateAppSecrets(json) {
+  const secrets = [];
+  if (META_APP_SECRET) secrets.push(META_APP_SECRET);
+  try {
+    if (process.env.DATABASE_URL && db) {
+      const objectType = String(json?.object || '').toLowerCase();
+      const entries = Array.isArray(json?.entry) ? json.entry : [];
+      const seenTenants = new Set();
+      for (const entry of entries) {
+        const id = entry?.id ? String(entry.id) : '';
+        if (!id) continue;
+        let integration = null;
+        if (objectType === 'instagram' && typeof db.getMetaPageByIgBusinessId === 'function') {
+          integration = await db.getMetaPageByIgBusinessId(id);
+        } else if (typeof db.getMetaPageByPageId === 'function') {
+          integration = await db.getMetaPageByPageId(id);
+        }
+        const tid = integration?.tenant_id ? String(integration.tenant_id) : '';
+        if (tid && !seenTenants.has(tid) && typeof db.getMetaAppConfig === 'function') {
+          seenTenants.add(tid);
+          const cfg = await db.getMetaAppConfig(tid).catch(() => null);
+          if (cfg && cfg.app_secret) secrets.push(String(cfg.app_secret));
+        }
+      }
+    }
+  } catch (e) {
+    metaDebugLog('getCandidateAppSecrets error', e?.message);
+  }
+  return secrets;
+}
+
+function webhookSignatureMatches(buf, headerSig, secrets) {
+  const sig = String(headerSig || '');
+  if (!sig) return false;
+  for (const secret of secrets) {
+    if (!secret) continue;
+    const expected = 'sha256=' + crypto.createHmac('sha256', secret).update(buf).digest('hex');
+    if (safeEqual(sig, expected)) return true;
+  }
+  return false;
+}
+
+// Accept the GET verification if the token matches the global env OR any tenant's stored verify token.
+async function isValidMetaVerifyToken(token) {
+  const t = String(token || '');
+  if (!t) return false;
+  if (META_VERIFY_TOKEN && safeEqual(t, String(META_VERIFY_TOKEN))) return true;
+  try {
+    if (process.env.DATABASE_URL && db && typeof db.metaVerifyTokenExists === 'function') {
+      return await db.metaVerifyTokenExists(t);
+    }
+  } catch (e) {
+    metaDebugLog('isValidMetaVerifyToken error', e?.message);
+  }
+  return false;
 }
 
 function toIsoFromMetaTimestamp(ts) {
@@ -1257,12 +1310,12 @@ function normalizeMetaReferral(raw) {
   return hasData ? out : null;
 }
 
-function handleMetaWebhookVerify(req, res) {
+async function handleMetaWebhookVerify(req, res) {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
 
-  if (mode === 'subscribe' && META_VERIFY_TOKEN && safeEqual(String(token || ''), String(META_VERIFY_TOKEN))) {
+  if (mode === 'subscribe' && await isValidMetaVerifyToken(token)) {
     return res.status(200).send(String(challenge || ''));
   }
   return res.sendStatus(403);
@@ -1736,22 +1789,22 @@ async function pollMetaWebhookQueue() {
 app.get('/api/webhooks/meta', handleMetaWebhookVerify);
 app.get('/webhooks/meta', handleMetaWebhookVerify);
 
-function handleMetaWebhookPost(req, res) {
+async function handleMetaWebhookPost(req, res) {
   try {
-    if (!META_APP_SECRET) {
-      console.warn('⚠️ META_APP_SECRET missing; refusing to accept Meta webhooks.');
+    const headerSig = req.headers['x-hub-signature-256'];
+    const { buf, json } = parseMetaBody(req);
+    const secrets = await getCandidateAppSecrets(json);
+
+    if (secrets.length === 0) {
+      console.warn('⚠️ No Meta app secret available (env or tenant config); refusing webhook.');
       metaWebhookStats.total++;
       metaWebhookStats.rejected++;
       metaWebhookStats.last_at = new Date().toISOString();
-      metaWebhookStats.last_error = 'META_APP_SECRET missing';
+      metaWebhookStats.last_error = 'no_app_secret';
       return res.sendStatus(500);
     }
 
-    const headerSig = req.headers['x-hub-signature-256'];
-    const { buf, json } = parseMetaBody(req);
-    const expected = computeMetaSignature(buf);
-
-    if (!expected || !safeEqual(String(headerSig || ''), expected)) {
+    if (!webhookSignatureMatches(buf, headerSig, secrets)) {
       metaWebhookStats.total++;
       metaWebhookStats.rejected++;
       metaWebhookStats.last_at = new Date().toISOString();
@@ -1759,7 +1812,7 @@ function handleMetaWebhookPost(req, res) {
       metaDebugLog('Signature mismatch', {
         hasHeader: Boolean(headerSig),
         headerLen: String(headerSig || '').length,
-        expectedLen: String(expected || '').length,
+        candidates: secrets.length,
       });
       return res.sendStatus(401);
     }
@@ -5551,15 +5604,17 @@ app.post('/api/telegram/diagnose', requireTenantAuth, requireAdmin, asyncHandler
 // META (FACEBOOK/INSTAGRAM) CONNECTION API
 // ═══════════════════════════════════════════════════════════════
 
-async function exchangeForLongLivedUserToken(userAccessToken) {
+async function exchangeForLongLivedUserToken(userAccessToken, appId, appSecret) {
   const token = String(userAccessToken || '').trim();
   if (!token) throw new Error('Token is required');
-  if (!META_APP_ID || !META_APP_SECRET) {
+  const cid = String(appId || META_APP_ID || '');
+  const csecret = String(appSecret || META_APP_SECRET || '');
+  if (!cid || !csecret) {
     return { access_token: token, expires_in: null, exchanged: false };
   }
 
   // https://developers.facebook.com/docs/facebook-login/access-tokens/refreshing
-  const url = `https://graph.facebook.com/${FB_API_VERSION}/oauth/access_token?grant_type=fb_exchange_token&client_id=${encodeURIComponent(String(META_APP_ID))}&client_secret=${encodeURIComponent(String(META_APP_SECRET))}&fb_exchange_token=${encodeURIComponent(token)}`;
+  const url = `https://graph.facebook.com/${FB_API_VERSION}/oauth/access_token?grant_type=fb_exchange_token&client_id=${encodeURIComponent(cid)}&client_secret=${encodeURIComponent(csecret)}&fb_exchange_token=${encodeURIComponent(token)}`;
   const data = await fetchJsonWithRetry(url, {}, { retries: 0, timeoutMs: 6000 }).catch((e) => {
     throw new Error(e?.message || 'Token exchange failed');
   });
@@ -5638,9 +5693,29 @@ function getRequestRedirectUri(req) {
   return META_REDIRECT_URI;
 }
 
-function buildMetaOAuthDialogUrl(state, redirectUri) {
+// Resolve a tenant's Meta app credentials: per-tenant config from DB, falling back to global env.
+async function getTenantMetaApp(tenantId) {
+  let appId = META_APP_ID;
+  let appSecret = META_APP_SECRET;
+  let verifyToken = META_VERIFY_TOKEN;
+  try {
+    if (tenantId && process.env.DATABASE_URL && db && typeof db.getMetaAppConfig === 'function') {
+      const cfg = await db.getMetaAppConfig(tenantId);
+      if (cfg) {
+        if (cfg.app_id) appId = String(cfg.app_id);
+        if (cfg.app_secret) appSecret = String(cfg.app_secret);
+        if (cfg.verify_token) verifyToken = String(cfg.verify_token);
+      }
+    }
+  } catch (e) {
+    if (META_WEBHOOK_DEBUG) console.warn('⚠️ getTenantMetaApp fallback to env:', e?.message);
+  }
+  return { appId, appSecret, verifyToken };
+}
+
+function buildMetaOAuthDialogUrl(state, redirectUri, appId) {
   const params = new URLSearchParams({
-    client_id: String(META_APP_ID),
+    client_id: String(appId || META_APP_ID),
     redirect_uri: redirectUri || META_REDIRECT_URI,
     scope: META_OAUTH_SCOPES,
     state,
@@ -5651,9 +5726,11 @@ function buildMetaOAuthDialogUrl(state, redirectUri) {
 
 // Step (a)→(b): exchange the one-time OAuth `code` for a short-lived user token.
 // redirectUri MUST equal the one used to build the dialog URL.
-async function exchangeCodeForUserToken(code, redirectUri) {
-  if (!META_APP_ID || !META_APP_SECRET) throw new Error('META_APP_ID/META_APP_SECRET missing');
-  const url = `https://graph.facebook.com/${FB_API_VERSION}/oauth/access_token?client_id=${encodeURIComponent(String(META_APP_ID))}&client_secret=${encodeURIComponent(String(META_APP_SECRET))}&redirect_uri=${encodeURIComponent(redirectUri || META_REDIRECT_URI)}&code=${encodeURIComponent(String(code))}`;
+async function exchangeCodeForUserToken(code, redirectUri, appId, appSecret) {
+  const cid = String(appId || META_APP_ID || '');
+  const csecret = String(appSecret || META_APP_SECRET || '');
+  if (!cid || !csecret) throw new Error('META_APP_ID/META_APP_SECRET missing');
+  const url = `https://graph.facebook.com/${FB_API_VERSION}/oauth/access_token?client_id=${encodeURIComponent(cid)}&client_secret=${encodeURIComponent(csecret)}&redirect_uri=${encodeURIComponent(redirectUri || META_REDIRECT_URI)}&code=${encodeURIComponent(String(code))}`;
   const data = await fetchJsonWithRetry(url, {}, { retries: 0, timeoutMs: 8000 });
   return {
     access_token: data?.access_token ? String(data.access_token) : '',
@@ -5662,9 +5739,11 @@ async function exchangeCodeForUserToken(code, redirectUri) {
 }
 
 // debug_token introspection (uses an app access token: "{app_id}|{app_secret}").
-async function introspectMetaToken(token) {
-  if (!META_APP_ID || !META_APP_SECRET || !token) return null;
-  const appToken = `${META_APP_ID}|${META_APP_SECRET}`;
+async function introspectMetaToken(token, appId, appSecret) {
+  const cid = String(appId || META_APP_ID || '');
+  const csecret = String(appSecret || META_APP_SECRET || '');
+  if (!cid || !csecret || !token) return null;
+  const appToken = `${cid}|${csecret}`;
   const url = `https://graph.facebook.com/${FB_API_VERSION}/debug_token?input_token=${encodeURIComponent(String(token))}&access_token=${encodeURIComponent(appToken)}`;
   const data = await fetchJsonWithRetry(url, {}, { retries: 0, timeoutMs: 6000 }).catch(() => null);
   return data?.data || null;
@@ -6267,12 +6346,13 @@ async function subscribeMetaWebhooks({ pageId, pageAccessToken, igBusinessId }) 
 
 // Step 1: UI (authenticated) asks for the Meta dialog URL, then navigates to it.
 app.post('/api/meta/oauth/start', requireTenantAuth, requirePermission('manage_meta_integration', 'Meta inteqrasiyası icazəniz yoxdur'), asyncHandler(async (req, res) => {
-  if (!META_APP_ID || !META_APP_SECRET) {
-    return res.status(400).json({ error: 'META_APP_ID/META_APP_SECRET missing (Render → Environment → deploy/restart)' });
+  const app_ = await getTenantMetaApp(req.tenantId);
+  if (!app_.appId || !app_.appSecret) {
+    return res.status(400).json({ error: 'Facebook App ID/Secret tapılmadı. Əvvəlcə bu bölmədə tətbiq məlumatlarını yadda saxlayın.' });
   }
   const state = createMetaOAuthState(req.tenantId);
   const redirectUri = getRequestRedirectUri(req);
-  const url = buildMetaOAuthDialogUrl(state, redirectUri);
+  const url = buildMetaOAuthDialogUrl(state, redirectUri, app_.appId);
   res.json({ url, redirectUri });
 }));
 
@@ -6289,15 +6369,16 @@ app.get('/api/meta/oauth/callback', asyncHandler(async (req, res) => {
   if (!code) return back('nocode');
 
   try {
+    const app_ = await getTenantMetaApp(parsed.tenantId);
     const redirectUri = getRequestRedirectUri(req);
-    const short = await exchangeCodeForUserToken(code, redirectUri);
+    const short = await exchangeCodeForUserToken(code, redirectUri, app_.appId, app_.appSecret);
     if (!short.access_token) return back('exchangefail');
 
-    const long = await exchangeForLongLivedUserToken(short.access_token)
+    const long = await exchangeForLongLivedUserToken(short.access_token, app_.appId, app_.appSecret)
       .catch(() => ({ access_token: short.access_token, expires_in: short.expires_in, exchanged: false }));
     const effectiveToken = long?.access_token || short.access_token;
 
-    const info = await introspectMetaToken(effectiveToken);
+    const info = await introspectMetaToken(effectiveToken, app_.appId, app_.appSecret);
     const expiresAt = info?.expires_at
       ? new Date(Number(info.expires_at) * 1000)
       : (long?.expires_in ? new Date(Date.now() + Number(long.expires_in) * 1000) : null);
@@ -6448,17 +6529,65 @@ app.get('/api/meta/pages', requireTenantAuth, requireAdmin, asyncHandler(async (
 }));
 
 app.get('/api/meta/config', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  const app_ = await getTenantMetaApp(req.tenantId);
   res.json({
-    hasAppId: Boolean(META_APP_ID),
-    hasAppSecret: Boolean(META_APP_SECRET),
-    hasVerifyToken: Boolean(META_VERIFY_TOKEN),
+    hasAppId: Boolean(app_.appId),
+    hasAppSecret: Boolean(app_.appSecret),
+    hasVerifyToken: Boolean(app_.verifyToken),
     dbEnabled: Boolean(process.env.DATABASE_URL),
     callbackPath: '/api/webhooks/meta',
-    oauthConfigured: Boolean(META_APP_ID && META_APP_SECRET),
+    oauthConfigured: Boolean(app_.appId && app_.appSecret),
     oauthRedirectUri: getRequestRedirectUri(req),
     oauthScopes: META_OAUTH_SCOPES.split(',').map((s) => s.trim()).filter(Boolean),
     apiVersion: FB_API_VERSION
   });
+}));
+
+// ── Per-tenant Meta app credentials (each business uses its own Facebook app) ──
+function sanitizeMetaAppConfig(cfg) {
+  return {
+    configured: Boolean(cfg && cfg.app_id && cfg.app_secret),
+    hasAppId: Boolean(cfg && cfg.app_id),
+    hasAppSecret: Boolean(cfg && cfg.app_secret),
+    hasVerifyToken: Boolean(cfg && cfg.verify_token),
+    appId: cfg && cfg.app_id ? String(cfg.app_id) : '',   // App ID is public; secret/verify token are never returned
+    updatedAt: cfg && cfg.updated_at ? cfg.updated_at : null
+  };
+}
+
+app.get('/api/meta/app-config', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  if (!db || typeof db.getMetaAppConfig !== 'function') return res.status(501).json({ error: 'Meta integration is unavailable' });
+  const cfg = await db.getMetaAppConfig(req.tenantId).catch(() => null);
+  res.json(sanitizeMetaAppConfig(cfg));
+}));
+
+app.post('/api/meta/app-config', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  if (!db || typeof db.upsertMetaAppConfig !== 'function') return res.status(501).json({ error: 'Meta integration is unavailable' });
+
+  const appId = req.body?.app_id != null ? String(req.body.app_id).trim() : '';
+  const appSecret = req.body?.app_secret != null ? String(req.body.app_secret).trim() : '';
+  const verifyToken = req.body?.verify_token != null ? String(req.body.verify_token).trim() : '';
+
+  // App ID must be numeric when provided.
+  if (appId && !/^\d{5,32}$/.test(appId)) {
+    return res.status(400).json({ error: 'App ID yalnız rəqəmlərdən ibarət olmalıdır.' });
+  }
+  if (!appId && !appSecret && !verifyToken) {
+    return res.status(400).json({ error: 'Ən azı bir sahə doldurulmalıdır.' });
+  }
+
+  await db.upsertMetaAppConfig(req.tenantId, { app_id: appId, app_secret: appSecret, verify_token: verifyToken });
+  const cfg = await db.getMetaAppConfig(req.tenantId).catch(() => null);
+  res.status(201).json(sanitizeMetaAppConfig(cfg));
+}));
+
+app.delete('/api/meta/app-config', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  if (!db || typeof db.deleteMetaAppConfig !== 'function') return res.status(501).json({ error: 'Meta integration is unavailable' });
+  await db.deleteMetaAppConfig(req.tenantId).catch(() => {});
+  res.json({ success: true });
 }));
 
 app.get('/api/facebook-import/config', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {

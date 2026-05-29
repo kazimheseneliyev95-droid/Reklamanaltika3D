@@ -204,6 +204,14 @@ async function initDb() {
           updated_at TIMESTAMP DEFAULT NOW()
         );
 
+        CREATE TABLE IF NOT EXISTS meta_app_config (
+          tenant_id VARCHAR(50) PRIMARY KEY,
+          app_id VARCHAR(64),
+          app_secret TEXT,
+          verify_token VARCHAR(255),
+          updated_at TIMESTAMP DEFAULT NOW()
+        );
+
         CREATE TABLE IF NOT EXISTS facebook_ad_imports (
           tenant_id VARCHAR(50) PRIMARY KEY,
           access_token TEXT,
@@ -417,6 +425,14 @@ async function initDb() {
                   debug_info JSONB DEFAULT '{}'::jsonb,
                   status VARCHAR(20) DEFAULT 'active',
                   last_error TEXT,
+                  updated_at TIMESTAMP DEFAULT NOW()
+                );
+
+                CREATE TABLE IF NOT EXISTS meta_app_config (
+                  tenant_id VARCHAR(50) PRIMARY KEY,
+                  app_id VARCHAR(64),
+                  app_secret TEXT,
+                  verify_token VARCHAR(255),
                   updated_at TIMESTAMP DEFAULT NOW()
                 );
 
@@ -2133,6 +2149,61 @@ async function deleteMetaUserToken(tenantId) {
     return res.rowCount > 0;
 }
 
+// Per-tenant Meta (Facebook/Instagram) app credentials. app_secret is encrypted at rest.
+async function getMetaAppConfig(tenantId) {
+    if (!tenantId) return null;
+    const res = await pool.query(
+        'SELECT tenant_id, app_id, app_secret, verify_token, updated_at FROM meta_app_config WHERE tenant_id = $1 LIMIT 1',
+        [String(tenantId)]
+    );
+    const row = res.rows[0];
+    if (!row) return null;
+    if (row.app_secret) {
+        try { row.app_secret = decryptToken(row.app_secret); } catch { /* keep as-is if not encrypted */ }
+    }
+    return row;
+}
+
+// Partial upsert: only non-empty fields overwrite (so verify_token can change without re-entering the secret).
+async function upsertMetaAppConfig(tenantId, { app_id, app_secret, verify_token }) {
+    if (!tenantId) throw new Error('tenantId is required');
+    const appIdVal = (app_id != null && String(app_id).trim() !== '') ? String(app_id).trim() : null;
+    const verifyVal = (verify_token != null && String(verify_token).trim() !== '') ? String(verify_token).trim() : null;
+    const secretVal = (app_secret != null && String(app_secret).trim() !== '') ? encryptToken(String(app_secret).trim()) : null;
+    const res = await pool.query(
+        `INSERT INTO meta_app_config (tenant_id, app_id, app_secret, verify_token, updated_at)
+         VALUES ($1, $2, $3, $4, NOW())
+         ON CONFLICT (tenant_id) DO UPDATE SET
+           app_id = COALESCE(EXCLUDED.app_id, meta_app_config.app_id),
+           app_secret = COALESCE(EXCLUDED.app_secret, meta_app_config.app_secret),
+           verify_token = COALESCE(EXCLUDED.verify_token, meta_app_config.verify_token),
+           updated_at = NOW()
+         RETURNING tenant_id, app_id, verify_token, updated_at`,
+        [String(tenantId), appIdVal, secretVal, verifyVal]
+    );
+    return res.rows[0] || null;
+}
+
+async function deleteMetaAppConfig(tenantId) {
+    if (!tenantId) throw new Error('tenantId is required');
+    const res = await pool.query(
+        'DELETE FROM meta_app_config WHERE tenant_id = $1 RETURNING tenant_id',
+        [String(tenantId)]
+    );
+    return res.rowCount > 0;
+}
+
+// Used by the (unauthenticated) webhook GET verify to accept any tenant's verify token.
+async function metaVerifyTokenExists(token) {
+    const t = String(token || '').trim();
+    if (!t) return false;
+    const res = await pool.query(
+        'SELECT 1 FROM meta_app_config WHERE verify_token = $1 LIMIT 1',
+        [t]
+    );
+    return res.rowCount > 0;
+}
+
 async function upsertFacebookAdImport(tenantId, { access_token, selected_account_ids, selected_campaign_ids, account_cache, campaign_cache, last_error, auto_sync_enabled, auto_sync_start_date, auto_sync_end_date, auto_sync_every_hours, auto_sync_minute, auto_sync_tz_offset_minutes, auto_sync_next_at, last_insight_sync_at, last_insight_sync_error }) {
     if (!tenantId) throw new Error('tenantId is required');
     const safeSelected = Array.isArray(selected_account_ids) ? selected_account_ids.map((x) => String(x || '').trim()).filter(Boolean) : [];
@@ -3820,6 +3891,10 @@ module.exports = {
     upsertMetaUserToken,
     getMetaUserToken,
     deleteMetaUserToken,
+    getMetaAppConfig,
+    upsertMetaAppConfig,
+    deleteMetaAppConfig,
+    metaVerifyTokenExists,
     upsertWhatsAppMediaAsset,
     getWhatsAppMediaAsset,
     upsertFacebookAdImport,

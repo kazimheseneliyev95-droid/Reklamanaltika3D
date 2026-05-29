@@ -49,6 +49,14 @@ export function ConnectionTab() {
   const [webhookCheck, setWebhookCheck] = useState<any[] | null>(null);
   const [webhookCheckBusy, setWebhookCheckBusy] = useState(false);
 
+  // Per-tenant Facebook app credentials (each business uses its own app)
+  const [appConfig, setAppConfig] = useState<any | null>(null);
+  const [appIdInput, setAppIdInput] = useState('');
+  const [appSecretInput, setAppSecretInput] = useState('');
+  const [appVerifyInput, setAppVerifyInput] = useState('');
+  const [appCfgBusy, setAppCfgBusy] = useState(false);
+  const [appCfgSavedOk, setAppCfgSavedOk] = useState(false);
+
   const refreshHealth = async () => {
     const h = await CrmService.fetchHealth();
     if (h) setHealth(h);
@@ -256,6 +264,56 @@ export function ConnectionTab() {
     }
   };
 
+  const refreshAppConfig = async () => {
+    try {
+      const url = CrmService.getServerUrl();
+      const token = localStorage.getItem('crm_auth_token');
+      if (!url || !token) return;
+      const res = await fetch(`${url}/api/meta/app-config`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setAppConfig(data || null);
+        setAppIdInput(String(data?.appId || ''));
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  const saveAppConfig = async () => {
+    setAppCfgBusy(true);
+    setMetaError('');
+    try {
+      const url = CrmService.getServerUrl();
+      const token = localStorage.getItem('crm_auth_token');
+      if (!url || !token) return;
+      const payload: Record<string, string> = {};
+      if (appIdInput.trim()) payload.app_id = appIdInput.trim();
+      if (appSecretInput.trim()) payload.app_secret = appSecretInput.trim();
+      if (appVerifyInput.trim()) payload.verify_token = appVerifyInput.trim();
+      const res = await fetch(`${url}/api/meta/app-config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Tətbiq məlumatları saxlanmadı');
+      setAppConfig(data || null);
+      setAppIdInput(String(data?.appId || ''));
+      setAppSecretInput('');
+      setAppVerifyInput('');
+      setAppCfgSavedOk(true);
+      setTimeout(() => setAppCfgSavedOk(false), 1500);
+      await refreshMetaConfig();
+    } catch (e: any) {
+      setMetaError(e?.message || 'Tətbiq məlumatları saxlanmadı');
+    } finally {
+      setAppCfgBusy(false);
+    }
+  };
+
   const checkWebhook = async () => {
     setWebhookCheckBusy(true);
     setWebhookCheck(null);
@@ -439,6 +497,7 @@ export function ConnectionTab() {
     refreshMeta();
     refreshWebhookStats();
     refreshMetaConfig();
+    refreshAppConfig();
 
     // Handle the OAuth redirect status set by the backend callback (?meta_oauth=...).
     let oauthSucceeded = false;
@@ -918,28 +977,28 @@ export function ConnectionTab() {
 
             {metaConfig && (!metaConfig.hasAppSecret || !metaConfig.hasVerifyToken || !metaConfig.hasAppId) ? (
               <div className="rounded-lg border border-amber-900/40 bg-amber-950/10 px-3 py-2 text-[11px] text-amber-300">
-                Meta env eksik: {!metaConfig.hasAppSecret ? 'META_APP_SECRET ' : ''}{!metaConfig.hasVerifyToken ? 'META_VERIFY_TOKEN ' : ''}{!metaConfig.hasAppId ? 'META_APP_ID' : ''}
+                Tətbiq məlumatları natamam: {!metaConfig.hasAppId ? 'App ID ' : ''}{!metaConfig.hasAppSecret ? 'App Secret ' : ''}{!metaConfig.hasVerifyToken ? 'Verify Token' : ''} (aşağıdakı formada doldurun)
               </div>
             ) : null}
 
             <div className="rounded-lg border border-slate-800 bg-slate-950/20 px-3 py-2 text-[11px] text-slate-400">
               <div className="text-slate-200 font-semibold">Sıfırdan quraşdırma (qısa)</div>
               <div className="mt-1">
-                {'1) Render → Environment: '}
-                <span className="text-slate-200 font-semibold">META_APP_ID</span>
+                {'1) Öz Facebook tətbiqinizi yaradın (developers.facebook.com) → '}
+                <span className="text-slate-200 font-semibold">App ID</span>
                 {', '}
-                <span className="text-slate-200 font-semibold">META_APP_SECRET</span>
+                <span className="text-slate-200 font-semibold">App Secret</span>
                 {', '}
-                <span className="text-slate-200 font-semibold">META_VERIFY_TOKEN</span>
-                {' (hamısı tələb olunur) → deploy/restart.'}
+                <span className="text-slate-200 font-semibold">Verify Token</span>
+                {' → aşağıdakı formaya yazıb yadda saxlayın.'}
               </div>
               <div className="mt-1">
-                {'2) Meta Developers → Webhooks → Callback URL = '}
+                {'2) Öz tətbiqinizdə → Webhooks → Callback URL = '}
                 <span className="text-slate-200 font-semibold break-all">{callbackUrl}</span>
-                {' → Verify Token = META_VERIFY_TOKEN → Verify and Save.'}
+                {' → Verify Token = (yuxarıda yazdığınız) → Verify and Save.'}
               </div>
               <div className="mt-1">
-                {'3) Facebook Login → Settings → Valid OAuth Redirect URIs = '}
+                {'3) Öz tətbiqinizdə → Facebook Login → Settings → Valid OAuth Redirect URIs = '}
                 <span className="text-slate-200 font-semibold break-all">{oauthRedirectUri}</span>
                 <button
                   type="button"
@@ -951,7 +1010,7 @@ export function ConnectionTab() {
                 </button>
               </div>
               <div className="mt-1">
-                {'4) Meta Developers → Webhooks → Add Subscriptions: '}
+                {'4) Öz tətbiqinizdə → Webhooks → Add Subscriptions: '}
                 <span className="text-slate-200 font-semibold">messages</span>
                 {', '}
                 <span className="text-slate-200 font-semibold">messaging_postbacks</span>
@@ -1014,6 +1073,62 @@ export function ConnectionTab() {
               </div>
             ) : null}
 
+            {/* Per-tenant Facebook app credentials — each business uses its own app. */}
+            <div className="rounded-lg border border-slate-800 bg-slate-950/30 p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[10px] uppercase font-bold text-slate-500">Facebook Tətbiq Məlumatları (öz tətbiqiniz)</div>
+                <span className={cn(
+                  'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold',
+                  appConfig?.configured ? 'bg-emerald-950/30 text-emerald-300 border border-emerald-900/40' : 'bg-amber-950/20 text-amber-300 border border-amber-900/40'
+                )}>
+                  {appConfig?.configured ? <><CheckCircle2 className="w-3 h-3" /> Hazır</> : <><AlertCircle className="w-3 h-3" /> Tələb olunur</>}
+                </span>
+              </div>
+              <div>
+                <label className="text-[10px] uppercase font-bold text-slate-500 mb-1 block">App ID</label>
+                <input
+                  type="text"
+                  value={appIdInput}
+                  onChange={(e) => setAppIdInput(e.target.value)}
+                  className="w-full h-9 rounded-lg bg-slate-950 border border-slate-800 px-3 text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-600/50"
+                  placeholder="məs: 268536394142..."
+                />
+              </div>
+              <div>
+                <label className="text-[10px] uppercase font-bold text-slate-500 mb-1 block">App Secret</label>
+                <input
+                  type="password"
+                  value={appSecretInput}
+                  onChange={(e) => setAppSecretInput(e.target.value)}
+                  className="w-full h-9 rounded-lg bg-slate-950 border border-slate-800 px-3 text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-600/50"
+                  placeholder={appConfig?.hasAppSecret ? 'Saxlanılıb — dəyişmək üçün yenisini yazın' : 'App Secret'}
+                />
+              </div>
+              <div>
+                <label className="text-[10px] uppercase font-bold text-slate-500 mb-1 block">Verify Token</label>
+                <input
+                  type="text"
+                  value={appVerifyInput}
+                  onChange={(e) => setAppVerifyInput(e.target.value)}
+                  className="w-full h-9 rounded-lg bg-slate-950 border border-slate-800 px-3 text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-600/50"
+                  placeholder={appConfig?.hasVerifyToken ? 'Saxlanılıb — dəyişmək üçün yenisini yazın' : 'özünüz təyin etdiyiniz gizli söz'}
+                />
+                <div className="mt-1 text-[10px] text-slate-600">
+                  Webhook qurğusunda Meta panelində eyni Verify Token-i yazacaqsınız.
+                </div>
+              </div>
+              <button
+                onClick={saveAppConfig}
+                disabled={appCfgBusy || (!appIdInput.trim() && !appSecretInput.trim() && !appVerifyInput.trim())}
+                className={cn(
+                  'w-full py-2 rounded-lg text-xs font-semibold transition-colors disabled:opacity-50',
+                  appCfgSavedOk ? 'bg-emerald-600 text-white' : 'bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200'
+                )}
+              >
+                {appCfgBusy ? '...' : (appCfgSavedOk ? 'Saxlandı' : 'Tətbiq məlumatlarını yadda saxla')}
+              </button>
+            </div>
+
             {oauthNotice ? (
               <div className={cn(
                 'rounded-lg border px-3 py-2 text-[11px] flex items-start gap-2',
@@ -1039,7 +1154,7 @@ export function ConnectionTab() {
               </button>
               {metaConfig && metaConfig.oauthConfigured === false ? (
                 <div className="mt-1 text-[10px] text-amber-400">
-                  OAuth üçün META_APP_ID + META_APP_SECRET tələb olunur (Render → Environment).
+                  Əvvəlcə yuxarıda App ID + App Secret yadda saxlayın.
                 </div>
               ) : (
                 <div className="mt-1 text-[10px] text-slate-600">
