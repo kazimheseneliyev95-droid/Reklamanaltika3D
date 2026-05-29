@@ -926,12 +926,12 @@ export function ConnectionTab() {
               <div className="text-slate-200 font-semibold">Sıfırdan quraşdırma (qısa)</div>
               <div className="mt-1">
                 {'1) Render → Environment: '}
+                <span className="text-slate-200 font-semibold">META_APP_ID</span>
+                {', '}
                 <span className="text-slate-200 font-semibold">META_APP_SECRET</span>
                 {', '}
                 <span className="text-slate-200 font-semibold">META_VERIFY_TOKEN</span>
-                {', (opsional) '}
-                <span className="text-slate-200 font-semibold">META_APP_ID</span>
-                {' → deploy/restart.'}
+                {' (hamısı tələb olunur) → deploy/restart.'}
               </div>
               <div className="mt-1">
                 {'2) Meta Developers → Webhooks → Callback URL = '}
@@ -955,9 +955,14 @@ export function ConnectionTab() {
                 <span className="text-slate-200 font-semibold">messages</span>
                 {', '}
                 <span className="text-slate-200 font-semibold">messaging_postbacks</span>
+                {', '}
+                <span className="text-slate-200 font-semibold">feed</span>
                 {' (Page); '}
                 <span className="text-slate-200 font-semibold">messages</span>
-                {' (Instagram).'}
+                {', '}
+                <span className="text-slate-200 font-semibold">comments</span>
+                {' (Instagram). '}
+                <span className="text-slate-500">(feed/comments = yorumlar üçün)</span>
               </div>
               <div className="mt-1">
                 {'5) '}
@@ -971,7 +976,7 @@ export function ConnectionTab() {
 
             {metaPages.some(p => !p.ig_business_id) ? (
               <div className="rounded-lg border border-slate-800 bg-slate-950/20 px-3 py-2 text-[11px] text-slate-400">
-                IG ucu n: Saved Pages setrinde <span className="text-slate-200 font-semibold">ig:</span> gormursense, Instagram hesab Facebook Page-e bagli deyil.
+                IG üçün: Saved Pages sətrində <span className="text-slate-200 font-semibold">ig:</span> görmürsənsə, Instagram hesabı Facebook səhifəsinə bağlı deyil.
               </div>
             ) : null}
 
