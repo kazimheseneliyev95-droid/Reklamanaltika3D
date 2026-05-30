@@ -6579,7 +6579,12 @@ app.post('/api/meta/app-config', requireTenantAuth, requireAdmin, asyncHandler(a
     return res.status(400).json({ error: 'Ən azı bir sahə doldurulmalıdır.' });
   }
 
-  await db.upsertMetaAppConfig(req.tenantId, { app_id: appId, app_secret: appSecret, verify_token: verifyToken });
+  try {
+    await db.upsertMetaAppConfig(req.tenantId, { app_id: appId, app_secret: appSecret, verify_token: verifyToken });
+  } catch (e) {
+    if (META_WEBHOOK_DEBUG) console.warn('⚠️ upsertMetaAppConfig failed:', e?.message);
+    return res.status(500).json({ error: `Yadda saxlama xətası: ${String(e?.message || e).slice(0, 200)}` });
+  }
   const cfg = await db.getMetaAppConfig(req.tenantId).catch(() => null);
   res.status(201).json(sanitizeMetaAppConfig(cfg));
 }));

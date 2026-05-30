@@ -2150,8 +2150,24 @@ async function deleteMetaUserToken(tenantId) {
 }
 
 // Per-tenant Meta (Facebook/Instagram) app credentials. app_secret is encrypted at rest.
+// Self-healing: guarantee the table exists even if a prior schema migration didn't create it
+// (e.g. the init transaction rolled back on an already-populated DB).
+let _metaAppConfigEnsured = false;
+async function ensureMetaAppConfigTable() {
+    if (_metaAppConfigEnsured) return;
+    await pool.query(`CREATE TABLE IF NOT EXISTS meta_app_config (
+        tenant_id VARCHAR(50) PRIMARY KEY,
+        app_id VARCHAR(64),
+        app_secret TEXT,
+        verify_token VARCHAR(255),
+        updated_at TIMESTAMP DEFAULT NOW()
+    )`);
+    _metaAppConfigEnsured = true;
+}
+
 async function getMetaAppConfig(tenantId) {
     if (!tenantId) return null;
+    await ensureMetaAppConfigTable();
     const res = await pool.query(
         'SELECT tenant_id, app_id, app_secret, verify_token, updated_at FROM meta_app_config WHERE tenant_id = $1 LIMIT 1',
         [String(tenantId)]
@@ -2167,6 +2183,7 @@ async function getMetaAppConfig(tenantId) {
 // Partial upsert: only non-empty fields overwrite (so verify_token can change without re-entering the secret).
 async function upsertMetaAppConfig(tenantId, { app_id, app_secret, verify_token }) {
     if (!tenantId) throw new Error('tenantId is required');
+    await ensureMetaAppConfigTable();
     const appIdVal = (app_id != null && String(app_id).trim() !== '') ? String(app_id).trim() : null;
     const verifyVal = (verify_token != null && String(verify_token).trim() !== '') ? String(verify_token).trim() : null;
     const secretVal = (app_secret != null && String(app_secret).trim() !== '') ? encryptToken(String(app_secret).trim()) : null;
@@ -2186,6 +2203,7 @@ async function upsertMetaAppConfig(tenantId, { app_id, app_secret, verify_token 
 
 async function deleteMetaAppConfig(tenantId) {
     if (!tenantId) throw new Error('tenantId is required');
+    await ensureMetaAppConfigTable();
     const res = await pool.query(
         'DELETE FROM meta_app_config WHERE tenant_id = $1 RETURNING tenant_id',
         [String(tenantId)]
@@ -2197,6 +2215,7 @@ async function deleteMetaAppConfig(tenantId) {
 async function metaVerifyTokenExists(token) {
     const t = String(token || '').trim();
     if (!t) return false;
+    await ensureMetaAppConfigTable();
     const res = await pool.query(
         'SELECT 1 FROM meta_app_config WHERE verify_token = $1 LIMIT 1',
         [t]

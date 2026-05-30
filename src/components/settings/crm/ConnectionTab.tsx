@@ -69,6 +69,7 @@ export function ConnectionTab() {
   const [appVerifyInput, setAppVerifyInput] = useState('');
   const [appCfgBusy, setAppCfgBusy] = useState(false);
   const [appCfgSavedOk, setAppCfgSavedOk] = useState(false);
+  const [appCfgError, setAppCfgError] = useState('');
 
   const refreshHealth = async () => {
     const h = await CrmService.fetchHealth();
@@ -298,6 +299,7 @@ export function ConnectionTab() {
   const saveAppConfig = async () => {
     setAppCfgBusy(true);
     setMetaError('');
+    setAppCfgError('');
     try {
       const url = CrmService.getServerUrl();
       const token = localStorage.getItem('crm_auth_token');
@@ -321,7 +323,7 @@ export function ConnectionTab() {
       setTimeout(() => setAppCfgSavedOk(false), 1500);
       await refreshMetaConfig();
     } catch (e: any) {
-      setMetaError(e?.message || 'Tətbiq məlumatları saxlanmadı');
+      setAppCfgError(e?.message || 'Tətbiq məlumatları saxlanmadı');
     } finally {
       setAppCfgBusy(false);
     }
@@ -1149,6 +1151,16 @@ export function ConnectionTab() {
               >
                 {appCfgBusy ? '...' : (appCfgSavedOk ? 'Saxlandı' : 'Tətbiq məlumatlarını yadda saxla')}
               </button>
+              {appCfgError ? (
+                <div className="rounded-lg border border-red-900/40 bg-red-950/15 px-3 py-2 text-[11px] text-red-300">
+                  {appCfgError}
+                </div>
+              ) : null}
+              {appCfgSavedOk ? (
+                <div className="rounded-lg border border-emerald-900/40 bg-emerald-950/15 px-3 py-2 text-[11px] text-emerald-300">
+                  Tətbiq məlumatları yadda saxlanıldı.
+                </div>
+              ) : null}
             </div>
 
             {oauthNotice ? (
