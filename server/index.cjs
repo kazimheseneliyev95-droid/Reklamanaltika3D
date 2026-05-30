@@ -55,7 +55,8 @@ const META_REDIRECT_URI = process.env.META_REDIRECT_URI || `${PUBLIC_APP_URL}/ap
 // One OAuth grant powers FB Ads + Instagram + Leads (see architecture spec).
 const META_OAUTH_SCOPES = String(
   process.env.META_OAUTH_SCOPES ||
-  'pages_show_list,pages_read_engagement,instagram_basic,instagram_manage_insights,business_management,leads_retrieval,pages_manage_ads,ads_management'
+  // Messaging + comments need these; pages_manage_metadata is required to subscribe page webhooks.
+  'pages_show_list,pages_messaging,pages_read_engagement,pages_manage_metadata,pages_read_user_content,instagram_basic,instagram_manage_messages,instagram_manage_comments,instagram_manage_insights,business_management,leads_retrieval,pages_manage_ads,ads_management'
 );
 // Stable-ish secret to sign the CSRF state token (ephemeral per-process if not set).
 const META_OAUTH_STATE_SECRET = process.env.META_OAUTH_STATE_SECRET || process.env.JWT_SECRET || INTERNAL_WEBHOOK_SECRET;

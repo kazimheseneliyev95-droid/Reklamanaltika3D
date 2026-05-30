@@ -17,6 +17,19 @@ type MetaPage = {
 };
 
 
+function CopyChip({ value, onCopy }: { value: string; onCopy: (v: string) => void }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onCopy(value)}
+      className="ml-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-700 text-slate-300 hover:bg-slate-800 align-middle"
+      title="Kopyala"
+    >
+      <ClipboardCopy className="w-3 h-3" />
+    </button>
+  );
+}
+
 export function ConnectionTab() {
   const [health, setHealth] = useState<any | null>(null);
   const [busy, setBusy] = useState(false);
@@ -549,6 +562,7 @@ export function ConnectionTab() {
   const callbackUrl = info?.serverUrl ? `${String(info.serverUrl).replace(/\/$/, '')}${callbackPath}` : callbackPath;
   const oauthRedirectUri = metaConfig?.oauthRedirectUri
     || (info?.serverUrl ? `${String(info.serverUrl).replace(/\/$/, '')}/api/meta/oauth/callback` : '/api/meta/oauth/callback');
+  const appDomain = (() => { try { return new URL(oauthRedirectUri).host; } catch { return ''; } })();
 
   const tgServerEnabled = tgConfig ? (tgConfig.enabled !== false) : false;
   const tgServerChat = String(tgConfig?.chat_id || '').trim();
@@ -981,55 +995,63 @@ export function ConnectionTab() {
               </div>
             ) : null}
 
-            <div className="rounded-lg border border-slate-800 bg-slate-950/20 px-3 py-2 text-[11px] text-slate-400">
-              <div className="text-slate-200 font-semibold">Sıfırdan quraşdırma (qısa)</div>
-              <div className="mt-1">
-                {'1) Öz Facebook tətbiqinizi yaradın (developers.facebook.com) → '}
-                <span className="text-slate-200 font-semibold">App ID</span>
-                {', '}
-                <span className="text-slate-200 font-semibold">App Secret</span>
-                {', '}
-                <span className="text-slate-200 font-semibold">Verify Token</span>
-                {' → aşağıdakı formaya yazıb yadda saxlayın.'}
+            <div className="rounded-lg border border-slate-800 bg-slate-950/20 px-3 py-2 text-[11px] text-slate-400 space-y-2">
+              <div className="text-slate-200 font-semibold">Tam quraşdırma (addım-addım)</div>
+
+              {/* A. Tətbiq yarat */}
+              <div>
+                <div className="text-[10px] uppercase font-bold text-blue-300/80">A · Tətbiq yarat</div>
+                <div className="mt-0.5">1) <span className="text-slate-200">developers.facebook.com</span> → My Apps → <span className="text-slate-200 font-semibold">Create App</span>.</div>
+                <div>2) Use case: <span className="text-slate-200 font-semibold">Other</span> seçin (ən altda, "going away soon" yazsa da işləyir) → Next. <span className="text-slate-500">(Yoxdursa: "Authenticate and request data... Facebook Login")</span></div>
+                <div>3) App type: <span className="text-slate-200 font-semibold">Business</span> → Next.</div>
+                <div>4) Tətbiq adı + email → <span className="text-slate-200 font-semibold">Create app</span>.</div>
               </div>
-              <div className="mt-1">
-                {'2) Öz tətbiqinizdə → Webhooks → Callback URL = '}
-                <span className="text-slate-200 font-semibold break-all">{callbackUrl}</span>
-                {' → Verify Token = (yuxarıda yazdığınız) → Verify and Save.'}
+
+              {/* B. App ID / Secret / Domain */}
+              <div>
+                <div className="text-[10px] uppercase font-bold text-blue-300/80">B · App ID / Secret / Domain</div>
+                <div className="mt-0.5">5) Sol menyu: <span className="text-slate-200 font-semibold">App settings → Basic</span>.</div>
+                <div>6) <span className="text-slate-200 font-semibold">App ID</span> və <span className="text-slate-200 font-semibold">App Secret</span> (Show) → aşağıdakı formaya köçürün.</div>
+                <div className="break-all">7) <span className="text-slate-200 font-semibold">App domains</span> sahəsinə: <span className="text-slate-200 font-semibold">{appDomain}</span>
+                  <CopyChip value={appDomain} onCopy={copyText} /> → <span className="text-slate-200 font-semibold">Save changes</span>.
+                </div>
               </div>
-              <div className="mt-1">
-                {'3) Öz tətbiqinizdə → Facebook Login → Settings → Valid OAuth Redirect URIs = '}
-                <span className="text-slate-200 font-semibold break-all">{oauthRedirectUri}</span>
-                <button
-                  type="button"
-                  onClick={() => copyText(oauthRedirectUri)}
-                  className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-700 text-slate-300 hover:bg-slate-800 align-middle"
-                  title="Copy redirect URI"
-                >
-                  <ClipboardCopy className="w-3 h-3" />
-                </button>
+
+              {/* C. Facebook Login */}
+              <div>
+                <div className="text-[10px] uppercase font-bold text-blue-300/80">C · Facebook Login</div>
+                <div className="mt-0.5">8) <span className="text-slate-200 font-semibold">Products → + Add product → Facebook Login → Set up</span> (Web).</div>
+                <div className="break-all">9) <span className="text-slate-200 font-semibold">Facebook Login → Settings → Valid OAuth Redirect URIs</span>: <span className="text-slate-200 font-semibold">{oauthRedirectUri}</span>
+                  <CopyChip value={oauthRedirectUri} onCopy={copyText} /> → Save.
+                </div>
               </div>
-              <div className="mt-1">
-                {'4) Öz tətbiqinizdə → Webhooks → Add Subscriptions: '}
-                <span className="text-slate-200 font-semibold">messages</span>
-                {', '}
-                <span className="text-slate-200 font-semibold">messaging_postbacks</span>
-                {', '}
-                <span className="text-slate-200 font-semibold">feed</span>
-                {' (Page); '}
-                <span className="text-slate-200 font-semibold">messages</span>
-                {', '}
-                <span className="text-slate-200 font-semibold">comments</span>
-                {' (Instagram). '}
-                <span className="text-slate-500">(feed/comments = yorumlar üçün)</span>
+
+              {/* D. Messenger + Instagram webhooks */}
+              <div>
+                <div className="text-[10px] uppercase font-bold text-blue-300/80">D · Webhooks (Messenger + Instagram)</div>
+                <div className="mt-0.5">10) <span className="text-slate-200 font-semibold">Products → + Add product → Messenger</span> (və varsa <span className="text-slate-200 font-semibold">Instagram</span>).</div>
+                <div className="break-all">11) Webhooks → Callback URL: <span className="text-slate-200 font-semibold">{callbackUrl}</span>
+                  <CopyChip value={callbackUrl} onCopy={copyText} />, Verify Token: <span className="text-slate-200 font-semibold">(formada yazdığınız)</span> → Verify and Save.
+                </div>
+                <div>12) Subscribe fields — Page: <span className="text-slate-200 font-semibold">messages, messaging_postbacks, feed</span>; Instagram: <span className="text-slate-200 font-semibold">messages, comments</span>. <span className="text-slate-500">(feed/comments = yorumlar)</span></div>
               </div>
-              <div className="mt-1">
-                {'5) '}
-                <span className="text-slate-200 font-semibold">Facebook ilə Bağlan</span>
-                {' → icazə ver → qayıdışda səhifələri seç → Seçilənləri Qoş.'}
+
+              {/* E. İcazələr */}
+              <div>
+                <div className="text-[10px] uppercase font-bold text-blue-300/80">E · İcazələr (Permissions)</div>
+                <div className="mt-0.5 break-words">13) App Review → Permissions: <span className="text-slate-200">pages_show_list, pages_messaging, pages_read_engagement, pages_manage_metadata, pages_read_user_content, instagram_basic, instagram_manage_messages, instagram_manage_comments, business_management</span>.</div>
               </div>
-              <div className="mt-1 text-slate-500">
-                Qayda: Webhook <span className="text-slate-200 font-semibold">ok</span> artmadan trigger işləməyəcək.
+
+              {/* F. CRM-də bağla */}
+              <div>
+                <div className="text-[10px] uppercase font-bold text-blue-300/80">F · CRM-də bağla</div>
+                <div className="mt-0.5">14) Aşağıdakı formada <span className="text-slate-200 font-semibold">App ID + App Secret + Verify Token</span> yadda saxlayın.</div>
+                <div>15) <span className="text-slate-200 font-semibold">Facebook ilə Bağlan</span> → icazə ver → səhifələri seç → <span className="text-slate-200 font-semibold">Seçilənləri Qoş</span>.</div>
+              </div>
+
+              <div className="text-slate-500 pt-1 border-t border-slate-800/60">
+                Qeyd: <span className="text-slate-300">Development</span> modda yalnız tətbiqin admin/tester istifadəçiləri girə bilər. Başqaları üçün tətbiqi <span className="text-slate-300">Live</span> edib App Review-dan keçirin.
+                {' '}Qayda: Webhook <span className="text-slate-200 font-semibold">ok</span> artmadan trigger işləməyəcək.
               </div>
             </div>
 
