@@ -7386,6 +7386,43 @@ app.use((err, req, res, next) => {
 });
 
 // SERVE FRONTEND (Monolith Mode)
+// ── Public legal pages (Meta requires a Privacy Policy URL + Data Deletion URL for apps) ──
+const LEGAL_CONTACT_EMAIL = process.env.LEGAL_CONTACT_EMAIL || 'smmworkerasthetik@gmail.com';
+function legalPage(title, bodyHtml) {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${title}</title><style>body{font-family:system-ui,Segoe UI,Arial,sans-serif;max-width:760px;margin:40px auto;padding:0 20px;line-height:1.6;color:#1c1e21}h1{font-size:24px}h2{font-size:18px;margin-top:28px}a{color:#1877F2}small{color:#65676b}</style></head>
+<body>${bodyHtml}<hr><small>Last updated: 2026. Contact: <a href="mailto:${LEGAL_CONTACT_EMAIL}">${LEGAL_CONTACT_EMAIL}</a></small></body></html>`;
+}
+
+app.get('/privacy', (req, res) => {
+  res.set('Content-Type', 'text/html; charset=utf-8').send(legalPage('Privacy Policy', `
+    <h1>Privacy Policy</h1>
+    <p>This CRM application ("the Service") helps a business manage conversations from its own Facebook Pages and Instagram accounts (messages and comments) in one inbox so the business can respond to its customers.</p>
+    <h2>What we access</h2>
+    <p>When a business owner connects their Facebook/Instagram account through Facebook Login, the Service accesses, on that business's behalf: the list of Pages they manage, page and Instagram account identifiers, incoming messages and comments, the sender's public name/username, message timestamps and attachments, and (where available) the ad a message originated from. Access tokens are obtained via Facebook Login.</p>
+    <h2>How we use it</h2>
+    <p>This data is used solely to display conversations in the connected business's CRM inbox and to send replies on their behalf. We do not sell personal data and do not use it for advertising or profiling.</p>
+    <h2>Storage &amp; security</h2>
+    <p>Data is stored in a secured database. Access tokens are encrypted at rest. Each business's data is isolated from other businesses.</p>
+    <h2>Data retention &amp; deletion</h2>
+    <p>Stored data is removed when a business disconnects a Page or requests deletion. See our <a href="/data-deletion">Data Deletion Instructions</a>.</p>
+    <h2>Contact</h2>
+    <p>For privacy questions, contact us at the email below.</p>
+  `));
+});
+
+app.get('/data-deletion', (req, res) => {
+  res.set('Content-Type', 'text/html; charset=utf-8').send(legalPage('Data Deletion Instructions', `
+    <h1>Data Deletion Instructions</h1>
+    <p>You can request deletion of the data associated with your connected Facebook/Instagram account at any time:</p>
+    <ol>
+      <li>In the CRM, open <b>Settings → Connections → Facebook / Instagram</b> and disconnect the relevant Page; or</li>
+      <li>Email us at the address below with the subject <b>"Data deletion"</b> and the Page/account name.</li>
+    </ol>
+    <p>Upon a disconnect or request, we delete the stored messages, comments, page access tokens and related records for that account within 30 days.</p>
+  `));
+});
+
 const DIST_PATH = path.join(__dirname, '../dist');
 const distExists = fs.existsSync(DIST_PATH);
 console.log(`🔍 Checking Frontend Build Directory: ${DIST_PATH} -> Exists: ${distExists}`);
