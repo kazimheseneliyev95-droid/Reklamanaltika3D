@@ -62,6 +62,10 @@ export function ConnectionTab() {
   const [webhookCheck, setWebhookCheck] = useState<any[] | null>(null);
   const [webhookAppSub, setWebhookAppSub] = useState<any | null>(null);
   const [webhookCheckBusy, setWebhookCheckBusy] = useState(false);
+  const [webhookSetupBusy, setWebhookSetupBusy] = useState(false);
+  const [webhookSetupResult, setWebhookSetupResult] = useState<any | null>(null);
+  const [pageSubResult, setPageSubResult] = useState<{ pageId: string; ok: boolean; msg: string } | null>(null);
+  const [subscribingId, setSubscribingId] = useState('');
 
   // Per-tenant Facebook app credentials (each business uses its own app)
   const [appConfig, setAppConfig] = useState<any | null>(null);
@@ -484,8 +488,9 @@ export function ConnectionTab() {
   };
 
   const subscribePage = async (pageId: string) => {
-    setMetaBusy(true);
+    setSubscribingId(pageId);
     setMetaError('');
+    setPageSubResult(null);
     try {
       const url = CrmService.getServerUrl();
       const token = localStorage.getItem('crm_auth_token');
@@ -497,11 +502,39 @@ export function ConnectionTab() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || 'Subscribe failed');
+      const r = data?.result || {};
+      const pageOk = r?.page?.ok !== false;
+      const igInfo = r?.instagram ? (r.instagram.ok ? ' · ig: ok' : ` · ig: ${r.instagram.error || 'xəta'}`) : '';
+      setPageSubResult({ pageId, ok: pageOk, msg: pageOk ? `Abunə olundu (page: ok${igInfo})` : `Page abunəlik xətası: ${r?.page?.error || 'naməlum'}` });
       await refreshMeta();
     } catch (e: any) {
-      setMetaError(e?.message || 'Webhook subscribe alınmadı');
+      setPageSubResult({ pageId, ok: false, msg: e?.message || 'Webhook subscribe alınmadı' });
     } finally {
-      setMetaBusy(false);
+      setSubscribingId('');
+    }
+  };
+
+  // One-click: subscribe the APP to the webhook fields (messages/feed/comments) via the server.
+  const setupAppWebhook = async () => {
+    setWebhookSetupBusy(true);
+    setWebhookSetupResult(null);
+    setMetaError('');
+    try {
+      const url = CrmService.getServerUrl();
+      const token = localStorage.getItem('crm_auth_token');
+      if (!url || !token) return;
+      const res = await fetch(`${url}/api/meta/webhook/setup`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Webhook setup alınmadı');
+      setWebhookSetupResult(data || null);
+      await checkWebhook();
+    } catch (e: any) {
+      setWebhookSetupResult({ error: e?.message || 'Webhook setup alınmadı' });
+    } finally {
+      setWebhookSetupBusy(false);
     }
   };
 
@@ -956,8 +989,33 @@ export function ConnectionTab() {
                 >
                   {webhookCheckBusy ? '...' : 'Test'}
                 </button>
+                <button
+                  onClick={setupAppWebhook}
+                  disabled={webhookSetupBusy || metaBusy}
+                  className="px-2 py-1 rounded-md text-[10px] font-bold border border-emerald-900/40 bg-emerald-950/10 text-emerald-300 hover:bg-emerald-950/20 disabled:opacity-50"
+                  title="Tətbiqi messages/feed webhook-larına abunə et (mesajların gəlməsi üçün)"
+                >
+                  {webhookSetupBusy ? '...' : 'Webhook qur'}
+                </button>
               </div>
             </div>
+
+            {webhookSetupResult ? (
+              <div className={cn(
+                'rounded-lg border px-3 py-2 text-[11px]',
+                webhookSetupResult.error ? 'border-red-900/40 bg-red-950/15 text-red-300'
+                  : (webhookSetupResult.page?.ok ? 'border-emerald-900/40 bg-emerald-950/15 text-emerald-300' : 'border-amber-900/40 bg-amber-950/10 text-amber-300')
+              )}>
+                {webhookSetupResult.error ? (
+                  <span>Webhook qurulmadı: {webhookSetupResult.error}</span>
+                ) : (
+                  <span>
+                    Webhook qurma: page {webhookSetupResult.page?.ok ? '✓ (messages,feed)' : `✗ ${webhookSetupResult.page?.error || ''}`}
+                    {' · '}instagram {webhookSetupResult.instagram?.ok ? '✓' : `✗ ${webhookSetupResult.instagram?.error || 'advanced access lazımdır'}`}
+                  </span>
+                )}
+              </div>
+            ) : null}
 
             {webhookStats?.last_error ? (
               <div className="rounded-lg border border-slate-800 bg-slate-950/20 px-3 py-2 text-[11px] text-slate-400">
@@ -970,29 +1028,34 @@ export function ConnectionTab() {
               <div className="rounded-lg border border-slate-800 bg-slate-950/20 px-3 py-2 text-[11px] text-slate-400">
                 <div className="text-slate-200 font-semibold mb-2">Webhook abunəlik nəticəsi</div>
 
-                {webhookAppSub ? (
+                {webhookAppSub ? (() => {
+                  const hasMsg = (webhookAppSub.objects || []).some((o: any) => o.object === 'page' && (o.fields || []).includes('messages'));
+                  const ready = Boolean(webhookAppSub.configured && webhookAppSub.matches && hasMsg);
+                  const partial = Boolean(webhookAppSub.configured && (!webhookAppSub.matches || !hasMsg));
+                  return (
                   <div className={cn(
                     'mb-2 rounded-lg border px-2 py-2',
-                    webhookAppSub.configured && webhookAppSub.matches ? 'border-emerald-900/40 bg-emerald-950/15'
-                      : webhookAppSub.configured ? 'border-amber-900/40 bg-amber-950/10'
-                      : 'border-red-900/40 bg-red-950/15'
+                    ready ? 'border-emerald-900/40 bg-emerald-950/15' : partial ? 'border-amber-900/40 bg-amber-950/10' : 'border-red-900/40 bg-red-950/15'
                   )}>
                     <div className="flex items-center gap-2">
-                      <span className={webhookAppSub.configured && webhookAppSub.matches ? 'text-green-400' : webhookAppSub.configured ? 'text-amber-400' : 'text-red-400'}>
-                        {webhookAppSub.configured && webhookAppSub.matches ? '✓' : webhookAppSub.configured ? '!' : '✗'}
+                      <span className={ready ? 'text-green-400' : partial ? 'text-amber-400' : 'text-red-400'}>
+                        {ready ? '✓' : partial ? '!' : '✗'}
                       </span>
                       <span className="font-semibold text-slate-200">
-                        App webhook callback: {webhookAppSub.configured ? (webhookAppSub.matches ? 'düzgün qurulub' : 'qurulub amma URL fərqlidir') : 'QURULMAYIB'}
+                        App webhook: {ready ? 'hazır (messages abunəliyi var)' : !webhookAppSub.configured ? 'callback QURULMAYIB' : !webhookAppSub.matches ? 'callback URL fərqlidir' : 'messages alanı abunə DEYİL'}
                       </span>
                     </div>
                     {!webhookAppSub.configured ? (
                       <div className="mt-1 text-[10px] text-red-300">
-                        Tətbiqdə Webhooks callback yoxdur → Meta heç bir mesaj göndərmir. Messenger → Webhooks → Callback URL ={' '}
-                        <span className="text-slate-200 font-semibold break-all">{webhookAppSub.expectedUrl || callbackUrl}</span> + Verify Token → Verify and Save.
+                        Tətbiqdə Webhooks callback yoxdur. <span className="text-emerald-300 font-semibold">"Webhook qur"</span> düyməsini sıxın (avtomatik qurar).
                       </div>
                     ) : !webhookAppSub.matches ? (
                       <div className="mt-1 text-[10px] text-amber-300 break-all">
-                        Tətbiqdəki: {webhookAppSub.callbackUrl} · Olmalı: {webhookAppSub.expectedUrl}
+                        Tətbiqdəki: {webhookAppSub.callbackUrl} · Olmalı: {webhookAppSub.expectedUrl} — <span className="text-emerald-300 font-semibold">"Webhook qur"</span> sıxın.
+                      </div>
+                    ) : !hasMsg ? (
+                      <div className="mt-1 text-[10px] text-amber-300">
+                        Callback var amma <b>messages</b> alanı abunə deyil → mesaj gəlmir. <span className="text-emerald-300 font-semibold">"Webhook qur"</span> düyməsini sıxın.
                       </div>
                     ) : (
                       <div className="mt-1 text-[10px] text-slate-500">
@@ -1001,7 +1064,8 @@ export function ConnectionTab() {
                     )}
                     {webhookAppSub.error ? <div className="mt-1 text-[10px] text-red-300">err: {String(webhookAppSub.error)}</div> : null}
                   </div>
-                ) : null}
+                  );
+                })() : null}
 
                 {webhookCheck.length === 0 ? (
                   <div className="text-slate-500">Həç bir səhifə tapilmadi.</div>
@@ -1105,29 +1169,36 @@ export function ConnectionTab() {
                 <div className="text-[10px] uppercase font-bold text-slate-500 mb-2">Saved Pages ({metaPages.length})</div>
                 <div className="space-y-2 max-h-64 overflow-auto pr-1">
                   {metaPages.map((p) => (
-                    <div key={p.page_id} className="flex items-center justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="text-[12px] text-slate-200 font-semibold truncate">{p.page_name || p.page_id}</div>
-                        <div className="text-[10px] text-slate-600 truncate">page_id: {p.page_id}{p.ig_business_id ? ` · ig: ${p.ig_business_id}` : ''}</div>
+                    <div key={p.page_id} className="space-y-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="text-[12px] text-slate-200 font-semibold truncate">{p.page_name || p.page_id}</div>
+                          <div className="text-[10px] text-slate-600 truncate">page_id: {p.page_id}{p.ig_business_id ? ` · ig: ${p.ig_business_id}` : ''}</div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => subscribePage(p.page_id)}
+                            disabled={subscribingId === p.page_id || metaBusy}
+                            className="p-2 rounded-lg text-slate-500 hover:text-blue-300 hover:bg-slate-900 border border-slate-800 disabled:opacity-50"
+                            title="Səhifəni webhook-a abunə et"
+                          >
+                            <BellRing className={cn('w-4 h-4', subscribingId === p.page_id && 'animate-pulse text-blue-300')} />
+                          </button>
+                          <button
+                            onClick={() => disconnectPage(p.page_id)}
+                            disabled={metaBusy}
+                            className="p-2 rounded-lg text-slate-500 hover:text-red-300 hover:bg-slate-900 border border-slate-800 disabled:opacity-50"
+                            title="Disconnect"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => subscribePage(p.page_id)}
-                          disabled={metaBusy}
-                          className="p-2 rounded-lg text-slate-500 hover:text-blue-300 hover:bg-slate-900 border border-slate-800 disabled:opacity-50"
-                          title="Webhook subscribe"
-                        >
-                          <BellRing className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => disconnectPage(p.page_id)}
-                          disabled={metaBusy}
-                          className="p-2 rounded-lg text-slate-500 hover:text-red-300 hover:bg-slate-900 border border-slate-800 disabled:opacity-50"
-                          title="Disconnect"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
+                      {pageSubResult && pageSubResult.pageId === p.page_id ? (
+                        <div className={cn('text-[10px] px-1', pageSubResult.ok ? 'text-emerald-300' : 'text-red-300')}>
+                          {pageSubResult.ok ? '✓ ' : '✗ '}{pageSubResult.msg}
+                        </div>
+                      ) : null}
                     </div>
                   ))}
                 </div>

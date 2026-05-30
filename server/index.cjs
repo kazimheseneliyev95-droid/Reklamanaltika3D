@@ -7155,6 +7155,35 @@ app.get('/api/meta/webhook/check', requireTenantAuth, requireAdmin, asyncHandler
   res.json({ results, app: appSub });
 }));
 
+// One-click: subscribe the APP itself to the webhook fields (messages/feed/comments) via the Graph API,
+// using the tenant's app token. This fixes the common "callback set but no fields subscribed" gap
+// without the user having to tick fields in the Meta dashboard.
+app.post('/api/meta/webhook/setup', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+  const app_ = await getTenantMetaApp(req.tenantId);
+  if (!app_.appId || !app_.appSecret) return res.status(400).json({ error: 'App ID/Secret yoxdur (formada doldurun).' });
+  if (!app_.verifyToken) return res.status(400).json({ error: 'Verify Token yoxdur (formada doldurun).' });
+
+  const appToken = `${app_.appId}|${app_.appSecret}`;
+  const host = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
+  const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0].trim();
+  const callbackUrl = host ? `${proto}://${host}/api/webhooks/meta` : META_REDIRECT_URI.replace('/api/meta/oauth/callback', '/api/webhooks/meta');
+
+  async function subscribe(object, fields) {
+    const url = `https://graph.facebook.com/${FB_API_VERSION}/${encodeURIComponent(app_.appId)}/subscriptions`;
+    const body = new URLSearchParams({ object, callback_url: callbackUrl, fields, verify_token: String(app_.verifyToken), access_token: appToken });
+    try {
+      const data = await fetchJsonWithRetry(url, { method: 'POST', body }, { retries: 0, timeoutMs: 8000 });
+      return { object, ok: Boolean(data && data.success !== false && !data.error), fields, error: (data && data.error && data.error.message) || null };
+    } catch (e) {
+      return { object, ok: false, fields, error: String((e && e.message) || e) };
+    }
+  }
+
+  const page = await subscribe('page', 'messages,messaging_postbacks,feed');
+  const instagram = await subscribe('instagram', 'messages,comments');
+  res.json({ callbackUrl, page, instagram });
+}));
+
 async function postGraphForm(path, form, timeoutMs = 7000) {
   const url = `https://graph.facebook.com/v19.0/${String(path).replace(/^\//, '')}`;
   const body = form instanceof URLSearchParams ? form : new URLSearchParams(form || {});
