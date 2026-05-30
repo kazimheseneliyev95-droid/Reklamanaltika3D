@@ -7091,19 +7091,58 @@ app.get('/api/meta/webhook/status', requireTenantAuth, requireAdmin, asyncHandle
 app.get('/api/meta/webhook/check', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL || !db || !db.pool) return res.status(503).json({ error: 'Database not configured' });
 
+  // App-level webhook subscription: is the Webhooks callback URL configured ON THE APP itself?
+  // (A page can be subscribed to the app, but if the app has no callback URL set, Meta sends nothing.)
+  const expectedHost = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
+  const expectedProto = String(req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0].trim();
+  const appSub = {
+    configured: false,
+    callbackUrl: null,
+    expectedUrl: expectedHost ? `${expectedProto}://${expectedHost}/api/webhooks/meta` : null,
+    matches: false,
+    objects: [],
+    error: null
+  };
+  try {
+    const app_ = await getTenantMetaApp(req.tenantId);
+    if (app_.appId && app_.appSecret) {
+      const appToken = `${app_.appId}|${app_.appSecret}`;
+      const url = `https://graph.facebook.com/${FB_API_VERSION}/${encodeURIComponent(app_.appId)}/subscriptions?access_token=${encodeURIComponent(appToken)}`;
+      const data = await fetchJsonWithRetry(url, {}, { retries: 0, timeoutMs: 6000 }).catch((e) => ({ error: { message: String((e && e.message) || e) } }));
+      if (data && data.error) {
+        appSub.error = data.error.message || 'subscriptions fetch failed';
+      } else {
+        const subs = Array.isArray(data && data.data) ? data.data : [];
+        appSub.objects = subs.map((s) => ({
+          object: s.object,
+          callback_url: s.callback_url || null,
+          active: s.active !== false,
+          fields: Array.isArray(s.fields) ? s.fields.map((f) => (typeof f === 'string' ? f : (f && f.name))).filter(Boolean) : []
+        }));
+        const cb = subs.map((s) => s.callback_url).find(Boolean) || null;
+        appSub.callbackUrl = cb;
+        appSub.configured = subs.length > 0 && Boolean(cb);
+        appSub.matches = Boolean(cb && appSub.expectedUrl && cb.replace(/\/$/, '') === appSub.expectedUrl.replace(/\/$/, ''));
+      }
+    } else {
+      appSub.error = 'app credentials missing';
+    }
+  } catch (e) {
+    appSub.error = String((e && e.message) || e);
+  }
+
   // getMetaPages omits page_access_token for security, so query directly
   const r = await db.pool.query(
     'SELECT page_id, page_name, page_access_token, ig_business_id FROM meta_pages WHERE tenant_id = $1 ORDER BY updated_at DESC',
     [req.tenantId]
   );
   const pages = r.rows || [];
-  if (pages.length === 0) return res.json({ results: [] });
 
   const results = await Promise.all(pages.map(async (page) => {
     const base = { pageId: page.page_id, pageName: page.page_name || page.page_id };
     if (!page.page_access_token) return { ...base, subscribed: false, fields: [], error: 'no_token' };
     try {
-      const url = 'https://graph.facebook.com/v19.0/' + encodeURIComponent(page.page_id) + '/subscribed_apps?access_token=' + encodeURIComponent(page.page_access_token);
+      const url = `https://graph.facebook.com/${FB_API_VERSION}/${encodeURIComponent(page.page_id)}/subscribed_apps?access_token=${encodeURIComponent(page.page_access_token)}`;
       const data = await fetchJsonWithRetry(url, {}, { retries: 0, timeoutMs: 6000 });
       const fields = Array.isArray(data && data.data) ? data.data.flatMap(function(a) { return Array.isArray(a.subscribed_fields) ? a.subscribed_fields : []; }) : [];
       const subscribed = fields.length > 0;
@@ -7113,7 +7152,7 @@ app.get('/api/meta/webhook/check', requireTenantAuth, requireAdmin, asyncHandler
     }
   }));
 
-  res.json({ results });
+  res.json({ results, app: appSub });
 }));
 
 async function postGraphForm(path, form, timeoutMs = 7000) {

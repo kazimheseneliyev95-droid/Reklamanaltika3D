@@ -60,6 +60,7 @@ export function ConnectionTab() {
   const [lastConnectReport, setLastConnectReport] = useState<any | null>(null);
   const [metaConfig, setMetaConfig] = useState<any | null>(null);
   const [webhookCheck, setWebhookCheck] = useState<any[] | null>(null);
+  const [webhookAppSub, setWebhookAppSub] = useState<any | null>(null);
   const [webhookCheckBusy, setWebhookCheckBusy] = useState(false);
 
   // Per-tenant Facebook app credentials (each business uses its own app)
@@ -332,6 +333,7 @@ export function ConnectionTab() {
   const checkWebhook = async () => {
     setWebhookCheckBusy(true);
     setWebhookCheck(null);
+    setWebhookAppSub(null);
     try {
       const url = CrmService.getServerUrl();
       const token = localStorage.getItem('crm_auth_token');
@@ -342,6 +344,7 @@ export function ConnectionTab() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || 'Check failed');
       setWebhookCheck(Array.isArray(data?.results) ? data.results : []);
+      setWebhookAppSub(data?.app || null);
     } catch (e: any) {
       setMetaError(e?.message || 'Webhook check failed');
     } finally {
@@ -966,6 +969,40 @@ export function ConnectionTab() {
             {Array.isArray(webhookCheck) ? (
               <div className="rounded-lg border border-slate-800 bg-slate-950/20 px-3 py-2 text-[11px] text-slate-400">
                 <div className="text-slate-200 font-semibold mb-2">Webhook abunəlik nəticəsi</div>
+
+                {webhookAppSub ? (
+                  <div className={cn(
+                    'mb-2 rounded-lg border px-2 py-2',
+                    webhookAppSub.configured && webhookAppSub.matches ? 'border-emerald-900/40 bg-emerald-950/15'
+                      : webhookAppSub.configured ? 'border-amber-900/40 bg-amber-950/10'
+                      : 'border-red-900/40 bg-red-950/15'
+                  )}>
+                    <div className="flex items-center gap-2">
+                      <span className={webhookAppSub.configured && webhookAppSub.matches ? 'text-green-400' : webhookAppSub.configured ? 'text-amber-400' : 'text-red-400'}>
+                        {webhookAppSub.configured && webhookAppSub.matches ? '✓' : webhookAppSub.configured ? '!' : '✗'}
+                      </span>
+                      <span className="font-semibold text-slate-200">
+                        App webhook callback: {webhookAppSub.configured ? (webhookAppSub.matches ? 'düzgün qurulub' : 'qurulub amma URL fərqlidir') : 'QURULMAYIB'}
+                      </span>
+                    </div>
+                    {!webhookAppSub.configured ? (
+                      <div className="mt-1 text-[10px] text-red-300">
+                        Tətbiqdə Webhooks callback yoxdur → Meta heç bir mesaj göndərmir. Messenger → Webhooks → Callback URL ={' '}
+                        <span className="text-slate-200 font-semibold break-all">{webhookAppSub.expectedUrl || callbackUrl}</span> + Verify Token → Verify and Save.
+                      </div>
+                    ) : !webhookAppSub.matches ? (
+                      <div className="mt-1 text-[10px] text-amber-300 break-all">
+                        Tətbiqdəki: {webhookAppSub.callbackUrl} · Olmalı: {webhookAppSub.expectedUrl}
+                      </div>
+                    ) : (
+                      <div className="mt-1 text-[10px] text-slate-500">
+                        {(webhookAppSub.objects || []).map((o: any) => `${o.object}: ${(o.fields || []).join(',') || '-'}`).join(' · ') || '—'}
+                      </div>
+                    )}
+                    {webhookAppSub.error ? <div className="mt-1 text-[10px] text-red-300">err: {String(webhookAppSub.error)}</div> : null}
+                  </div>
+                ) : null}
+
                 {webhookCheck.length === 0 ? (
                   <div className="text-slate-500">Həç bir səhifə tapilmadi.</div>
                 ) : (
