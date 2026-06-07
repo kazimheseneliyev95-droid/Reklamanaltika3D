@@ -3072,11 +3072,15 @@ app.get('/api/users', requireTenantAuth, asyncHandler(async (req, res) => {
   res.json(users);
 }));
 
-app.post('/api/users', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+app.post('/api/users', requireTenantAuth, requirePermission('manage_users', 'İstifadəçi idarəetmə icazəniz yoxdur'), asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) {
     return res.status(503).json({ error: 'Database not configured' });
   }
   const { username, password, role, permissions } = req.body;
+  // A non-superadmin cannot create a superadmin/admin above their own level.
+  if (req.userRole !== 'superadmin' && (role === 'superadmin' || role === 'admin')) {
+    return res.status(403).json({ error: 'Bu rolu yaratmaq icazəniz yoxdur' });
+  }
   if (!username || !password || !role) {
     return res.status(400).json({ error: 'Username, password, and role are required' });
   }
@@ -3102,28 +3106,42 @@ app.post('/api/users', requireTenantAuth, requireAdmin, asyncHandler(async (req,
   }
 }));
 
-app.put('/api/users/:id/role', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+app.put('/api/users/:id/role', requireTenantAuth, requirePermission('manage_users', 'İstifadəçi idarəetmə icazəniz yoxdur'), asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   const { role } = req.body;
 
   if (!['admin', 'worker', 'manager', 'viewer'].includes(role)) {
     return res.status(400).json({ error: 'Invalid role' });
   }
+  // Only a superadmin may grant admin/superadmin; nobody may change their own role.
+  if (req.userRole !== 'superadmin' && (role === 'superadmin' || role === 'admin')) {
+    return res.status(403).json({ error: 'Bu rolu vermək icazəniz yoxdur' });
+  }
+  if (String(req.params.id) === String(req.userId)) {
+    return res.status(403).json({ error: 'Öz rolunuzu dəyişə bilməzsiniz' });
+  }
 
   const updatedUser = await db.updateUserRole(req.params.id, role, req.tenantId);
   res.json(updatedUser);
 }));
 
-app.put('/api/users/:id/permissions', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+app.put('/api/users/:id/permissions', requireTenantAuth, requirePermission('manage_user_permissions', 'İcazələri dəyişmək səlahiyyətiniz yoxdur'), asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   const { permissions } = req.body;
+  // Prevent self-escalation: you cannot edit your own permission set.
+  if (String(req.params.id) === String(req.userId)) {
+    return res.status(403).json({ error: 'Öz icazələrinizi dəyişə bilməzsiniz' });
+  }
 
   const updatedUser = await db.updateUserPermissions(req.params.id, permissions, req.tenantId);
   res.json(updatedUser);
 }));
 
-app.delete('/api/users/:id', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
+app.delete('/api/users/:id', requireTenantAuth, requirePermission('manage_users', 'İstifadəçi idarəetmə icazəniz yoxdur'), asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+  if (String(req.params.id) === String(req.userId)) {
+    return res.status(403).json({ error: 'Öz hesabınızı silə bilməzsiniz' });
+  }
   await db.deleteUser(req.params.id, req.tenantId);
   res.json({ success: true });
 }));
@@ -7422,17 +7440,15 @@ app.post('/api/analytics/layout', requireTenantAuth, requirePermission('view_sta
 app.get(['/api/debug', '/api/debug/:tenantId'], (req, res) => {
   const mem = process.memoryUsage();
 
+  // Public health endpoint — no version/platform fingerprinting, no tenant data.
   res.json({
+    ok: true,
     uptime_seconds: Math.round(process.uptime()),
     memory: {
       rss_mb: Math.round(mem.rss / 1024 / 1024),
       heap_used_mb: Math.round(mem.heapUsed / 1024 / 1024),
     },
-    environment: {
-      node_version: process.version,
-      platform: process.platform,
-      has_database_url: !!process.env.DATABASE_URL,
-    }
+    has_database_url: !!process.env.DATABASE_URL
   });
 });
 
