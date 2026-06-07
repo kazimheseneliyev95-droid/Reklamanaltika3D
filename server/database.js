@@ -34,9 +34,11 @@ function toUtcBoundaryFromLocalDate(dateStr, tzOffsetMinutes, endExclusive = fal
 }
 
 // Database Configuration
+// Local Postgres (localhost) has no SSL; managed/remote (Supabase etc.) needs it.
+const isLocalDb = /@(localhost|127\.0\.0\.1|\[::1\])(:|\/)/.test(String(normalizedDatabaseUrl || ''));
 const pool = new Pool({
     connectionString: normalizedDatabaseUrl,
-    ssl: { rejectUnauthorized: false }, // Required for Supabase
+    ssl: isLocalDb ? false : { rejectUnauthorized: false }, // SSL off for localhost, on for remote (Supabase)
     max: 8, // Keep low: Supabase free tier allows 60 direct connections; 8 leaves headroom for multiple processes
     idleTimeoutMillis: 30000, // Release idle connections quickly to avoid Supabase's 60s idle timeout killing them silently
     connectionTimeoutMillis: 10000,
