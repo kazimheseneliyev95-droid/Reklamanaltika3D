@@ -6625,6 +6625,10 @@ app.get('/api/facebook-import/config', requireTenantAuth, requireAdmin, asyncHan
   res.json(sanitizeFacebookAdImportConfig(row));
 }));
 
+// Graph token xətalarını (code 190 / expired / OAuth) aydın istifadəçi mesajına çevir
+function isFbTokenError(msg) { const m = String(msg || '').toLowerCase(); return m.includes('code 190') || m.includes('session has expired') || m.includes('access token') || m.includes('oauthexception') || m.includes('error validating') || m.includes('expired'); }
+const FB_TOKEN_BAD = 'Facebook token işləmir və ya vaxtı bitib. Zəhmət olmasa yeni token gətirin.';
+
 app.post('/api/facebook-import/fetch', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
   const token = String(req.body?.token || '').trim();
   if (!token) return res.status(400).json({ error: 'token is required' });
@@ -6633,7 +6637,14 @@ app.post('/api/facebook-import/fetch', requireTenantAuth, requireAdmin, asyncHan
   const fbApp = await getTenantMetaApp(req.tenantId);
   const ex = await exchangeForLongLivedUserToken(token, fbApp.appId, fbApp.appSecret).catch(() => ({ access_token: token, expires_in: null, exchanged: false }));
   const effectiveToken = ex?.access_token ? String(ex.access_token) : token;
-  const accounts = await fetchFacebookAdAccountsForToken(effectiveToken);
+  // FIX: token işləmirsə opaque 500 deyil, aydın 400 "token vaxtı bitib" qaytar (anında yoxlama)
+  let accounts;
+  try {
+    accounts = await fetchFacebookAdAccountsForToken(effectiveToken);
+  } catch (e) {
+    if (isFbTokenError(e?.message)) return res.status(400).json({ error: FB_TOKEN_BAD, code: 'token_expired' });
+    return res.status(502).json({ error: 'Facebook xətası: ' + String(e?.message || '').replace(/^HTTP \d+:\s*/, '').slice(0, 150) });
+  }
   res.json({
     exchanged: Boolean(ex?.exchanged),
     expires_in: ex?.expires_in || null,
@@ -6658,7 +6669,13 @@ app.post('/api/facebook-import/campaigns', requireTenantAuth, requireAdmin, asyn
     : (Array.isArray(existing?.account_cache) ? existing.account_cache : []);
   const normalizedAccounts = accountsSource.map(normalizeFacebookAdAccount);
   const selectedAccounts = normalizedAccounts.filter((a) => accountIds.includes(a.account_id) || accountIds.includes(a.id) || accountIds.includes(a.api_id));
-  const campaigns = await fetchFacebookCampaignsForAccounts(token, selectedAccounts);
+  let campaigns;
+  try {
+    campaigns = await fetchFacebookCampaignsForAccounts(token, selectedAccounts);
+  } catch (e) {
+    if (isFbTokenError(e?.message)) return res.status(400).json({ error: FB_TOKEN_BAD, code: 'token_expired' });
+    return res.status(502).json({ error: 'Facebook xətası: ' + String(e?.message || '').replace(/^HTTP \d+:\s*/, '').slice(0, 150) });
+  }
   res.json({ campaigns, accountIds, count: campaigns.length });
 }));
 
