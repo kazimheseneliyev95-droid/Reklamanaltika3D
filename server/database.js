@@ -39,8 +39,9 @@ const isLocalDb = /@(localhost|127\.0\.0\.1|\[::1\])(:|\/)/.test(String(normaliz
 const pool = new Pool({
     connectionString: normalizedDatabaseUrl,
     ssl: isLocalDb ? false : { rejectUnauthorized: false }, // SSL off for localhost, on for remote (Supabase)
-    max: 8, // Keep low: Supabase free tier allows 60 direct connections; 8 leaves headroom for multiple processes
-    idleTimeoutMillis: 30000, // Release idle connections quickly to avoid Supabase's 60s idle timeout killing them silently
+    max: isLocalDb ? 24 : 8, // dedicated local Postgres (Vultr VDS) → higher concurrency; remote (Supabase) → conservative
+    min: 2, // keep warm connections ready for low-latency first query
+    idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 10000,
 });
 
@@ -798,6 +799,15 @@ async function initDb() {
             CREATE INDEX IF NOT EXISTS idx_meta_webhook_received_at ON meta_webhook_events(received_at DESC);
             CREATE INDEX IF NOT EXISTS idx_meta_webhook_processed_at ON meta_webhook_events(processed_at);
             CREATE INDEX IF NOT EXISTS idx_meta_webhook_next_attempt_at ON meta_webhook_events(next_attempt_at);
+            -- Max-speed tenant-scoped indexes (also applied live via perf_indexes.sql)
+            CREATE INDEX IF NOT EXISTS idx_followups_open_lead ON follow_ups (tenant_id, lead_id, due_at) WHERE status = 'open';
+            CREATE INDEX IF NOT EXISTS idx_followups_due_scan ON follow_ups (due_at) WHERE status = 'open' AND notified_at IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_followups_overdue_scan ON follow_ups (due_at) WHERE status = 'open' AND overdue_notified_at IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_leads_sla_unanswered ON leads (last_inbound_at) WHERE conversation_closed = false AND last_inbound_at IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_messages_tenant_phone_created ON messages (tenant_id, phone, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_messages_tenant_created ON messages (tenant_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant_entity ON audit_logs (tenant_id, entity_type, entity_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant_action_created ON audit_logs (tenant_id, action, created_at DESC);
         `);
 
         try {
