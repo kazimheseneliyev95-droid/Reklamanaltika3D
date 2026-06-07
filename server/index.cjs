@@ -6629,12 +6629,15 @@ app.post('/api/facebook-import/fetch', requireTenantAuth, requireAdmin, asyncHan
   const token = String(req.body?.token || '').trim();
   if (!token) return res.status(400).json({ error: 'token is required' });
 
-  const ex = await exchangeForLongLivedUserToken(token).catch(() => ({ access_token: token, expires_in: null, exchanged: false }));
+  // FIX: exchange pasted (short-lived) token for a 60-day long-lived token using the tenant's FB app creds
+  const fbApp = await getTenantMetaApp(req.tenantId);
+  const ex = await exchangeForLongLivedUserToken(token, fbApp.appId, fbApp.appSecret).catch(() => ({ access_token: token, expires_in: null, exchanged: false }));
   const effectiveToken = ex?.access_token ? String(ex.access_token) : token;
   const accounts = await fetchFacebookAdAccountsForToken(effectiveToken);
   res.json({
     exchanged: Boolean(ex?.exchanged),
     expires_in: ex?.expires_in || null,
+    warning: ex?.exchanged ? null : (!fbApp.appId || !fbApp.appSecret ? 'app_creds_missing' : 'exchange_failed'),
     tokenHint: `${effectiveToken.slice(0, 6)}...${effectiveToken.slice(-4)}`,
     accounts,
   });
@@ -6664,8 +6667,18 @@ app.post('/api/facebook-import/save', requireTenantAuth, requireAdmin, asyncHand
   if (!db || typeof db.upsertFacebookAdImport !== 'function') return res.status(501).json({ error: 'Facebook import storage unavailable' });
 
   const existing = await db.getFacebookAdImport(req.tenantId).catch(() => null);
-  const token = String(req.body?.token || existing?.access_token || '').trim();
-  if (!token) return res.status(400).json({ error: 'token is required' });
+  const rawToken = String(req.body?.token || existing?.access_token || '').trim();
+  if (!rawToken) return res.status(400).json({ error: 'token is required' });
+  // FIX: a freshly pasted token is short-lived (~1-2h). Exchange it for a 60-day long-lived
+  // token with the tenant's FB app creds BEFORE persisting, so /sync doesn't die hours later.
+  let token = rawToken;
+  let exchangeWarning = null;
+  if (req.body?.token) {
+    const fbApp = await getTenantMetaApp(req.tenantId);
+    const ex = await exchangeForLongLivedUserToken(rawToken, fbApp.appId, fbApp.appSecret).catch(() => ({ access_token: rawToken, exchanged: false }));
+    token = ex?.access_token ? String(ex.access_token) : rawToken;
+    if (!ex?.exchanged) exchangeWarning = (!fbApp.appId || !fbApp.appSecret) ? 'app_creds_missing' : 'exchange_failed';
+  }
 
   const accountsInput = Array.isArray(req.body?.accounts) ? req.body.accounts : [];
   const accounts = accountsInput.length > 0
@@ -6711,7 +6724,7 @@ app.post('/api/facebook-import/save', requireTenantAuth, requireAdmin, asyncHand
       });
   }
 
-  res.status(201).json({ success: true, config: sanitizeFacebookAdImportConfig({ ...saved, access_token: token }) });
+  res.status(201).json({ success: true, warning: exchangeWarning, config: sanitizeFacebookAdImportConfig({ ...saved, access_token: token }) });
 }));
 
 app.post('/api/facebook-import/refresh', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
@@ -6763,9 +6776,19 @@ app.post('/api/facebook-import/sync', requireTenantAuth, requireAdmin, asyncHand
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
   const existing = await db.getFacebookAdImport(req.tenantId).catch(() => null);
   if (!existing?.access_token) return res.status(404).json({ error: 'Saved Facebook token not found' });
-  const result = await syncFacebookInsightsForTenant(req.tenantId, existing);
-  const fresh = await db.getFacebookAdImport(req.tenantId).catch(() => existing);
-  res.json({ success: true, result, config: sanitizeFacebookAdImportConfig(fresh) });
+  try {
+    const result = await syncFacebookInsightsForTenant(req.tenantId, existing);
+    const fresh = await db.getFacebookAdImport(req.tenantId).catch(() => existing);
+    res.json({ success: true, result, config: sanitizeFacebookAdImportConfig(fresh) });
+  } catch (err) {
+    // FIX: surface token errors as a clear 400 (was opaque 500 "Server xətası") + persist so /config shows it
+    const msg = String(err?.message || '');
+    await db.finishFacebookAutoSync(req.tenantId, { lastInsightSyncError: msg }).catch(() => null);
+    if (/code 190|access token|session has expired|OAuth|expired/i.test(msg)) {
+      return res.status(400).json({ error: 'token_expired', message: 'Facebook token-un müddəti bitib — Dashboard ayarlarından yeni token əlavə edin.' });
+    }
+    return res.status(502).json({ error: 'facebook_sync_failed', message: msg.slice(0, 200) });
+  }
 }));
 
 app.get('/api/facebook-import/insights', requireTenantAuth, requireAdmin, asyncHandler(async (req, res) => {
