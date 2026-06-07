@@ -19,6 +19,11 @@ const {
 
 const app = express();
 
+// Behind nginx (1 proxy hop): trust X-Forwarded-For so req.ip = real client IP.
+// Fixes express-rate-limit ERR_ERL_UNEXPECTED_X_FORWARDED_FOR + makes per-IP
+// rate limiting / audit logging use the actual client, not nginx (127.0.0.1).
+app.set('trust proxy', 1);
+
 // 🔴 Security: Add Helmet for HTTP headers
 app.use(helmet({
   contentSecurityPolicy: false, // Don't break frontend script execution if not fully tuned
