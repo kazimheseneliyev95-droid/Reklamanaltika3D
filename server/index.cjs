@@ -6134,7 +6134,7 @@ async function buildCachedFacebookInsightsPayload(tenantId, config, metric, date
   };
 }
 
-async function syncFacebookInsightsForTenant(tenantId, configOverride = null) {
+async function syncFacebookInsightsForTenant(tenantId, configOverride = null, opts = {}) {
   if (!process.env.DATABASE_URL) return null;
   const config = configOverride || await db.getFacebookAdImport(tenantId).catch(() => null);
   if (!config?.access_token) throw new Error('Saved Facebook token not found');
@@ -6152,18 +6152,29 @@ async function syncFacebookInsightsForTenant(tenantId, configOverride = null) {
     return { synced: false, reason: 'no_selected_campaigns', nextAt };
   }
 
-  const fullRange = buildFacebookSyncRange(config);
+  // Custom range (Tam yenilə → user-selected window); else the configured sync range.
+  const reqRange = (opts && opts.range && opts.range.start && opts.range.end)
+    ? { start: String(opts.range.start), end: String(opts.range.end) }
+    : null;
+  const fullRange = reqRange || buildFacebookSyncRange(config);
+  const forceFull = Boolean(opts && opts.full);
   const syncedCampaignIds = selectedCampaigns.map((c) => String(c.id || '').trim()).filter(Boolean);
   for (const metric of ['message', 'lead', 'purchase']) {
-    // Incremental: only re-fetch the recent tail + any not-yet-cached days (past days are immutable → no re-fetch).
-    let cachedMax = null;
-    try {
-      const cb = await db.getFacebookInsightDateBounds(tenantId, metric, 'campaign');
-      const ab = await db.getFacebookInsightDateBounds(tenantId, metric, 'ad');
-      // Use the laggier table's max so a behind table catches up; null if either is empty (→ full backfill).
-      cachedMax = (cb && cb.max && ab && ab.max) ? (cb.max < ab.max ? cb.max : ab.max) : null;
-    } catch { cachedMax = null; }
-    const dateRange = computeIncrementalFetchRange(fullRange, cachedMax);
+    let dateRange;
+    if (forceFull) {
+      // Tam yenilə: re-fetch the WHOLE requested range and replace it (ignore cache bounds).
+      dateRange = { start: fullRange.start, end: fullRange.end };
+    } else {
+      // Incremental: only re-fetch the recent tail + any not-yet-cached days (past days are immutable → no re-fetch).
+      let cachedMax = null;
+      try {
+        const cb = await db.getFacebookInsightDateBounds(tenantId, metric, 'campaign');
+        const ab = await db.getFacebookInsightDateBounds(tenantId, metric, 'ad');
+        // Use the laggier table's max so a behind table catches up; null if either is empty (→ full backfill).
+        cachedMax = (cb && cb.max && ab && ab.max) ? (cb.max < ab.max ? cb.max : ab.max) : null;
+      } catch { cachedMax = null; }
+      dateRange = computeIncrementalFetchRange(fullRange, cachedMax);
+    }
     const upsertOpts = { deleteRange: dateRange, campaignIds: syncedCampaignIds };
     const rows = await fetchFacebookInsightsForCampaigns(config.access_token, selectedCampaigns, dateRange, metric);
     await db.upsertFacebookInsightRows(tenantId, metric, rows, upsertOpts);
@@ -6977,7 +6988,12 @@ app.post('/api/facebook-import/sync', requireTenantAuth, requireAdmin, asyncHand
   const existing = await db.getFacebookAdImport(req.tenantId).catch(() => null);
   if (!existing?.access_token) return res.status(404).json({ error: 'Saved Facebook token not found' });
   try {
-    const result = await syncFacebookInsightsForTenant(req.tenantId, existing);
+    // Tam yenilə: full re-fetch of a chosen date window (ignores incremental cache bounds).
+    const full = req.body?.full === true || String(req.body?.full || '') === 'true';
+    const start = String(req.body?.start || '').trim();
+    const end = String(req.body?.end || '').trim();
+    const range = (/^\d{4}-\d{2}-\d{2}$/.test(start) && /^\d{4}-\d{2}-\d{2}$/.test(end)) ? { start, end } : null;
+    const result = await syncFacebookInsightsForTenant(req.tenantId, existing, { full, range });
     const fresh = await db.getFacebookAdImport(req.tenantId).catch(() => existing);
     res.json({ success: true, result, config: sanitizeFacebookAdImportConfig(fresh) });
   } catch (err) {
