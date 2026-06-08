@@ -2483,10 +2483,17 @@ async function upsertFacebookAdInsightRows(tenantId, metric, rows = [], opts = {
             }
         } else if (validRows.length > 0) {
             const keepAdIds = Array.from(new Set(validRows.map((row) => String(row.ad_id))));
-            await client.query(
-                `DELETE FROM facebook_ad_insight_cache_ad WHERE tenant_id = $1 AND metric = $2 AND ad_id = ANY($3::text[])`,
-                [String(tenantId), safeMetric, keepAdIds]
-            );
+            if (dr && dr.start && dr.end) {
+                await client.query(
+                    `DELETE FROM facebook_ad_insight_cache_ad WHERE tenant_id = $1 AND metric = $2 AND ad_id = ANY($3::text[]) AND date_start >= $4::date AND date_start <= $5::date`,
+                    [String(tenantId), safeMetric, keepAdIds, String(dr.start), String(dr.end)]
+                );
+            } else {
+                await client.query(
+                    `DELETE FROM facebook_ad_insight_cache_ad WHERE tenant_id = $1 AND metric = $2 AND ad_id = ANY($3::text[])`,
+                    [String(tenantId), safeMetric, keepAdIds]
+                );
+            }
         }
         for (const row of validRows) {
             await client.query(

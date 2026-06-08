@@ -1187,10 +1187,14 @@ async function upsertMetaInbound({ tenantId, source, contactKey, displayName, te
     }
     // Reklam mənbəyini damğala (Reklam Paneli üçün) + mapping əsaslı custom field auto-fill
     try {
+      // Stamp once on the first ad message; only then attempt mapping auto-fill (avoids a getCRMSettings read per later message).
       const stamped = await maybeStampAdSourceId(tenantId, finalLead, meta);
-      if (stamped) Object.assign(finalLead, stamped);
-      const attr = await maybeApplyAdAttributionToLead(tenantId, finalLead, meta);
-      if (attr) Object.assign(finalLead, attr);
+      let attr = null;
+      if (stamped) {
+        Object.assign(finalLead, stamped);
+        attr = await maybeApplyAdAttributionToLead(tenantId, finalLead, meta);
+        if (attr) Object.assign(finalLead, attr);
+      }
       if (stamped || attr) await emitLeadUpdatedScoped(tenantId, finalLead);
     } catch {
       // ignore
@@ -2387,7 +2391,7 @@ function collectAdIdsFromMeta(meta) {
   [ad.sourceId, ad.source_id, ad.adId, ad.ad_id,
    qad.sourceId, qad.source_id,
    ctwa.smbClientCampaignId, ctwa.campaignId, ctwa.campaign_id,
-   ref.ad_id, ref.ref, ref.post_id].forEach((v) => { const s = String(v == null ? '' : v).trim(); if (s) out.add(s); });
+   ref.ad_id, ref.ref, ref.post_id].forEach((v) => { const s = String(v == null ? '' : v).trim(); if (s && s.length <= 128) out.add(s); }); // cap length → no extra_data bloat from crafted input
   return Array.from(out);
 }
 // Merge ad-id candidates from BOTH the lead's stored extra_data and the live inbound meta.
@@ -2546,9 +2550,12 @@ app.post('/api/internal/webhook', async (req, res) => requireInternalRequest(req
               emitLeadUpdatedScoped(tenantId, updated).catch(() => { });
             }
             const stamped = await maybeStampAdSourceId(tenantId, leadForAutomation, payload).catch(() => null);
-            if (stamped) leadForAutomation = stamped;
-            const attr = await maybeApplyAdAttributionToLead(tenantId, leadForAutomation, payload).catch(() => null);
-            if (attr) leadForAutomation = attr;
+            let attr = null;
+            if (stamped) {
+              leadForAutomation = stamped;
+              attr = await maybeApplyAdAttributionToLead(tenantId, leadForAutomation, payload).catch(() => null);
+              if (attr) leadForAutomation = attr;
+            }
             if (stamped || attr) emitLeadUpdatedScoped(tenantId, leadForAutomation).catch(() => { });
           }
         } catch (e) {
@@ -6010,7 +6017,7 @@ function buildFacebookSyncRange(config) {
   };
 }
 
-const INSIGHT_LOOKBACK_DAYS = 4; // re-fetch the last N days each sync (recent days can still shift via late attribution)
+const INSIGHT_LOOKBACK_DAYS = 7; // re-fetch the last N days each sync — covers the 7-day messaging attribution window (conversions can still land days later)
 function addDaysIso(iso, delta) {
   const d = new Date(String(iso).slice(0, 10) + 'T00:00:00Z');
   if (Number.isNaN(d.getTime())) return iso;
