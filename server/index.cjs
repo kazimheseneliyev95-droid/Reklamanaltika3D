@@ -1185,6 +1185,16 @@ async function upsertMetaInbound({ tenantId, source, contactKey, displayName, te
     } catch {
       // ignore
     }
+    // Reklam atribusiyası: reklam ID-si mapping-də tapılarsa custom field-i avtomatik doldur
+    try {
+      const attr = await maybeApplyAdAttributionToLead(tenantId, finalLead, meta);
+      if (attr) {
+        Object.assign(finalLead, attr);
+        await emitLeadUpdatedScoped(tenantId, attr);
+      }
+    } catch {
+      // ignore
+    }
   }
 
   // Auto return-to-stage on inbound message (configurable per tenant)
@@ -2364,6 +2374,52 @@ async function maybeApplyAutoRulesToLead(tenantId, lead, message, meta) {
   return null;
 }
 
+// Reklam atribusiyası: gələn mesajın reklam ID-lərini (CTWA sourceId / kampaniya / Meta ad_id) topla
+function collectAdIdsFromMeta(meta) {
+  if (!meta || typeof meta !== 'object') return [];
+  const ad = (meta.ad && typeof meta.ad === 'object') ? meta.ad : {};
+  const ctwa = (meta.ctwa && typeof meta.ctwa === 'object') ? meta.ctwa : {};
+  const ref = (meta.referral && typeof meta.referral === 'object') ? meta.referral : {};
+  const out = new Set();
+  [ad.sourceId, ad.source_id, ad.adId, ad.ad_id,
+   ctwa.smbClientCampaignId, ctwa.campaignId, ctwa.campaign_id,
+   ref.ad_id, ref.ref, ref.post_id].forEach((v) => { const s = String(v == null ? '' : v).trim(); if (s) out.add(s); });
+  return Array.from(out);
+}
+
+// settings.dashboard mapping-ində reklam ID-si tapılarsa → extra_data[fieldId]-i avtomatik doldur (Maraqlandığı kurs kimi)
+async function maybeApplyAdAttributionToLead(tenantId, lead, meta) {
+  if (!process.env.DATABASE_URL) return null;
+  if (!db || typeof db.getCRMSettings !== 'function' || typeof db.updateLeadFields !== 'function') return null;
+  if (!lead || !lead.id) return null;
+  const msgIds = collectAdIdsFromMeta(meta);
+  if (msgIds.length === 0) return null;
+
+  const settings = await db.getCRMSettings(tenantId).catch(() => null);
+  const dash = (settings && settings.dashboard && typeof settings.dashboard === 'object') ? settings.dashboard : null;
+  const fieldId = dash && dash.fieldId ? String(dash.fieldId).trim() : '';
+  const mappings = dash && Array.isArray(dash.mappings) ? dash.mappings : [];
+  if (!fieldId || mappings.length === 0) return null;
+
+  const extra = (lead.extra_data && typeof lead.extra_data === 'object') ? lead.extra_data : {};
+  if (extra[fieldId] !== undefined && String(extra[fieldId] || '').trim() !== '') return null; // lock: doludursa toxunma
+
+  const msgSet = new Set(msgIds.map((x) => x.toLowerCase()));
+  for (const m of mappings) {
+    if (!m || !m.value) continue;
+    const ids = [].concat(Array.isArray(m.adIds) ? m.adIds : [], Array.isArray(m.campaignIds) ? m.campaignIds : [])
+      .map((x) => String(x == null ? '' : x).trim().toLowerCase()).filter(Boolean);
+    const matchedId = ids.find((id) => msgSet.has(id));
+    if (!matchedId) continue;
+    const updated = await db.updateLeadFields(lead.id, { extra_data: { [fieldId]: m.value } }, tenantId).catch(() => null);
+    if (updated && typeof db.logAuditAction === 'function') {
+      db.logAuditAction({ tenantId, userId: null, action: 'AD_ATTRIBUTION', entityType: 'lead', entityId: lead.id, details: { fieldId, setValue: m.value, matchedId, auto: true } });
+    }
+    return updated;
+  }
+  return null;
+}
+
 async function maybeApplyRoutingRulesToLead(tenantId, lead, message, meta) {
   if (!process.env.DATABASE_URL) return null;
   if (!db || typeof db.getCRMSettings !== 'function' || typeof db.updateLeadFields !== 'function') return null;
@@ -2465,6 +2521,8 @@ app.post('/api/internal/webhook', async (req, res) => requireInternalRequest(req
               // Fire-and-forget — UI fanout shouldn't block automation chain.
               emitLeadUpdatedScoped(tenantId, updated).catch(() => { });
             }
+            const attr = await maybeApplyAdAttributionToLead(tenantId, leadForAutomation, payload).catch(() => null);
+            if (attr) { leadForAutomation = attr; emitLeadUpdatedScoped(tenantId, attr).catch(() => { }); }
           }
         } catch (e) {
           console.warn('⚠️ Routing apply failed (internal webhook):', e.message);
