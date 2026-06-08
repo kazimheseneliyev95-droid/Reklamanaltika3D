@@ -2375,16 +2375,25 @@ async function maybeApplyAutoRulesToLead(tenantId, lead, message, meta) {
 }
 
 // Reklam atribusiyası: gələn mesajın reklam ID-lərini (CTWA sourceId / kampaniya / Meta ad_id) topla
+// Collect candidate ad ids from a meta-like object (works for the inbound meta
+// AND the lead's stored extra_data — both carry .ad/.ctwa/.referral at top level).
 function collectAdIdsFromMeta(meta) {
   if (!meta || typeof meta !== 'object') return [];
   const ad = (meta.ad && typeof meta.ad === 'object') ? meta.ad : {};
+  const qad = (meta.quotedAd && typeof meta.quotedAd === 'object') ? meta.quotedAd : {};
   const ctwa = (meta.ctwa && typeof meta.ctwa === 'object') ? meta.ctwa : {};
   const ref = (meta.referral && typeof meta.referral === 'object') ? meta.referral : {};
   const out = new Set();
   [ad.sourceId, ad.source_id, ad.adId, ad.ad_id,
+   qad.sourceId, qad.source_id,
    ctwa.smbClientCampaignId, ctwa.campaignId, ctwa.campaign_id,
    ref.ad_id, ref.ref, ref.post_id].forEach((v) => { const s = String(v == null ? '' : v).trim(); if (s) out.add(s); });
   return Array.from(out);
+}
+// Merge ad-id candidates from BOTH the lead's stored extra_data and the live inbound meta.
+function collectLeadAdIds(lead, meta) {
+  const extra = (lead && lead.extra_data && typeof lead.extra_data === 'object') ? lead.extra_data : {};
+  return Array.from(new Set([].concat(collectAdIdsFromMeta(extra), collectAdIdsFromMeta(meta))));
 }
 
 // settings.dashboard mapping-ində reklam ID-si tapılarsa → extra_data[fieldId]-i avtomatik doldur (Maraqlandığı kurs kimi)
@@ -2392,7 +2401,7 @@ async function maybeApplyAdAttributionToLead(tenantId, lead, meta) {
   if (!process.env.DATABASE_URL) return null;
   if (!db || typeof db.getCRMSettings !== 'function' || typeof db.updateLeadFields !== 'function') return null;
   if (!lead || !lead.id) return null;
-  const msgIds = collectAdIdsFromMeta(meta);
+  const msgIds = collectLeadAdIds(lead, meta);
   if (msgIds.length === 0) return null;
 
   const settings = await db.getCRMSettings(tenantId).catch(() => null);
@@ -2426,11 +2435,11 @@ async function maybeStampAdSourceId(tenantId, lead, meta) {
   if (!process.env.DATABASE_URL) return null;
   if (!db || typeof db.updateLeadFields !== 'function') return null;
   if (!lead || !lead.id) return null;
-  const msgIds = collectAdIdsFromMeta(meta);
-  if (msgIds.length === 0) return null;
   const extra = (lead.extra_data && typeof lead.extra_data === 'object') ? lead.extra_data : {};
   if (extra.ad_source_id !== undefined && String(extra.ad_source_id || '').trim() !== '') return null; // lock-once
-  const primary = String(msgIds[0] || '').trim(); // collectAdIdsFromMeta prioritises ad.sourceId / ad_id
+  const msgIds = collectLeadAdIds(lead, meta);
+  if (msgIds.length === 0) return null;
+  const primary = String(msgIds[0] || '').trim(); // prioritises ad.sourceId / ad_id
   if (!primary) return null;
   return db.updateLeadFields(lead.id, { extra_data: { ad_source_id: primary } }, tenantId).catch(() => null);
 }
