@@ -2353,7 +2353,7 @@ async function getFacebookAdImport(tenantId) {
     return row;
 }
 
-async function upsertFacebookInsightRows(tenantId, metric, rows = []) {
+async function upsertFacebookInsightRows(tenantId, metric, rows = [], opts = {}) {
     if (!tenantId) throw new Error('tenantId is required');
     const safeMetric = String(metric || '').trim().toLowerCase();
     if (!safeMetric) throw new Error('metric is required');
@@ -2361,15 +2361,22 @@ async function upsertFacebookInsightRows(tenantId, metric, rows = []) {
     try {
         await client.query('BEGIN');
         const validRows = Array.isArray(rows) ? rows.filter((row) => row && row.campaign_id && row.date_start) : [];
-        if (validRows.length > 0) {
-            const keepCampaignIds = Array.from(new Set(validRows.map((row) => String(row.campaign_id))));
-            await client.query(
-                `DELETE FROM facebook_ad_insight_cache
-                 WHERE tenant_id = $1
-                   AND metric = $2
-                   AND campaign_id = ANY($3::text[])`,
-                [String(tenantId), safeMetric, keepCampaignIds]
-            );
+        const dr = opts && opts.deleteRange;
+        const optCampIds = Array.isArray(opts && opts.campaignIds) ? opts.campaignIds.map((x) => String(x || '').trim()).filter(Boolean) : [];
+        // Incremental: delete ONLY the re-fetched date window (preserve already-cached past days).
+        const delCampIds = optCampIds.length ? Array.from(new Set(optCampIds)) : Array.from(new Set(validRows.map((row) => String(row.campaign_id))));
+        if (delCampIds.length > 0) {
+            if (dr && dr.start && dr.end) {
+                await client.query(
+                    `DELETE FROM facebook_ad_insight_cache WHERE tenant_id = $1 AND metric = $2 AND campaign_id = ANY($3::text[]) AND date_start >= $4::date AND date_start <= $5::date`,
+                    [String(tenantId), safeMetric, delCampIds, String(dr.start), String(dr.end)]
+                );
+            } else {
+                await client.query(
+                    `DELETE FROM facebook_ad_insight_cache WHERE tenant_id = $1 AND metric = $2 AND campaign_id = ANY($3::text[])`,
+                    [String(tenantId), safeMetric, delCampIds]
+                );
+            }
         }
         for (const row of validRows) {
             await client.query(
@@ -2451,21 +2458,29 @@ async function getFacebookInsightRows(tenantId, metric, campaignIds = [], dateRa
 }
 
 // ── Ad-level (adset/ad) insight cache for the Ad Panel ──────────────────────
-async function upsertFacebookAdInsightRows(tenantId, metric, rows = [], campaignIds = []) {
+async function upsertFacebookAdInsightRows(tenantId, metric, rows = [], opts = {}) {
     if (!tenantId) throw new Error('tenantId is required');
     const safeMetric = String(metric || '').trim().toLowerCase();
     if (!safeMetric) throw new Error('metric is required');
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
-        const reqCampaignIds = Array.from(new Set((Array.isArray(campaignIds) ? campaignIds : []).map((x) => String(x || '').trim()).filter(Boolean)));
+        const reqCampaignIds = Array.from(new Set((Array.isArray(opts && opts.campaignIds) ? opts.campaignIds : []).map((x) => String(x || '').trim()).filter(Boolean)));
+        const dr = opts && opts.deleteRange;
         const validRows = Array.isArray(rows) ? rows.filter((row) => row && row.ad_id && row.date_start) : [];
         if (reqCampaignIds.length > 0) {
-            // Full refresh for the synced campaigns (drops stale ads with no data in the window).
-            await client.query(
-                `DELETE FROM facebook_ad_insight_cache_ad WHERE tenant_id = $1 AND metric = $2 AND campaign_id = ANY($3::text[])`,
-                [String(tenantId), safeMetric, reqCampaignIds]
-            );
+            // Incremental: refresh ONLY the re-fetched window for the synced campaigns (keep old days).
+            if (dr && dr.start && dr.end) {
+                await client.query(
+                    `DELETE FROM facebook_ad_insight_cache_ad WHERE tenant_id = $1 AND metric = $2 AND campaign_id = ANY($3::text[]) AND date_start >= $4::date AND date_start <= $5::date`,
+                    [String(tenantId), safeMetric, reqCampaignIds, String(dr.start), String(dr.end)]
+                );
+            } else {
+                await client.query(
+                    `DELETE FROM facebook_ad_insight_cache_ad WHERE tenant_id = $1 AND metric = $2 AND campaign_id = ANY($3::text[])`,
+                    [String(tenantId), safeMetric, reqCampaignIds]
+                );
+            }
         } else if (validRows.length > 0) {
             const keepAdIds = Array.from(new Set(validRows.map((row) => String(row.ad_id))));
             await client.query(
@@ -2530,6 +2545,19 @@ async function getFacebookAdInsightRows(tenantId, metric, campaignIds = [], date
     query += ' ORDER BY date_start ASC';
     const res = await pool.query(query, values);
     return res.rows;
+}
+
+// Min/max cached insight day for a tenant+metric (drives incremental fetch window).
+async function getFacebookInsightDateBounds(tenantId, metric, level = 'campaign') {
+    if (!tenantId) return { min: null, max: null };
+    const table = level === 'ad' ? 'facebook_ad_insight_cache_ad' : 'facebook_ad_insight_cache';
+    const res = await pool.query(
+        `SELECT to_char(MIN(date_start), 'YYYY-MM-DD') AS mn, to_char(MAX(date_start), 'YYYY-MM-DD') AS mx
+         FROM ${table} WHERE tenant_id = $1 AND metric = $2`,
+        [String(tenantId), String(metric || '').trim().toLowerCase() || 'message']
+    );
+    const r = (res.rows && res.rows[0]) || {};
+    return { min: r.mn || null, max: r.mx || null };
 }
 
 // Aggregate leads grouped by their originating ad (extra_data.ad_source_id) and status.
@@ -4066,6 +4094,7 @@ module.exports = {
     getFacebookInsightRows,
     upsertFacebookAdInsightRows,
     getFacebookAdInsightRows,
+    getFacebookInsightDateBounds,
     getLeadsGroupedByAdSource,
     claimDueFacebookAutoSyncConfigs,
     finishFacebookAutoSync,

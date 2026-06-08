@@ -6010,6 +6010,22 @@ function buildFacebookSyncRange(config) {
   };
 }
 
+const INSIGHT_LOOKBACK_DAYS = 4; // re-fetch the last N days each sync (recent days can still shift via late attribution)
+function addDaysIso(iso, delta) {
+  const d = new Date(String(iso).slice(0, 10) + 'T00:00:00Z');
+  if (Number.isNaN(d.getTime())) return iso;
+  d.setUTCDate(d.getUTCDate() + delta);
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+}
+// Only fetch days we don't already have: recent tail (cachedMax - lookback .. today). Empty cache → full backfill.
+function computeIncrementalFetchRange(fullRange, cachedMax, lookbackDays = INSIGHT_LOOKBACK_DAYS) {
+  if (!cachedMax) return { start: fullRange.start, end: fullRange.end, full: true };
+  let start = addDaysIso(cachedMax, -Math.max(0, lookbackDays));
+  if (fullRange.start && start < fullRange.start) start = fullRange.start;
+  if (fullRange.end && start > fullRange.end) start = fullRange.end;
+  return { start, end: fullRange.end, full: false };
+}
+
 function computeNextFacebookSyncAt(config, fromDate = new Date()) {
   const everyHours = Math.max(1, parseInt(String(config?.auto_sync_every_hours || '1'), 10) || 1);
   const minute = Math.min(59, Math.max(0, parseInt(String(config?.auto_sync_minute || '0'), 10) || 0));
@@ -6129,16 +6145,26 @@ async function syncFacebookInsightsForTenant(tenantId, configOverride = null) {
     return { synced: false, reason: 'no_selected_campaigns', nextAt };
   }
 
-  const dateRange = buildFacebookSyncRange(config);
+  const fullRange = buildFacebookSyncRange(config);
   const syncedCampaignIds = selectedCampaigns.map((c) => String(c.id || '').trim()).filter(Boolean);
   for (const metric of ['message', 'lead', 'purchase']) {
+    // Incremental: only re-fetch the recent tail + any not-yet-cached days (past days are immutable → no re-fetch).
+    let cachedMax = null;
+    try {
+      const cb = await db.getFacebookInsightDateBounds(tenantId, metric, 'campaign');
+      const ab = await db.getFacebookInsightDateBounds(tenantId, metric, 'ad');
+      // Use the laggier table's max so a behind table catches up; null if either is empty (→ full backfill).
+      cachedMax = (cb && cb.max && ab && ab.max) ? (cb.max < ab.max ? cb.max : ab.max) : null;
+    } catch { cachedMax = null; }
+    const dateRange = computeIncrementalFetchRange(fullRange, cachedMax);
+    const upsertOpts = { deleteRange: dateRange, campaignIds: syncedCampaignIds };
     const rows = await fetchFacebookInsightsForCampaigns(config.access_token, selectedCampaigns, dateRange, metric);
-    await db.upsertFacebookInsightRows(tenantId, metric, rows);
+    await db.upsertFacebookInsightRows(tenantId, metric, rows, upsertOpts);
     // Ad-level (adset/ad) breakdown for the Ad Panel — best-effort, never fail the whole sync.
     try {
       if (typeof db.upsertFacebookAdInsightRows === 'function') {
         const adRows = await fetchFacebookAdInsightsForCampaigns(config.access_token, selectedCampaigns, dateRange, metric);
-        await db.upsertFacebookAdInsightRows(tenantId, metric, adRows, syncedCampaignIds);
+        await db.upsertFacebookAdInsightRows(tenantId, metric, adRows, upsertOpts);
       }
     } catch (adErr) {
       console.warn('[fb-adsync] ad-level insights failed:', adErr?.message || adErr);
