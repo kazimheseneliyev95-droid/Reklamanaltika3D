@@ -6401,6 +6401,14 @@ function normalizeDashboardMappings(settings) {
   };
 }
 
+const FB_FETCH_CONCURRENCY = 5; // parallel per-campaign insight fetches — fast, stays under FB rate limits
+async function mapLimit(items, limit, fn) {
+  const arr = Array.isArray(items) ? items : [];
+  let cursor = 0;
+  const worker = async () => { while (cursor < arr.length) { const idx = cursor++; await fn(arr[idx], idx); } };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, arr.length || 1)) }, worker));
+}
+
 async function fetchFacebookInsightsForCampaigns(userAccessToken, campaigns = [], dateRange = {}, metric = 'message') {
   const token = String(userAccessToken || '').trim();
   if (!token) throw new Error('Token is required');
@@ -6418,26 +6426,22 @@ async function fetchFacebookInsightsForCampaigns(userAccessToken, campaigns = []
   }
   const hasRange = Boolean(since && untilRaw);
 
-  for (const campaign of campaigns) {
+  const fetchOne = async (campaign) => {
     const campaignId = String(campaign?.id || '').trim();
-    if (!campaignId) continue;
-
+    if (!campaignId) return;
     let nextUrl = `https://graph.facebook.com/v19.0/${encodeURIComponent(campaignId)}/insights?fields=${encodeURIComponent(
       'campaign_id,campaign_name,spend,impressions,clicks,ctr,cpm,actions,cost_per_action_type,date_start,date_stop'
     )}&limit=200&time_increment=1&access_token=${encodeURIComponent(token)}`;
     if (hasRange) nextUrl += `&time_range=${encodeURIComponent(JSON.stringify({ since, until }))}`;
     else nextUrl += '&date_preset=maximum';
-
     for (let i = 0; i < 10 && nextUrl; i++) {
       const data = await fetchJsonWithRetry(nextUrl, {}, { retries: 1, timeoutMs: 8000 });
       const rows = Array.isArray(data?.data) ? data.data : [];
-      for (const row of rows) {
-        out.push(normalizeFacebookInsightRow(row, campaign, metric));
-      }
+      for (const row of rows) out.push(normalizeFacebookInsightRow(row, campaign, metric));
       nextUrl = data?.paging?.next ? String(data.paging.next) : '';
     }
-  }
-
+  };
+  await mapLimit(campaigns, FB_FETCH_CONCURRENCY, fetchOne);
   return out;
 }
 
@@ -6468,10 +6472,10 @@ async function fetchFacebookAdInsightsForCampaigns(userAccessToken, campaigns = 
     until = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
   }
   const hasRange = Boolean(since && untilRaw);
-  for (const campaign of campaigns) {
+  // One call per campaign at level=ad returns every ad (with adset + ad names + spend) in that campaign.
+  const fetchOne = async (campaign) => {
     const campaignId = String(campaign?.id || '').trim();
-    if (!campaignId) continue;
-    // One call per campaign at level=ad returns every ad (with adset + ad names + spend) in that campaign.
+    if (!campaignId) return;
     let nextUrl = `https://graph.facebook.com/v19.0/${encodeURIComponent(campaignId)}/insights?level=ad&fields=${encodeURIComponent(
       'campaign_id,campaign_name,adset_id,adset_name,ad_id,ad_name,spend,impressions,clicks,ctr,cpm,actions,cost_per_action_type,date_start,date_stop'
     )}&limit=300&time_increment=1&access_token=${encodeURIComponent(token)}`;
@@ -6480,13 +6484,11 @@ async function fetchFacebookAdInsightsForCampaigns(userAccessToken, campaigns = 
     for (let i = 0; i < 15 && nextUrl; i++) {
       const data = await fetchJsonWithRetry(nextUrl, {}, { retries: 1, timeoutMs: 9000 });
       const rows = Array.isArray(data?.data) ? data.data : [];
-      for (const row of rows) {
-        const norm = normalizeFacebookAdInsightRow(row, campaign, metric);
-        if (norm.ad_id) out.push(norm);
-      }
+      for (const row of rows) { const norm = normalizeFacebookAdInsightRow(row, campaign, metric); if (norm.ad_id) out.push(norm); }
       nextUrl = data?.paging?.next ? String(data.paging.next) : '';
     }
-  }
+  };
+  await mapLimit(campaigns, FB_FETCH_CONCURRENCY, fetchOne);
   return out;
 }
 
