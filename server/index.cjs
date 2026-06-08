@@ -6843,10 +6843,12 @@ app.get('/api/facebook-import/insights', requireTenantAuth, requireAdmin, asyncH
 app.get('/api/dashboard/combined', requireTenantAuth, requirePermission('view_dashboard', 'Dashboard görmək icazəniz yoxdur'), asyncHandler(async (req, res) => {
   if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
 
+  const canRev = hasPermission(req, 'view_revenue'); // FIX: gəlir/ROAS yalnız icazə olanda payload-da olsun
   const cacheKey = JSON.stringify({
     tenantId: req.tenantId,
     userId: req.userId || null,
     role: req.userRole || null,
+    canRev,
     metric: String(req.query.metric || 'message').trim().toLowerCase(),
     start: String(req.query.start || '').trim() || null,
     end: String(req.query.end || '').trim() || null,
@@ -7121,6 +7123,15 @@ app.get('/api/dashboard/combined', requireTenantAuth, requirePermission('view_da
     warnings,
   };
 
+  // FIX: view_revenue icazəsi yoxdursa gəlir/ROAS sahələrini payload-dan təmizlə (UI gizləyirdi, amma JSON-da sızırdı)
+  if (!canRev) {
+    if (payload.totals && payload.totals.crm) { payload.totals.crm.won_revenue = 0; payload.totals.crm.pipeline_value = 0; }
+    if (payload.totals && payload.totals.merged) payload.totals.merged.roas = 0;
+    (payload.groups || []).forEach((g) => {
+      if (g && g.crm) { g.crm.won_revenue = 0; g.crm.pipeline_value = 0; if (Array.isArray(g.crm.stages)) g.crm.stages.forEach((st) => { if (st && 'revenue' in st) st.revenue = 0; }); }
+      if (g && g.merged) { g.merged.roas = 0; g.merged.cost_per_sale = 0; }
+    });
+  }
   dashboardCombinedCache.set(cacheKey, { atMs: Date.now(), payload });
   if (dashboardCombinedCache.size > 150) {
     const now = Date.now();
@@ -7486,7 +7497,7 @@ app.post('/api/analytics/layout', requireTenantAuth, requirePermission('view_sta
   res.json({ success: true, layout: saved });
 }));
 
-app.get(['/api/debug', '/api/debug/:tenantId'], (req, res) => {
+app.get(['/api/debug', '/api/debug/:tenantId'], requireTenantAuth, requireAdmin, (req, res) => {
   const mem = process.memoryUsage();
 
   // Public health endpoint — no version/platform fingerprinting, no tenant data.

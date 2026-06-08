@@ -2133,7 +2133,7 @@ async function upsertMetaUserToken(tenantId, { user_access_token, expires_at, de
          RETURNING tenant_id, expires_at, status, updated_at`,
         [
             String(tenantId),
-            String(user_access_token),
+            encryptToken(String(user_access_token)),
             expires_at ? new Date(expires_at) : null,
             dbg,
             status ? String(status) : 'active',
@@ -2149,6 +2149,7 @@ async function getMetaUserToken(tenantId) {
         'SELECT tenant_id, user_access_token, expires_at, debug_info, status, last_error, updated_at FROM meta_user_tokens WHERE tenant_id = $1 LIMIT 1',
         [String(tenantId)]
     );
+    if (res.rows[0]) res.rows[0].user_access_token = decryptToken(res.rows[0].user_access_token);
     return res.rows[0] || null;
 }
 
@@ -3163,6 +3164,7 @@ async function getTelegramIntegration(tenantId) {
         'SELECT tenant_id, enabled, chat_id, bot_token, last_error, last_sent_at, last_test_at, updated_at FROM telegram_integrations WHERE tenant_id = $1 LIMIT 1',
         [String(tenantId)]
     );
+    if (res.rows[0]) res.rows[0].bot_token = decryptToken(res.rows[0].bot_token);
     return res.rows[0] || null;
 }
 
@@ -3170,7 +3172,8 @@ async function upsertTelegramIntegration(tenantId, { enabled, chat_id, bot_token
     if (!tenantId) throw new Error('tenantId is required');
     const en = enabled === false ? false : true;
     const chat = chat_id !== undefined && chat_id !== null ? String(chat_id).trim() : null;
-    const tok = bot_token !== undefined && bot_token !== null ? String(bot_token).trim() : null;
+    const rawTok = bot_token !== undefined && bot_token !== null ? String(bot_token).trim() : null;
+    const tok = rawTok ? encryptToken(rawTok) : null; // şifrele
 
     const res = await pool.query(
         `INSERT INTO telegram_integrations (tenant_id, enabled, chat_id, bot_token, updated_at)
@@ -3179,11 +3182,12 @@ async function upsertTelegramIntegration(tenantId, { enabled, chat_id, bot_token
          DO UPDATE SET
            enabled = EXCLUDED.enabled,
            chat_id = EXCLUDED.chat_id,
-           bot_token = EXCLUDED.bot_token,
+           bot_token = COALESCE(EXCLUDED.bot_token, telegram_integrations.bot_token),
            updated_at = NOW()
          RETURNING tenant_id, enabled, chat_id, bot_token, last_error, last_sent_at, last_test_at, updated_at`,
         [String(tenantId), en, chat, tok]
     );
+    if (res.rows[0]) res.rows[0].bot_token = decryptToken(res.rows[0].bot_token); // çağıran maskeleyəcək
     return res.rows[0] || null;
 }
 
@@ -3316,7 +3320,7 @@ async function upsertMetaPage(tenantId, { page_id, page_name, page_access_token,
            ig_business_id = EXCLUDED.ig_business_id,
            updated_at = NOW()
          RETURNING tenant_id, page_id, page_name, ig_business_id, connected_at, updated_at`,
-        [tenantId, String(page_id), page_name || null, String(page_access_token), ig_business_id ? String(ig_business_id) : null]
+        [tenantId, String(page_id), page_name || null, encryptToken(String(page_access_token)), ig_business_id ? String(ig_business_id) : null]
     );
     return res.rows[0] || null;
 }
@@ -3336,6 +3340,7 @@ async function getMetaPageByPageId(pageId) {
         'SELECT tenant_id, page_id, page_name, page_access_token, ig_business_id FROM meta_pages WHERE page_id = $1 LIMIT 1',
         [String(pageId)]
     );
+    if (res.rows[0]) res.rows[0].page_access_token = decryptToken(res.rows[0].page_access_token);
     return res.rows[0] || null;
 }
 
@@ -3345,6 +3350,7 @@ async function getMetaPageByIgBusinessId(igBusinessId) {
         'SELECT tenant_id, page_id, page_name, page_access_token, ig_business_id FROM meta_pages WHERE ig_business_id = $1 LIMIT 1',
         [String(igBusinessId)]
     );
+    if (res.rows[0]) res.rows[0].page_access_token = decryptToken(res.rows[0].page_access_token);
     return res.rows[0] || null;
 }
 
