@@ -795,6 +795,32 @@ async function initDb() {
             CREATE INDEX IF NOT EXISTS idx_whatsapp_media_assets_created_at ON whatsapp_media_assets(tenant_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_fb_ad_imports_auto_sync_due ON facebook_ad_imports (auto_sync_enabled, auto_sync_next_at);
             CREATE INDEX IF NOT EXISTS idx_fb_ad_insight_cache_lookup ON facebook_ad_insight_cache (tenant_id, metric, date_start, campaign_id);
+            CREATE TABLE IF NOT EXISTS facebook_ad_insight_cache_ad (
+              tenant_id VARCHAR(50) NOT NULL,
+              ad_id VARCHAR(64) NOT NULL,
+              metric VARCHAR(20) NOT NULL,
+              date_start DATE NOT NULL,
+              date_stop DATE,
+              campaign_id VARCHAR(64),
+              campaign_name TEXT,
+              adset_id VARCHAR(64),
+              adset_name TEXT,
+              ad_name TEXT,
+              account_id VARCHAR(64),
+              account_name TEXT,
+              spend NUMERIC DEFAULT 0,
+              impressions NUMERIC DEFAULT 0,
+              clicks NUMERIC DEFAULT 0,
+              ctr NUMERIC DEFAULT 0,
+              cpm NUMERIC DEFAULT 0,
+              results NUMERIC DEFAULT 0,
+              result_type TEXT,
+              cost_per_result NUMERIC DEFAULT 0,
+              updated_at TIMESTAMP DEFAULT NOW(),
+              PRIMARY KEY (tenant_id, ad_id, metric, date_start)
+            );
+            CREATE INDEX IF NOT EXISTS idx_fb_ad_insight_cache_ad_lookup ON facebook_ad_insight_cache_ad (tenant_id, metric, date_start, campaign_id);
+            CREATE INDEX IF NOT EXISTS idx_leads_ad_source ON leads (tenant_id, (extra_data->>'ad_source_id')) WHERE (extra_data->>'ad_source_id') IS NOT NULL;
             CREATE INDEX IF NOT EXISTS idx_meta_pages_tenant ON meta_pages(tenant_id);
             CREATE INDEX IF NOT EXISTS idx_meta_webhook_received_at ON meta_webhook_events(received_at DESC);
             CREATE INDEX IF NOT EXISTS idx_meta_webhook_processed_at ON meta_webhook_events(processed_at);
@@ -2424,6 +2450,106 @@ async function getFacebookInsightRows(tenantId, metric, campaignIds = [], dateRa
     return res.rows;
 }
 
+// ── Ad-level (adset/ad) insight cache for the Ad Panel ──────────────────────
+async function upsertFacebookAdInsightRows(tenantId, metric, rows = [], campaignIds = []) {
+    if (!tenantId) throw new Error('tenantId is required');
+    const safeMetric = String(metric || '').trim().toLowerCase();
+    if (!safeMetric) throw new Error('metric is required');
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const reqCampaignIds = Array.from(new Set((Array.isArray(campaignIds) ? campaignIds : []).map((x) => String(x || '').trim()).filter(Boolean)));
+        const validRows = Array.isArray(rows) ? rows.filter((row) => row && row.ad_id && row.date_start) : [];
+        if (reqCampaignIds.length > 0) {
+            // Full refresh for the synced campaigns (drops stale ads with no data in the window).
+            await client.query(
+                `DELETE FROM facebook_ad_insight_cache_ad WHERE tenant_id = $1 AND metric = $2 AND campaign_id = ANY($3::text[])`,
+                [String(tenantId), safeMetric, reqCampaignIds]
+            );
+        } else if (validRows.length > 0) {
+            const keepAdIds = Array.from(new Set(validRows.map((row) => String(row.ad_id))));
+            await client.query(
+                `DELETE FROM facebook_ad_insight_cache_ad WHERE tenant_id = $1 AND metric = $2 AND ad_id = ANY($3::text[])`,
+                [String(tenantId), safeMetric, keepAdIds]
+            );
+        }
+        for (const row of validRows) {
+            await client.query(
+                `INSERT INTO facebook_ad_insight_cache_ad (
+                    tenant_id, ad_id, metric, date_start, date_stop, campaign_id, campaign_name, adset_id, adset_name, ad_name, account_id, account_name,
+                    spend, impressions, clicks, ctr, cpm, results, result_type, cost_per_result, updated_at
+                 ) VALUES (
+                    $1,$2,$3,$4::date,$5::date,$6,$7,$8,$9,$10,$11,$12,
+                    $13,$14,$15,$16,$17,$18,$19,$20, NOW()
+                 )
+                 ON CONFLICT (tenant_id, ad_id, metric, date_start) DO UPDATE SET
+                    date_stop = EXCLUDED.date_stop, campaign_id = EXCLUDED.campaign_id, campaign_name = EXCLUDED.campaign_name,
+                    adset_id = EXCLUDED.adset_id, adset_name = EXCLUDED.adset_name, ad_name = EXCLUDED.ad_name,
+                    account_id = EXCLUDED.account_id, account_name = EXCLUDED.account_name,
+                    spend = EXCLUDED.spend, impressions = EXCLUDED.impressions, clicks = EXCLUDED.clicks,
+                    ctr = EXCLUDED.ctr, cpm = EXCLUDED.cpm, results = EXCLUDED.results,
+                    result_type = EXCLUDED.result_type, cost_per_result = EXCLUDED.cost_per_result, updated_at = NOW()`,
+                [
+                    String(tenantId), String(row.ad_id), safeMetric, String(row.date_start),
+                    row.date_stop ? String(row.date_stop) : null,
+                    row.campaign_id ? String(row.campaign_id) : null,
+                    row.campaign_name ? String(row.campaign_name) : 'Campaign',
+                    row.adset_id ? String(row.adset_id) : null,
+                    row.adset_name ? String(row.adset_name) : null,
+                    row.ad_name ? String(row.ad_name) : 'Ad',
+                    row.account_id ? String(row.account_id) : null,
+                    row.account_name ? String(row.account_name) : null,
+                    Number(row.spend || 0), Number(row.impressions || 0), Number(row.clicks || 0),
+                    Number(row.ctr || 0), Number(row.cpm || 0), Number(row.results || 0),
+                    row.result_type ? String(row.result_type) : null, Number(row.cost_per_result || 0),
+                ]
+            );
+        }
+        await client.query('COMMIT');
+        return validRows.length;
+    } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+    } finally {
+        client.release();
+    }
+}
+
+async function getFacebookAdInsightRows(tenantId, metric, campaignIds = [], dateRange = {}) {
+    if (!tenantId) throw new Error('tenantId is required');
+    const values = [String(tenantId), String(metric || '').trim().toLowerCase() || 'message'];
+    let query = `SELECT * FROM facebook_ad_insight_cache_ad WHERE tenant_id = $1 AND metric = $2`;
+    let paramCount = 3;
+    if (Array.isArray(campaignIds) && campaignIds.length > 0) {
+        query += ` AND campaign_id = ANY($${paramCount}::text[])`;
+        values.push(campaignIds.map((id) => String(id || '').trim()).filter(Boolean));
+        paramCount++;
+    }
+    if (dateRange && dateRange.start) { query += ` AND date_start >= $${paramCount}::date`; values.push(String(dateRange.start)); paramCount++; }
+    if (dateRange && dateRange.end) { query += ` AND date_start <= $${paramCount}::date`; values.push(String(dateRange.end)); paramCount++; }
+    query += ' ORDER BY date_start ASC';
+    const res = await pool.query(query, values);
+    return res.rows;
+}
+
+// Aggregate leads grouped by their originating ad (extra_data.ad_source_id) and status.
+async function getLeadsGroupedByAdSource(tenantId, opts = {}) {
+    if (!tenantId) throw new Error('tenantId is required');
+    const values = [String(tenantId)];
+    let query = `SELECT (extra_data->>'ad_source_id') AS ad_source_id, status,
+        COUNT(*)::int AS lead_count, COALESCE(SUM(COALESCE(value,0)),0)::float AS value_sum
+        FROM leads
+        WHERE tenant_id = $1 AND deleted_at IS NULL
+          AND (extra_data->>'ad_source_id') IS NOT NULL AND (extra_data->>'ad_source_id') <> ''`;
+    let p = 2;
+    if (opts.startTs) { query += ` AND created_at >= $${p}::timestamptz`; values.push(opts.startTs); p++; }
+    if (opts.endTs) { query += ` AND created_at < $${p}::timestamptz`; values.push(opts.endTs); p++; }
+    if (opts.assigneeId) { query += ` AND assignee_id = $${p}`; values.push(opts.assigneeId); p++; }
+    query += ` GROUP BY 1, 2`;
+    const res = await pool.query(query, values);
+    return res.rows;
+}
+
 async function claimDueFacebookAutoSyncConfigs(owner, limit = 5) {
     const safeOwner = String(owner || '').trim();
     if (!safeOwner) throw new Error('owner is required');
@@ -3938,6 +4064,9 @@ module.exports = {
     getFacebookAdImport,
     upsertFacebookInsightRows,
     getFacebookInsightRows,
+    upsertFacebookAdInsightRows,
+    getFacebookAdInsightRows,
+    getLeadsGroupedByAdSource,
     claimDueFacebookAutoSyncConfigs,
     finishFacebookAutoSync,
     closePool,

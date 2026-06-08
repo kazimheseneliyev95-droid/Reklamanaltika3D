@@ -1185,13 +1185,13 @@ async function upsertMetaInbound({ tenantId, source, contactKey, displayName, te
     } catch {
       // ignore
     }
-    // Reklam atribusiyası: reklam ID-si mapping-də tapılarsa custom field-i avtomatik doldur
+    // Reklam mənbəyini damğala (Reklam Paneli üçün) + mapping əsaslı custom field auto-fill
     try {
+      const stamped = await maybeStampAdSourceId(tenantId, finalLead, meta);
+      if (stamped) Object.assign(finalLead, stamped);
       const attr = await maybeApplyAdAttributionToLead(tenantId, finalLead, meta);
-      if (attr) {
-        Object.assign(finalLead, attr);
-        await emitLeadUpdatedScoped(tenantId, attr);
-      }
+      if (attr) Object.assign(finalLead, attr);
+      if (stamped || attr) await emitLeadUpdatedScoped(tenantId, finalLead);
     } catch {
       // ignore
     }
@@ -2420,6 +2420,21 @@ async function maybeApplyAdAttributionToLead(tenantId, lead, meta) {
   return null;
 }
 
+// Persist the originating ad id on the lead (extra_data.ad_source_id) for the Ad Panel grouping.
+// Independent of the dashboard mapping — captures EVERY ad-originated lead. Lock-once.
+async function maybeStampAdSourceId(tenantId, lead, meta) {
+  if (!process.env.DATABASE_URL) return null;
+  if (!db || typeof db.updateLeadFields !== 'function') return null;
+  if (!lead || !lead.id) return null;
+  const msgIds = collectAdIdsFromMeta(meta);
+  if (msgIds.length === 0) return null;
+  const extra = (lead.extra_data && typeof lead.extra_data === 'object') ? lead.extra_data : {};
+  if (extra.ad_source_id !== undefined && String(extra.ad_source_id || '').trim() !== '') return null; // lock-once
+  const primary = String(msgIds[0] || '').trim(); // collectAdIdsFromMeta prioritises ad.sourceId / ad_id
+  if (!primary) return null;
+  return db.updateLeadFields(lead.id, { extra_data: { ad_source_id: primary } }, tenantId).catch(() => null);
+}
+
 async function maybeApplyRoutingRulesToLead(tenantId, lead, message, meta) {
   if (!process.env.DATABASE_URL) return null;
   if (!db || typeof db.getCRMSettings !== 'function' || typeof db.updateLeadFields !== 'function') return null;
@@ -2521,8 +2536,11 @@ app.post('/api/internal/webhook', async (req, res) => requireInternalRequest(req
               // Fire-and-forget — UI fanout shouldn't block automation chain.
               emitLeadUpdatedScoped(tenantId, updated).catch(() => { });
             }
+            const stamped = await maybeStampAdSourceId(tenantId, leadForAutomation, payload).catch(() => null);
+            if (stamped) leadForAutomation = stamped;
             const attr = await maybeApplyAdAttributionToLead(tenantId, leadForAutomation, payload).catch(() => null);
-            if (attr) { leadForAutomation = attr; emitLeadUpdatedScoped(tenantId, attr).catch(() => { }); }
+            if (attr) leadForAutomation = attr;
+            if (stamped || attr) emitLeadUpdatedScoped(tenantId, leadForAutomation).catch(() => { });
           }
         } catch (e) {
           console.warn('⚠️ Routing apply failed (internal webhook):', e.message);
@@ -6103,9 +6121,19 @@ async function syncFacebookInsightsForTenant(tenantId, configOverride = null) {
   }
 
   const dateRange = buildFacebookSyncRange(config);
+  const syncedCampaignIds = selectedCampaigns.map((c) => String(c.id || '').trim()).filter(Boolean);
   for (const metric of ['message', 'lead', 'purchase']) {
     const rows = await fetchFacebookInsightsForCampaigns(config.access_token, selectedCampaigns, dateRange, metric);
     await db.upsertFacebookInsightRows(tenantId, metric, rows);
+    // Ad-level (adset/ad) breakdown for the Ad Panel — best-effort, never fail the whole sync.
+    try {
+      if (typeof db.upsertFacebookAdInsightRows === 'function') {
+        const adRows = await fetchFacebookAdInsightsForCampaigns(config.access_token, selectedCampaigns, dateRange, metric);
+        await db.upsertFacebookAdInsightRows(tenantId, metric, adRows, syncedCampaignIds);
+      }
+    } catch (adErr) {
+      console.warn('[fb-adsync] ad-level insights failed:', adErr?.message || adErr);
+    }
   }
 
   const nextAt = computeNextFacebookSyncAt(config);
@@ -6375,6 +6403,55 @@ async function fetchFacebookInsightsForCampaigns(userAccessToken, campaigns = []
     }
   }
 
+  return out;
+}
+
+// Ad-level (adset/ad) breakdown — same insight parsing, but level=ad with adset/ad ids+names.
+function normalizeFacebookAdInsightRow(row, campaignMeta, metric = 'message') {
+  const base = normalizeFacebookInsightRow(row, campaignMeta, metric);
+  return {
+    ...base,
+    campaign_id: String(row?.campaign_id || campaignMeta?.id || '').trim(),
+    campaign_name: String(row?.campaign_name || campaignMeta?.name || 'Campaign'),
+    adset_id: String(row?.adset_id || '').trim(),
+    adset_name: row?.adset_name ? String(row.adset_name) : 'Ad set',
+    ad_id: String(row?.ad_id || '').trim(),
+    ad_name: row?.ad_name ? String(row.ad_name) : 'Ad',
+  };
+}
+
+async function fetchFacebookAdInsightsForCampaigns(userAccessToken, campaigns = [], dateRange = {}, metric = 'message') {
+  const token = String(userAccessToken || '').trim();
+  if (!token) throw new Error('Token is required');
+  const out = [];
+  const since = String(dateRange?.start || '').trim();
+  const untilRaw = String(dateRange?.end || '').trim();
+  let until = untilRaw;
+  if (untilRaw && /^\d{4}-\d{2}-\d{2}$/.test(untilRaw)) {
+    const d = new Date(untilRaw + 'T00:00:00Z');
+    d.setUTCDate(d.getUTCDate() + 1);
+    until = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+  }
+  const hasRange = Boolean(since && untilRaw);
+  for (const campaign of campaigns) {
+    const campaignId = String(campaign?.id || '').trim();
+    if (!campaignId) continue;
+    // One call per campaign at level=ad returns every ad (with adset + ad names + spend) in that campaign.
+    let nextUrl = `https://graph.facebook.com/v19.0/${encodeURIComponent(campaignId)}/insights?level=ad&fields=${encodeURIComponent(
+      'campaign_id,campaign_name,adset_id,adset_name,ad_id,ad_name,spend,impressions,clicks,ctr,cpm,actions,cost_per_action_type,date_start,date_stop'
+    )}&limit=300&time_increment=1&access_token=${encodeURIComponent(token)}`;
+    if (hasRange) nextUrl += `&time_range=${encodeURIComponent(JSON.stringify({ since, until }))}`;
+    else nextUrl += '&date_preset=maximum';
+    for (let i = 0; i < 15 && nextUrl; i++) {
+      const data = await fetchJsonWithRetry(nextUrl, {}, { retries: 1, timeoutMs: 9000 });
+      const rows = Array.isArray(data?.data) ? data.data : [];
+      for (const row of rows) {
+        const norm = normalizeFacebookAdInsightRow(row, campaign, metric);
+        if (norm.ad_id) out.push(norm);
+      }
+      nextUrl = data?.paging?.next ? String(data.paging.next) : '';
+    }
+  }
   return out;
 }
 
@@ -6895,6 +6972,157 @@ app.get('/api/facebook-import/insights', requireTenantAuth, requireAdmin, asyncH
     end: String(req.query.end || '').trim() || null,
   };
   const payload = await buildCachedFacebookInsightsPayload(req.tenantId, existing, metric, dateRange);
+  res.json(payload);
+}));
+
+// ═══════════════════════════════════════════════════════════════
+// AD PANEL — Facebook Kampaniya→Reklam Seti→Reklam ağacı + CRM funnel.
+// Joins ad-level FB spend (selected campaigns only) with leads grouped by
+// extra_data.ad_source_id (the originating ad id from inbound messages).
+// ═══════════════════════════════════════════════════════════════
+app.get('/api/facebook-import/ad-panel', requireTenantAuth, requirePermission('view_dashboard', 'Dashboard görmək icazəniz yoxdur'), asyncHandler(async (req, res) => {
+  if (!process.env.DATABASE_URL) return res.status(503).json({ error: 'Database not configured' });
+
+  const canRev = hasPermission(req, 'view_revenue');
+  const metric = String(req.query.metric || 'message').trim().toLowerCase();
+  const dateRange = { start: String(req.query.start || '').trim() || null, end: String(req.query.end || '').trim() || null };
+  const tzOffsetMinutes = parseRequestTzOffsetMinutes(req);
+
+  const cacheKey = JSON.stringify({ k: 'adpanel', tenantId: req.tenantId, userId: req.userId || null, canRev, metric, start: dateRange.start, end: dateRange.end });
+  const cachedAp = dashboardCombinedCache.get(cacheKey);
+  if (cachedAp && (Date.now() - cachedAp.atMs) < DASHBOARD_CACHE_TTL_MS) return res.json(cachedAp.payload);
+
+  const settings = await db.getCRMSettings(req.tenantId).catch(() => null);
+  const stageLegend = Array.isArray(settings?.pipelineStages) ? settings.pipelineStages : [];
+  const wonStageId = getDashboardSummaryStageIds(settings || {}).won;
+
+  const facebookConfig = await db.getFacebookAdImport(req.tenantId).catch(() => null);
+  const importedCampaignIds = Array.isArray(facebookConfig?.selected_campaign_ids)
+    ? facebookConfig.selected_campaign_ids.map((id) => String(id || '').trim()).filter(Boolean) : [];
+
+  const warnings = [];
+  const adRows = importedCampaignIds.length > 0
+    ? await db.getFacebookAdInsightRows(req.tenantId, metric, importedCampaignIds, dateRange).catch(() => [])
+    : [];
+  if (importedCampaignIds.length === 0) warnings.push('Heç bir kampaniya seçilməyib. Sync ayarlarından hesab və kampaniya seçin.');
+  else if (adRows.length === 0) warnings.push('Reklam-səviyyə cache boşdur — "İndi Sync" edin (auto-sync reklam datasını da yığır).');
+
+  // CRM leads grouped by originating ad id + status
+  const leadRows = await db.getLeadsGroupedByAdSource(req.tenantId, {
+    startTs: dateRange.start ? toUtcBoundaryFromLocalDate(dateRange.start, tzOffsetMinutes, false) : null,
+    endTs: dateRange.end ? toUtcBoundaryFromLocalDate(dateRange.end, tzOffsetMinutes, true) : null,
+    assigneeId: canViewAllLeads(req) ? null : req.userId,
+  }).catch(() => []);
+
+  const crmByAd = new Map(); // lower(ad_id) -> { leads, won_count, pipeline_value, won_revenue, stages:Map(status->{count,revenue}) }
+  for (const r of leadRows) {
+    const key = String(r.ad_source_id || '').trim().toLowerCase();
+    if (!key) continue;
+    let b = crmByAd.get(key);
+    if (!b) { b = { leads: 0, won_count: 0, pipeline_value: 0, won_revenue: 0, stages: new Map() }; crmByAd.set(key, b); }
+    const cnt = Number(r.lead_count || 0), val = Number(r.value_sum || 0);
+    b.leads += cnt; b.pipeline_value += val;
+    const st = String(r.status || '');
+    const sb = b.stages.get(st) || { count: 0, revenue: 0 }; sb.count += cnt; sb.revenue += val; b.stages.set(st, sb);
+    if (st === wonStageId) { b.won_count += cnt; b.won_revenue += val; }
+  }
+
+  const emptyStages = () => stageLegend.map((s) => ({ id: s.id, label: s.label, color: s.color, count: 0, revenue: 0 }));
+  const crmOut = (crm) => {
+    const stages = emptyStages(); const idx = new Map(stages.map((s, i) => [s.id, i]));
+    if (crm) for (const [st, sb] of crm.stages) { const i = idx.get(st); if (i != null) { stages[i].count += sb.count; stages[i].revenue += canRev ? sb.revenue : 0; } }
+    return { leads: crm?.leads || 0, won_count: crm?.won_count || 0, pipeline_value: canRev ? (crm?.pipeline_value || 0) : 0, won_revenue: canRev ? (crm?.won_revenue || 0) : 0, stages };
+  };
+  const buildMerged = (fb, crm) => {
+    const spend = fb.spend || 0, leads = crm?.leads || 0, won = crm?.won_count || 0, rev = crm?.won_revenue || 0;
+    return {
+      cost_per_lead: leads > 0 ? spend / leads : 0,
+      cost_per_sale: won > 0 ? spend / won : 0,
+      roas: spend > 0 ? rev / spend : 0,
+      conversion_rate: leads > 0 ? (won / leads) * 100 : 0,
+    };
+  };
+  const sumNodes = (nodes) => {
+    const f = { spend: 0, impressions: 0, clicks: 0, results: 0 };
+    const stages = emptyStages(); const idx = new Map(stages.map((s, i) => [s.id, i]));
+    let leads = 0, won = 0, pv = 0, wr = 0;
+    for (const n of nodes) {
+      f.spend += n.facebook.spend || 0; f.impressions += n.facebook.impressions || 0; f.clicks += n.facebook.clicks || 0; f.results += n.facebook.results || 0;
+      leads += n.crm.leads; won += n.crm.won_count; pv += n.crm.pipeline_value; wr += n.crm.won_revenue;
+      for (const st of n.crm.stages) { const i = idx.get(st.id); if (i != null) { stages[i].count += st.count; stages[i].revenue += st.revenue; } }
+    }
+    return {
+      facebook: { spend: f.spend, impressions: f.impressions, clicks: f.clicks, results: f.results, ctr: f.impressions > 0 ? (f.clicks / f.impressions) * 100 : 0, cpm: f.impressions > 0 ? (f.spend / f.impressions) * 1000 : 0, cost_per_result: f.results > 0 ? f.spend / f.results : 0 },
+      crm: { leads, won_count: won, pipeline_value: pv, won_revenue: wr, stages },
+    };
+  };
+
+  // Build campaign→adset→ad tree from FB ad rows (raw rows kept for accurate per-node aggregation)
+  const tree = new Map();
+  for (const row of adRows) {
+    const cId = String(row.campaign_id || '').trim() || '—';
+    const aId = String(row.adset_id || '').trim() || '—';
+    const dId = String(row.ad_id || '').trim();
+    if (!dId) continue;
+    let c = tree.get(cId); if (!c) { c = { id: cId, name: row.campaign_name || 'Campaign', adsets: new Map() }; tree.set(cId, c); }
+    let s = c.adsets.get(aId); if (!s) { s = { id: aId, name: row.adset_name || 'Ad set', ads: new Map() }; c.adsets.set(aId, s); }
+    let d = s.ads.get(dId); if (!d) { d = { id: dId, name: row.ad_name || 'Ad', rows: [] }; s.ads.set(dId, d); }
+    d.rows.push(row);
+  }
+
+  const matchedAdKeys = new Set();
+  const campaigns = [];
+  for (const c of tree.values()) {
+    const adsetsOut = [];
+    for (const s of c.adsets.values()) {
+      const adsOut = [];
+      for (const d of s.ads.values()) {
+        const facebook = aggregateFacebookInsightRows(d.rows);
+        const key = d.id.toLowerCase();
+        if (crmByAd.has(key)) matchedAdKeys.add(key);
+        const crm = crmOut(crmByAd.get(key));
+        adsOut.push({ ad_id: d.id, ad_name: d.name, facebook, crm, merged: buildMerged(facebook, crm) });
+      }
+      adsOut.sort((a, b) => (b.facebook.spend || 0) - (a.facebook.spend || 0));
+      const agg = sumNodes(adsOut);
+      adsetsOut.push({ adset_id: s.id, adset_name: s.name, facebook: agg.facebook, crm: agg.crm, merged: buildMerged(agg.facebook, agg.crm), ads: adsOut });
+    }
+    adsetsOut.sort((a, b) => (b.facebook.spend || 0) - (a.facebook.spend || 0));
+    const agg = sumNodes(adsetsOut);
+    campaigns.push({ campaign_id: c.id, campaign_name: c.name, facebook: agg.facebook, crm: agg.crm, merged: buildMerged(agg.facebook, agg.crm), adsets: adsetsOut });
+  }
+
+  // Leads attributed to an ad that isn't in the synced set → "unknown ad" bucket
+  const unmatchedAds = [];
+  for (const [key, crm] of crmByAd.entries()) {
+    if (matchedAdKeys.has(key)) continue;
+    const facebook = aggregateFacebookInsightRows([]);
+    const crmO = crmOut(crm);
+    unmatchedAds.push({ ad_id: key, ad_name: 'Naməlum reklam', facebook, crm: crmO, merged: buildMerged(facebook, crmO) });
+  }
+  if (unmatchedAds.length) {
+    unmatchedAds.sort((a, b) => (b.crm.leads || 0) - (a.crm.leads || 0));
+    const agg = sumNodes(unmatchedAds);
+    campaigns.push({ campaign_id: '__unmatched__', campaign_name: 'Digər / naməlum reklam', facebook: agg.facebook, crm: agg.crm, merged: buildMerged(agg.facebook, agg.crm), adsets: [{ adset_id: '__unmatched__', adset_name: 'Eşləşməyən leadlər', facebook: agg.facebook, crm: agg.crm, merged: buildMerged(agg.facebook, agg.crm), ads: unmatchedAds }] });
+  }
+
+  campaigns.sort((a, b) => (b.facebook.spend || 0) - (a.facebook.spend || 0) || (b.crm.leads || 0) - (a.crm.leads || 0));
+  const totalsAgg = sumNodes(campaigns);
+  const totals = { facebook: totalsAgg.facebook, crm: totalsAgg.crm, merged: buildMerged(totalsAgg.facebook, totalsAgg.crm) };
+
+  const payload = {
+    metric,
+    range: { start: dateRange.start, end: dateRange.end },
+    canRevenue: canRev,
+    stageLegend: stageLegend.map((s) => ({ id: s.id, label: s.label, color: s.color })),
+    wonStageId,
+    totals,
+    campaigns,
+    warnings,
+    lastSyncAt: facebookConfig?.last_insight_sync_at || null,
+    syncedCampaigns: importedCampaignIds.length,
+  };
+  dashboardCombinedCache.set(cacheKey, { atMs: Date.now(), payload });
   res.json(payload);
 }));
 
