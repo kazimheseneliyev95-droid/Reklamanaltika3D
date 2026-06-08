@@ -1744,10 +1744,14 @@ async function pollFacebookAutoSyncQueue() {
       try {
         await syncFacebookInsightsForTenant(row.tenant_id, row);
       } catch (error) {
+        const msg = String(error?.message || 'facebook_sync_failed');
+        // FIX: token/OAuth xətasında auto-sync'i DAYANDIR (əvvəl ölü token sonsuz təkrarlanırdı).
+        // nextSyncAt=null → claimDue artıq seçmir; istifadəçi yeni token saxlayanda yenidən başlar.
+        const dead = isFbTokenError(msg);
         await db.finishFacebookAutoSync(row.tenant_id, {
-          nextSyncAt: computeNextFacebookSyncAt(row),
+          nextSyncAt: dead ? null : computeNextFacebookSyncAt(row),
           lastInsightSyncAt: null,
-          lastInsightSyncError: String(error?.message || 'facebook_sync_failed'),
+          lastInsightSyncError: dead ? ('Token bitib — auto-sync dayandırıldı, yeni token əlavə edin.') : msg,
         }).catch(() => null);
       }
     }
@@ -1882,7 +1886,7 @@ db.initDb()
     // Start HTTP Server ALWAYS — even if DB init fails.
     // Previously server.listen was only inside .then(), meaning a DB error
     // caused "Cannot GET /" because the HTTP server never started.
-    server.listen(PORT, '0.0.0.0', async () => {
+    server.listen(PORT, process.env.BIND_HOST || '127.0.0.1', async () => { // nginx 127.0.0.1:3000-ə proxy edir; 0.0.0.0 lazımsız ifşa idi
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
       console.log(`🚀 Server running on port ${PORT}`);
       try {
@@ -7508,6 +7512,15 @@ app.use((err, req, res, next) => {
   if (res.headersSent) return next(err);
 
   if (req.originalUrl.startsWith('/api/')) {
+    // FIX: honor thrown status codes + translate token/OAuth errors to a clear 400 (was: everything → opaque 500)
+    const status = Number(err?.statusCode || err?.status) || 0;
+    const msg = String((err && err.message) || '');
+    if (status === 0 && typeof isFbTokenError === 'function' && isFbTokenError(msg)) {
+      return res.status(400).json({ success: false, error: FB_TOKEN_BAD, code: 'token_expired' });
+    }
+    if (status >= 400 && status < 600) {
+      return res.status(status).json({ success: false, error: err?.expose ? msg : (status >= 500 ? 'Server xətası' : msg.slice(0, 200)) });
+    }
     return res.status(500).json({ success: false, error: 'Server xətası' });
   }
 
