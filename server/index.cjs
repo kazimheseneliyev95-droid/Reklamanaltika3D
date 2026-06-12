@@ -7922,6 +7922,76 @@ app.get('/data-deletion', (req, res) => {
   `));
 });
 
+// ── Meta signed_request helpers (Data Deletion + Deauthorize callbacks) ──────
+function parseMetaSignedRequest(signedRequest, secrets = []) {
+  const s = String(signedRequest || '');
+  const dot = s.indexOf('.');
+  if (dot < 1) return null;
+  const sigB64 = s.slice(0, dot);
+  const payloadB64 = s.slice(dot + 1);
+  let payload = null;
+  try { payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8')); } catch { return null; }
+  for (const secret of secrets) {
+    if (!secret) continue;
+    const expected = crypto.createHmac('sha256', String(secret)).update(payloadB64).digest('base64url');
+    try { if (sigB64.length === expected.length && crypto.timingSafeEqual(Buffer.from(sigB64), Buffer.from(expected))) return payload; } catch { /* mismatch */ }
+  }
+  return null;
+}
+async function metaAllAppSecrets() {
+  const out = [];
+  if (META_APP_SECRET) out.push(META_APP_SECRET);
+  try { if (db && typeof db.listMetaAppSecrets === 'function') { for (const sx of await db.listMetaAppSecrets()) if (sx) out.push(sx); } } catch { /* ignore */ }
+  return out;
+}
+const publicBaseUrl = (req) => `${String(req.headers['x-forwarded-proto'] || 'https').split(',')[0]}://${req.headers.host}`;
+
+// Meta "Data Deletion Request" callback (POST signed_request) — returns {url, confirmation_code}.
+app.post('/data-deletion', express.urlencoded({ extended: false }), async (req, res) => {
+  try {
+    const data = parseMetaSignedRequest(req.body && req.body.signed_request, await metaAllAppSecrets());
+    const userId = data && data.user_id ? String(data.user_id) : '';
+    const code = 'del_' + crypto.createHash('sha256').update(userId + '|' + ((data && data.issued_at) || Date.now())).digest('hex').slice(0, 16);
+    console.log('[meta] data-deletion request', { userId: userId || '(unverified)', code, verified: Boolean(data) });
+    return res.json({ url: `${publicBaseUrl(req)}/data-deletion/status?code=${encodeURIComponent(code)}`, confirmation_code: code });
+  } catch (e) {
+    return res.status(400).json({ error: 'bad_request' });
+  }
+});
+
+app.get('/data-deletion/status', (req, res) => {
+  const code = String(req.query.code || '').replace(/[^a-zA-Z0-9_]/g, '');
+  res.set('Content-Type', 'text/html; charset=utf-8').send(legalPage('Data Deletion Status', `
+    <h1>Data Deletion Status</h1>
+    <p>Request code: <b>${code || '(none)'}</b></p>
+    <p>Your data deletion request has been received. The associated messages, comments and tokens are removed within 30 days. For immediate removal, disconnect the Page in the CRM or email us at the address below.</p>
+  `));
+});
+
+// Meta "Deauthorize" callback (POST signed_request) — fired when a user removes the app.
+app.post('/deauthorize', express.urlencoded({ extended: false }), async (req, res) => {
+  try {
+    const data = parseMetaSignedRequest(req.body && req.body.signed_request, await metaAllAppSecrets());
+    console.log('[meta] deauthorize', { userId: data && data.user_id ? String(data.user_id) : '(unverified)', verified: Boolean(data) });
+  } catch { /* always ack */ }
+  return res.sendStatus(200);
+});
+
+app.get('/terms', (req, res) => {
+  res.set('Content-Type', 'text/html; charset=utf-8').send(legalPage('Terms of Service', `
+    <h1>Terms of Service</h1>
+    <p>By using this CRM ("the Service") you agree to these terms. The Service lets a business connect its own Facebook Pages and Instagram accounts to manage conversations (messages and comments) and view its own advertising performance in one place.</p>
+    <h2>Acceptable use</h2>
+    <p>You may use the Service only with accounts and assets you own or are authorized to manage, and in compliance with the Meta Platform Terms and applicable law. You must not use it to send spam, harass, or violate others' rights.</p>
+    <h2>Data</h2>
+    <p>Your use of data accessed through Facebook/Instagram is governed by our <a href="/privacy">Privacy Policy</a>. You can remove your data at any time — see <a href="/data-deletion">Data Deletion</a>.</p>
+    <h2>Availability &amp; liability</h2>
+    <p>The Service is provided "as is" without warranties. We are not liable for indirect or consequential damages. We may update these terms; continued use means acceptance.</p>
+    <h2>Contact</h2>
+    <p>Questions: the email below.</p>
+  `));
+});
+
 const DIST_PATH = path.join(__dirname, '../dist');
 const distExists = fs.existsSync(DIST_PATH);
 console.log(`🔍 Checking Frontend Build Directory: ${DIST_PATH} -> Exists: ${distExists}`);

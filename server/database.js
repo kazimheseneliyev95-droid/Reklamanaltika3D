@@ -2204,6 +2204,15 @@ async function ensureMetaAppConfigTable() {
     _metaAppConfigEnsured = true;
 }
 
+// All known Meta app secrets (env + every tenant) — to verify signed_request on
+// the data-deletion / deauthorize callbacks, which aren't tied to a Page entry.
+async function listMetaAppSecrets() {
+    try {
+        const res = await pool.query("SELECT app_secret FROM meta_app_config WHERE app_secret IS NOT NULL AND app_secret <> ''");
+        return res.rows.map((r) => { try { return decryptToken(r.app_secret); } catch { return r.app_secret; } }).filter(Boolean);
+    } catch { return []; }
+}
+
 async function getMetaAppConfig(tenantId) {
     if (!tenantId) return null;
     await ensureMetaAppConfigTable();
@@ -4090,6 +4099,7 @@ module.exports = {
     getMetaUserToken,
     deleteMetaUserToken,
     getMetaAppConfig,
+    listMetaAppSecrets,
     upsertMetaAppConfig,
     deleteMetaAppConfig,
     metaVerifyTokenExists,
