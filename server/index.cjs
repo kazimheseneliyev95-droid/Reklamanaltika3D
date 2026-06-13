@@ -1476,7 +1476,7 @@ async function processMetaWebhookPayload(json) {
           const fields = source === 'instagram'
             ? 'text,username,timestamp,media{id,permalink},user{id,username}'
             : 'message,from,created_time,permalink_url';
-          const url = `https://graph.facebook.com/v19.0/${commentId}?fields=${encodeURIComponent(fields)}&access_token=${encodeURIComponent(pageToken)}`;
+          const url = `https://graph.facebook.com/${FB_API_VERSION}/${commentId}?fields=${encodeURIComponent(fields)}&access_token=${encodeURIComponent(pageToken)}`;
           const data = await fetchJsonWithRetry(url, {}, { retries: 0, timeoutMs: 4000 }).catch(() => null);
           if (data) {
             if (source === 'instagram') {
@@ -6224,7 +6224,7 @@ async function fetchFacebookCampaignsForAccounts(userAccessToken, accounts = [])
     const accountApiId = String(a?.api_id || '').trim() || (accountId ? `act_${accountId}` : '');
     if (!accountApiId) continue;
 
-    let nextUrl = `https://graph.facebook.com/v19.0/${encodeURIComponent(accountApiId)}/campaigns?fields=${encodeURIComponent(
+    let nextUrl = `https://graph.facebook.com/${FB_API_VERSION}/${encodeURIComponent(accountApiId)}/campaigns?fields=${encodeURIComponent(
       'id,name,status,effective_status,objective,updated_time'
     )}&limit=200&access_token=${encodeURIComponent(token)}`;
 
@@ -6447,7 +6447,7 @@ async function fetchFacebookInsightsForCampaigns(userAccessToken, campaigns = []
   const fetchOne = async (campaign) => {
     const campaignId = String(campaign?.id || '').trim();
     if (!campaignId) return;
-    let nextUrl = `https://graph.facebook.com/v19.0/${encodeURIComponent(campaignId)}/insights?fields=${encodeURIComponent(
+    let nextUrl = `https://graph.facebook.com/${FB_API_VERSION}/${encodeURIComponent(campaignId)}/insights?fields=${encodeURIComponent(
       'campaign_id,campaign_name,spend,impressions,clicks,ctr,cpm,actions,cost_per_action_type,date_start,date_stop'
     )}&limit=200&time_increment=1&access_token=${encodeURIComponent(token)}`;
     if (hasRange) nextUrl += `&time_range=${encodeURIComponent(JSON.stringify({ since, until }))}`;
@@ -6494,7 +6494,7 @@ async function fetchFacebookAdInsightsForCampaigns(userAccessToken, campaigns = 
   const fetchOne = async (campaign) => {
     const campaignId = String(campaign?.id || '').trim();
     if (!campaignId) return;
-    let nextUrl = `https://graph.facebook.com/v19.0/${encodeURIComponent(campaignId)}/insights?level=ad&fields=${encodeURIComponent(
+    let nextUrl = `https://graph.facebook.com/${FB_API_VERSION}/${encodeURIComponent(campaignId)}/insights?level=ad&fields=${encodeURIComponent(
       'campaign_id,campaign_name,adset_id,adset_name,ad_id,ad_name,spend,impressions,clicks,ctr,cpm,actions,cost_per_action_type,date_start,date_stop'
     )}&limit=300&time_increment=1&access_token=${encodeURIComponent(token)}`;
     if (hasRange) nextUrl += `&time_range=${encodeURIComponent(JSON.stringify({ since, until }))}`;
@@ -6527,7 +6527,7 @@ async function subscribeMetaWebhooks({ pageId, pageAccessToken, igBusinessId }) 
 
   // Subscribe Page webhooks (messages + comments/feed)
   try {
-    const url = `https://graph.facebook.com/v19.0/${encodeURIComponent(page)}/subscribed_apps`;
+    const url = `https://graph.facebook.com/${FB_API_VERSION}/${encodeURIComponent(page)}/subscribed_apps`;
     const body = new URLSearchParams({
       subscribed_fields: 'messages,feed',
       access_token: token,
@@ -6541,7 +6541,7 @@ async function subscribeMetaWebhooks({ pageId, pageAccessToken, igBusinessId }) 
   // Subscribe IG webhooks (DM + comments)
   if (ig) {
     try {
-      const url = `https://graph.facebook.com/v19.0/${encodeURIComponent(ig)}/subscribed_apps`;
+      const url = `https://graph.facebook.com/${FB_API_VERSION}/${encodeURIComponent(ig)}/subscribed_apps`;
       const body = new URLSearchParams({
         subscribed_fields: 'messages,comments',
         access_token: token,
@@ -7609,14 +7609,14 @@ app.post('/api/meta/webhook/setup', requireTenantAuth, requireAdmin, asyncHandle
 }));
 
 async function postGraphForm(path, form, timeoutMs = 7000) {
-  const url = `https://graph.facebook.com/v19.0/${String(path).replace(/^\//, '')}`;
+  const url = `https://graph.facebook.com/${FB_API_VERSION}/${String(path).replace(/^\//, '')}`;
   const body = form instanceof URLSearchParams ? form : new URLSearchParams(form || {});
   const json = await fetchJsonWithRetry(url, { method: 'POST', body }, { retries: 0, timeoutMs });
   return json;
 }
 
 async function postGraphJson(path, payload, accessToken, timeoutMs = 7000) {
-  const url = `https://graph.facebook.com/v19.0/${String(path).replace(/^\//, '')}?access_token=${encodeURIComponent(String(accessToken || ''))}`;
+  const url = `https://graph.facebook.com/${FB_API_VERSION}/${String(path).replace(/^\//, '')}?access_token=${encodeURIComponent(String(accessToken || ''))}`;
   const json = await fetchJsonWithRetry(
     url,
     {
